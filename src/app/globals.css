@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #003F51;
+  --color-secondary: #289DAE;
+  --color-accent: #D2A436;
+  --color-white: #FFFFFF;
+  --color-bg: #F8F7F4;
+  --color-text: #1A1A1A;
+  --color-muted: #6B7280;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-body), system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4, h5 {
+    font-family: var(--font-display), serif;
+    color: var(--color-primary);
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-2 bg-accent text-white font-medium px-6 py-3 rounded-md hover:brightness-95 transition-all shadow-sm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 bg-primary text-white font-medium px-6 py-3 rounded-md hover:brightness-110 transition-all;
+  }
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 border border-primary text-primary font-medium px-6 py-3 rounded-md hover:bg-primary hover:text-white transition-all;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white border border-gray-200 text-sm text-gray-700;
+  }
+}
