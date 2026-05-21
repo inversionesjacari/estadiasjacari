@@ -110,29 +110,6 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const { params, env } = context;
   const slug = String(params.slug ?? "");
 
-  // ── DEBUG TEMPORAL (quitar tras confirmar fix) ────────────────────────────
-  // Si el request incluye ?_debug=1, devuelve las keys disponibles en env
-  // (nombres de las variables/bindings inyectados al runtime) sin revelar
-  // los valores. Útil para diagnosticar qué secrets llegaron vs cuáles no.
-  const url = new URL(context.request.url);
-  if (url.searchParams.get("_debug") === "1") {
-    const envAny = env as unknown as Record<string, unknown>;
-    let envKeys: string[] = [];
-    try { envKeys = Object.keys(envAny); } catch { envKeys = ["error al leer keys"]; }
-    const villaVal = envAny.AIRBNB_ICAL_VILLA_B11_PALMA_REAL;
-    return json({
-      debug: true,
-      envKeys,
-      hasDB: typeof envAny.DB !== "undefined",
-      hasVillaB11: typeof villaVal !== "undefined",
-      villaB11Type: typeof villaVal,
-      villaB11Length: typeof villaVal === "string" ? villaVal.length : null,
-      villaB11Truthy: !!villaVal,
-      villaB11StartsWithHttp: typeof villaVal === "string" ? villaVal.startsWith("http") : null,
-    });
-  }
-  // ── FIN DEBUG ─────────────────────────────────────────────────────────────
-
   // 1. Validar slug conocido
   const sourceConfigs = SLUG_TO_SOURCES[slug];
   if (!sourceConfigs) {
