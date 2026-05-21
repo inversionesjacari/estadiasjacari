@@ -37,6 +37,13 @@ interface AvailabilityResponse {
   lastSync: string;
 }
 
+interface ExchangeRateResponse {
+  rate: number; // HNL por 1 USD
+  date: string | null; // YYYY-MM-DD
+  source: string;
+  lastSync: string;
+}
+
 /**
  * Fecha mínima de check-in:
  *  - Si la hora actual en Honduras (America/Tegucigalpa) es < 18:00 → HOY
@@ -79,6 +86,11 @@ export default function BookingWidget({
     null,
   );
   const [lastSync, setLastSync] = useState<string | null>(null);
+
+  // ── ESTADO DE TIPO DE CAMBIO USD/HNL ────────────────────────────────────
+  // Si la API falla, queda en null y caemos al pricePerNightUSD hardcoded.
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
+  const [rateDate, setRateDate] = useState<string | null>(null);
 
   // ── ESTADO DE LA RESERVA ────────────────────────────────────────────────
   const [range, setRange] = useState<DateRange | undefined>(undefined);
@@ -125,6 +137,25 @@ export default function BookingWidget({
     };
   }, [propertySlug]);
 
+  // ── EFECTO: cargar tipo de cambio USD/HNL del día ───────────────────────
+  // Falla silenciosa — si no carga, usamos pricePerNightUSD hardcoded.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/exchange-rate`)
+      .then((resp) => (resp.ok ? (resp.json() as Promise<ExchangeRateResponse>) : null))
+      .then((data) => {
+        if (cancelled || !data || typeof data.rate !== "number") return;
+        setExchangeRate(data.rate);
+        setRateDate(data.date);
+      })
+      .catch(() => {
+        // Silencioso — fallback al hardcoded
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ── CÁLCULOS DERIVADOS ──────────────────────────────────────────────────
   const minDate = useMemo(() => getMinCheckInDate(), []);
   // Fecha máxima reservable: 6 meses desde hoy. Después de esto el calendar
@@ -139,8 +170,18 @@ export default function BookingWidget({
     range?.from && range?.to
       ? Math.max(0, differenceInDays(range.to, range.from))
       : 0;
-  const nightsTotalUSD = nights > 0 ? nights * pricePerNightUSD : 0;
-  const grandTotalUSD = nights > 0 ? nightsTotalUSD + cleaningFeeUSD : 0;
+
+  // Precio USD derivado: HNL / TC del día. Si el TC no cargó, fallback al
+  // valor hardcoded en properties.ts (pricePerNightUSD, cleaningFeeUSD).
+  const effectivePricePerNightUSD = exchangeRate
+    ? pricePerNightHNL / exchangeRate
+    : pricePerNightUSD;
+  const effectiveCleaningFeeUSD = exchangeRate
+    ? cleaningFeeHNL / exchangeRate
+    : cleaningFeeUSD;
+
+  const nightsTotalUSD = nights > 0 ? nights * effectivePricePerNightUSD : 0;
+  const grandTotalUSD = nights > 0 ? nightsTotalUSD + effectiveCleaningFeeUSD : 0;
   const nightsTotalHNL = nights > 0 ? nights * pricePerNightHNL : 0;
   const grandTotalHNL = nights > 0 ? nightsTotalHNL + cleaningFeeHNL : 0;
 
@@ -289,7 +330,9 @@ export default function BookingWidget({
             <span className="text-gray-500 text-sm">/ noche</span>
           </div>
           <p className="text-gray-400 text-xs mt-0.5">
-            equivalente a USD ${pricePerNightUSD} · cobro procesado por PayPal en dólares
+            equivalente a USD ${effectivePricePerNightUSD.toFixed(2)}
+            {exchangeRate && ` · TC del día L. ${exchangeRate.toFixed(2)}`}
+            {" · cobro procesado por PayPal en dólares"}
           </p>
         </div>
 
@@ -390,7 +433,11 @@ export default function BookingWidget({
                 <span>L. {grandTotalHNL.toLocaleString()}</span>
               </div>
               <p className="text-xs text-gray-400 text-right">
-                ≈ USD ${grandTotalUSD.toFixed(2)} · cargo final en dólares
+                ≈ USD ${grandTotalUSD.toFixed(2)}
+                {exchangeRate
+                  ? ` · TC L. ${exchangeRate.toFixed(2)}${rateDate ? ` (${rateDate})` : ""}`
+                  : ""}
+                {" · cargo final en dólares"}
               </p>
             </div>
           </div>
