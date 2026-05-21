@@ -7,7 +7,7 @@ import {
   getRelatedProperties,
 } from "@/data/properties";
 import Gallery from "@/components/Gallery";
-import ReservationForm from "@/components/ReservationForm";
+import BookingWidget from "@/components/BookingWidget";
 import PropertyCard from "@/components/PropertyCard";
 
 export function generateStaticParams() {
@@ -232,9 +232,13 @@ export default function PropertyDetailPage({
 
           {/* Sidebar */}
           <aside className="lg:col-span-1">
-            <div className="lg:sticky lg:top-24">
-              <ReservationForm propertyName={property.name} />
-            </div>
+            <BookingWidget
+              propertyName={property.name}
+              propertySlug={property.slug}
+              pricePerNightUSD={property.pricePerNightUSD}
+              cleaningFeeUSD={property.cleaningFeeUSD}
+              pricePerNightHNL={property.pricePerNightHNL}
+            />
           </aside>
         </div>
 

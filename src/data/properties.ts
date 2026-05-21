@@ -18,6 +18,10 @@ export interface Property {
   images: string[];
   mapEmbed: string;
   gemelas?: boolean;
+  pricePerNightUSD: number;
+  cleaningFeeUSD: number;
+  pricePerNightHNL: number;
+  cleaningFeeHNL: number;
 }
 
 export const CITIES = ["La Ceiba", "Tela", "Tegucigalpa"] as const;
@@ -70,6 +74,10 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Hotel+Palma+Real+La+Ceiba+Honduras&output=embed",
+    pricePerNightUSD: 90,
+    cleaningFeeUSD: 14,
+    pricePerNightHNL: 2500,
+    cleaningFeeHNL: 350,
   },
 
   // ──────────────────────────────────────────────────────────
@@ -124,6 +132,10 @@ export const properties: Property[] = [
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+Tela&output=embed",
     gemelas: true,
+    pricePerNightUSD: 90,
+    cleaningFeeUSD: 14,
+    pricePerNightHNL: 2500,
+    cleaningFeeHNL: 350,
   },
 
   // ──────────────────────────────────────────────────────────
@@ -175,6 +187,10 @@ export const properties: Property[] = [
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+Tela&output=embed",
     gemelas: true,
+    pricePerNightUSD: 90,
+    cleaningFeeUSD: 14,
+    pricePerNightHNL: 2500,
+    cleaningFeeHNL: 350,
   },
 
   // ──────────────────────────────────────────────────────────
@@ -218,6 +234,10 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Centro+Morazan+Tegucigalpa&output=embed",
+    pricePerNightUSD: 80,
+    cleaningFeeUSD: 16,
+    pricePerNightHNL: 2100,
+    cleaningFeeHNL: 400,
   },
 
   // ──────────────────────────────────────────────────────────
@@ -262,6 +282,10 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Colonia+Lara+Tegucigalpa&output=embed",
+    pricePerNightUSD: 60,
+    cleaningFeeUSD: 16,
+    pricePerNightHNL: 1590,
+    cleaningFeeHNL: 400,
   },
 
   // ──────────────────────────────────────────────────────────
@@ -308,6 +332,10 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Lomas+de+la+Florida+Tegucigalpa&output=embed",
+    pricePerNightUSD: 26,
+    cleaningFeeUSD: 14,
+    pricePerNightHNL: 650,
+    cleaningFeeHNL: 350,
   },
 ];
 
