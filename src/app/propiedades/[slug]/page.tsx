@@ -238,6 +238,7 @@ export default function PropertyDetailPage({
               pricePerNightUSD={property.pricePerNightUSD}
               cleaningFeeUSD={property.cleaningFeeUSD}
               pricePerNightHNL={property.pricePerNightHNL}
+              cleaningFeeHNL={property.cleaningFeeHNL}
             />
           </aside>
         </div>

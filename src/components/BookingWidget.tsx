@@ -8,6 +8,7 @@ import {
   format,
   differenceInDays,
   addDays,
+  addMonths,
   isWithinInterval,
   isSameDay,
 } from "date-fns";
@@ -24,7 +25,11 @@ interface BookingWidgetProps {
   pricePerNightUSD: number;
   cleaningFeeUSD: number;
   pricePerNightHNL: number;
+  cleaningFeeHNL: number;
 }
+
+/** Ventana máxima de reservas hacia el futuro (calendario y cobro). */
+const MAX_MONTHS_AHEAD = 6;
 
 interface AvailabilityResponse {
   slug: string;
@@ -65,6 +70,7 @@ export default function BookingWidget({
   pricePerNightUSD,
   cleaningFeeUSD,
   pricePerNightHNL,
+  cleaningFeeHNL,
 }: BookingWidgetProps) {
   // ── ESTADO DE DISPONIBILIDAD ────────────────────────────────────────────
   const [blockedDates, setBlockedDates] = useState<Date[]>([]);
@@ -121,13 +127,22 @@ export default function BookingWidget({
 
   // ── CÁLCULOS DERIVADOS ──────────────────────────────────────────────────
   const minDate = useMemo(() => getMinCheckInDate(), []);
+  // Fecha máxima reservable: 6 meses desde hoy. Después de esto el calendar
+  // muestra todo bloqueado y el usuario debe consultar por WhatsApp.
+  const maxDate = useMemo(() => {
+    const max = addMonths(new Date(), MAX_MONTHS_AHEAD);
+    max.setHours(0, 0, 0, 0);
+    return max;
+  }, []);
 
   const nights =
     range?.from && range?.to
       ? Math.max(0, differenceInDays(range.to, range.from))
       : 0;
-  const nightsTotal = nights > 0 ? nights * pricePerNightUSD : 0;
-  const grandTotal = nights > 0 ? nightsTotal + cleaningFeeUSD : 0;
+  const nightsTotalUSD = nights > 0 ? nights * pricePerNightUSD : 0;
+  const grandTotalUSD = nights > 0 ? nightsTotalUSD + cleaningFeeUSD : 0;
+  const nightsTotalHNL = nights > 0 ? nights * pricePerNightHNL : 0;
+  const grandTotalHNL = nights > 0 ? nightsTotalHNL + cleaningFeeHNL : 0;
 
   // Detecta si el rango seleccionado pisa una fecha bloqueada en medio.
   // react-day-picker previene clicks directos en disabled, pero un rango
@@ -193,8 +208,11 @@ export default function BookingWidget({
             <span className="font-semibold">Noches:</span> {nights}
           </p>
           <p>
-            <span className="font-semibold">Total pagado:</span> $
-            {grandTotal.toFixed(2)} USD
+            <span className="font-semibold">Total pagado:</span> L.{" "}
+            {grandTotalHNL.toLocaleString()}{" "}
+            <span className="text-xs text-gray-500">
+              (USD ${grandTotalUSD.toFixed(2)})
+            </span>
           </p>
           <p>
             <span className="font-semibold">Orden:</span>{" "}
@@ -266,12 +284,12 @@ export default function BookingWidget({
           </h3>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl font-bold text-primary">
-              ${pricePerNightUSD}
+              L. {pricePerNightHNL.toLocaleString()}
             </span>
-            <span className="text-gray-500 text-sm">USD / noche</span>
+            <span className="text-gray-500 text-sm">/ noche</span>
           </div>
           <p className="text-gray-400 text-xs mt-0.5">
-            L. {pricePerNightHNL.toLocaleString()} / noche
+            equivalente a USD ${pricePerNightUSD} · cobro procesado por PayPal en dólares
           </p>
         </div>
 
@@ -292,13 +310,18 @@ export default function BookingWidget({
                   setRange(r);
                   setShowPayPal(false);
                 }}
-                disabled={[{ before: minDate }, ...blockedDates]}
-                numberOfMonths={2}
+                disabled={[
+                  { before: minDate },
+                  { after: maxDate },
+                  ...blockedDates,
+                ]}
+                startMonth={minDate}
+                endMonth={maxDate}
+                numberOfMonths={1}
                 locale={es}
                 weekStartsOn={1}
                 showOutsideDays={false}
                 classNames={{
-                  months: "flex gap-4",
                   month_caption:
                     "text-primary font-display text-base mb-2 capitalize",
                   caption_label: "text-primary",
@@ -348,18 +371,27 @@ export default function BookingWidget({
           <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-gray-600">
-                ${pricePerNightUSD} × {nights}{" "}
+                L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
                 {nights === 1 ? "noche" : "noches"}
               </span>
-              <span className="font-medium">${nightsTotal.toFixed(2)}</span>
+              <span className="font-medium">
+                L. {nightsTotalHNL.toLocaleString()}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-600">Costo de limpieza (único)</span>
-              <span className="font-medium">${cleaningFeeUSD.toFixed(2)}</span>
+              <span className="font-medium">
+                L. {cleaningFeeHNL.toLocaleString()}
+              </span>
             </div>
-            <div className="border-t border-gray-200 pt-2 flex justify-between font-bold text-primary">
-              <span>Total</span>
-              <span>${grandTotal.toFixed(2)} USD</span>
+            <div className="border-t border-gray-200 pt-2 space-y-1">
+              <div className="flex justify-between font-bold text-primary text-base">
+                <span>Total</span>
+                <span>L. {grandTotalHNL.toLocaleString()}</span>
+              </div>
+              <p className="text-xs text-gray-400 text-right">
+                ≈ USD ${grandTotalUSD.toFixed(2)} · cargo final en dólares
+              </p>
             </div>
           </div>
         )}
@@ -394,7 +426,7 @@ export default function BookingWidget({
               className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {nights > 0 && !rangeHasBlockedDateInside
-                ? `Pagar $${grandTotal.toFixed(2)} USD`
+                ? `Pagar L. ${grandTotalHNL.toLocaleString()}`
                 : "Selecciona las fechas"}
             </button>
           </div>
@@ -432,11 +464,11 @@ export default function BookingWidget({
                     {
                       amount: {
                         currency_code: "USD",
-                        value: grandTotal.toFixed(2),
+                        value: grandTotalUSD.toFixed(2),
                         breakdown: {
                           item_total: {
                             currency_code: "USD",
-                            value: nightsTotal.toFixed(2),
+                            value: nightsTotalUSD.toFixed(2),
                           },
                           handling: {
                             currency_code: "USD",
