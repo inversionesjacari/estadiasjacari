@@ -319,7 +319,7 @@ export default function BookingWidget({
     >
       <div className="bg-white rounded-2xl border border-gray-200 shadow-card p-6 sticky top-24">
         {/* Precio */}
-        <div className="mb-4">
+        <div className="mb-5">
           <h3 className="text-base font-bold text-primary mb-1">
             Reservar ahora
           </h3>
@@ -329,32 +329,6 @@ export default function BookingWidget({
             </span>
             <span className="text-gray-500 text-sm">/ noche</span>
           </div>
-          <p className="text-gray-400 text-xs mt-0.5">
-            ≈ USD ${effectivePricePerNightUSD.toFixed(2)}
-            {exchangeRate && ` · referencia TC L. ${exchangeRate.toFixed(2)}`}
-          </p>
-        </div>
-
-        {/* Disclaimer: cómo funciona el cobro */}
-        <div className="bg-secondary/5 border border-secondary/20 rounded-xl p-3 mb-5 text-xs text-gray-600 leading-relaxed">
-          <p className="flex items-start gap-1.5">
-            <span aria-hidden className="text-secondary flex-shrink-0 mt-0.5">
-              ℹ️
-            </span>
-            <span>
-              <span className="font-semibold text-primary">
-                Sobre el cobro:
-              </span>{" "}
-              PayPal procesa pagos en dólares estadounidenses (USD), no en
-              Lempiras. La tasa de cambio que mostramos
-              {exchangeRate ? ` (L. ${exchangeRate.toFixed(2)} = $1 USD)` : ""}{" "}
-              es{" "}
-              <span className="font-semibold">solo una referencia del día</span>
-              . El monto final en Lempiras que verás en tu tarjeta lo
-              determinará el banco emisor según su propio tipo de cambio, por
-              lo que puede variar ligeramente del valor mostrado aquí.
-            </span>
-          </p>
         </div>
 
         {/* Calendario de fechas */}
@@ -448,14 +422,9 @@ export default function BookingWidget({
                 L. {cleaningFeeHNL.toLocaleString()}
               </span>
             </div>
-            <div className="border-t border-gray-200 pt-2 space-y-1">
-              <div className="flex justify-between font-bold text-primary text-base">
-                <span>Total</span>
-                <span>L. {grandTotalHNL.toLocaleString()}</span>
-              </div>
-              <p className="text-xs text-gray-400 text-right">
-                ≈ USD ${grandTotalUSD.toFixed(2)} (referencia)
-              </p>
+            <div className="border-t border-gray-200 pt-2 flex justify-between font-bold text-primary text-base">
+              <span>Total</span>
+              <span>L. {grandTotalHNL.toLocaleString()}</span>
             </div>
           </div>
         )}
@@ -493,6 +462,13 @@ export default function BookingWidget({
                 ? `Pagar L. ${grandTotalHNL.toLocaleString()}`
                 : "Selecciona las fechas"}
             </button>
+
+            {/* Nota única sobre el cobro */}
+            <p className="text-xs text-gray-500 leading-relaxed mt-1">
+              El cobro se procesa en dólares estadounidenses (USD) porque
+              PayPal no acepta Lempiras. El monto exacto en tu tarjeta lo
+              determinará tu banco según su tipo de cambio del día.
+            </p>
           </div>
         )}
 
@@ -522,21 +498,29 @@ export default function BookingWidget({
               createOrder={(_data, actions) => {
                 const checkInIso = format(range!.from!, "yyyy-MM-dd");
                 const checkOutIso = format(range!.to!, "yyyy-MM-dd");
+                // Garantizar consistencia matemática: item_total + handling == total.
+                // PayPal rechaza el order si el breakdown no suma exactamente al
+                // value total con 2 decimales (causa de "Hubo un error con el pago").
+                const itemTotalStr = nightsTotalUSD.toFixed(2);
+                const handlingStr = effectiveCleaningFeeUSD.toFixed(2);
+                const grandTotalStr = (
+                  parseFloat(itemTotalStr) + parseFloat(handlingStr)
+                ).toFixed(2);
                 return actions.order.create({
                   intent: "CAPTURE",
                   purchase_units: [
                     {
                       amount: {
                         currency_code: "USD",
-                        value: grandTotalUSD.toFixed(2),
+                        value: grandTotalStr,
                         breakdown: {
                           item_total: {
                             currency_code: "USD",
-                            value: nightsTotalUSD.toFixed(2),
+                            value: itemTotalStr,
                           },
                           handling: {
                             currency_code: "USD",
-                            value: cleaningFeeUSD.toFixed(2),
+                            value: handlingStr,
                           },
                         },
                       },
@@ -551,9 +535,11 @@ export default function BookingWidget({
                 setOrderId(data.orderID);
                 setPaymentSuccess(true);
               }}
-              onError={() => {
+              onError={(err) => {
+                // Log detallado en consola para debug; alert simple para el usuario.
+                console.error("PayPal onError:", err);
                 alert(
-                  "Hubo un error con el pago. Por favor intenta de nuevo o contáctanos por WhatsApp.",
+                  "Hubo un error con el pago. Por favor intenta de nuevo o contáctanos por WhatsApp al +504 8839-0145.",
                 );
               }}
             />
