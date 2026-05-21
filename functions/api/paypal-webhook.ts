@@ -1,5 +1,9 @@
 /// <reference types="@cloudflare/workers-types" />
 //
+// @ts-ignore — import relativo a Pages Function helper compartido
+import { sendReservationConfirmationEmail } from "../_lib/email";
+
+//
 // POST /api/paypal-webhook
 //
 // Recibe notificaciones de PayPal cuando un pago cambia de estado. Verifica la
@@ -28,6 +32,37 @@ interface Env {
   PAYPAL_CLIENT_SECRET?: string;
   PAYPAL_WEBHOOK_ID?: string;
   PAYPAL_API_BASE?: string;
+  // Resend (email transaccional) — Fase 3.5
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string; // ej. 'Estadías Jacarí <hola@estadiasjacari.com>'
+  EMAIL_REPLY_TO?: string;
+}
+
+/**
+ * Mapeo de slug → nombre legible de propiedad.
+ *
+ * Los slugs canónicos viven en `src/data/properties.ts` (frontend Next.js).
+ * Como ese archivo es del bundle frontend y no podemos importarlo desde aquí
+ * (Pages Functions tiene un entorno aislado), replicamos los nombres acá.
+ *
+ * ⚠️ Si se agrega/renombra una propiedad en src/data/properties.ts, hay que
+ * actualizar ESTE mapping también o el email mostrará el slug crudo.
+ */
+const PROPERTY_NAMES: Record<string, string> = {
+  "villa-b11-palma-real": "Villa B11 — Palma Real",
+  "casa-brisa": "Casa Brisa",
+  "casa-marea": "Casa Marea",
+  "centro-morazan": "Centro Morazán",
+  "casa-lara-townhouse": "Casa Lara Townhouse",
+  "la-florida": "La Florida",
+};
+
+/** Diferencia entre dos fechas YYYY-MM-DD (DTEND exclusivo). */
+function nightsBetween(checkInIso: string, checkOutIso: string): number {
+  const start = new Date(checkInIso + "T00:00:00Z").getTime();
+  const end = new Date(checkOutIso + "T00:00:00Z").getTime();
+  const days = Math.round((end - start) / (1000 * 60 * 60 * 24));
+  return Math.max(0, days);
 }
 
 interface PayPalWebhookEvent {
@@ -219,36 +254,44 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       case "PAYMENT.CAPTURE.COMPLETED": {
         const customId = resource.custom_id ?? "";
         const parts = customId.split("|");
-        if (parts.length !== 4) {
+        // Formato esperado: slug|checkIn|checkOut|email|phone (5 partes).
+        // Aceptamos también 4 partes para retrocompatibilidad con orders
+        // creados antes de Fase 3.5 (sin phone).
+        if (parts.length !== 5 && parts.length !== 4) {
           return logAndReturn(400, {
             paypalEventId: webhookEvent.id,
             eventType,
             orderId,
             verificationStatus: "SUCCESS",
-            errorMessage: `custom_id con formato inesperado: "${customId}" (esperado: slug|checkIn|checkOut|email)`,
+            errorMessage: `custom_id con formato inesperado: "${customId}" (esperado: slug|checkIn|checkOut|email|phone o slug|checkIn|checkOut|email)`,
           });
         }
-        const [propertySlug, checkIn, checkOut, guestEmail] = parts;
+        const [propertySlug, checkIn, checkOut, guestEmail, guestPhoneRaw] = parts;
+        const guestPhone = (guestPhoneRaw ?? "").replace(/\D/g, ""); // solo dígitos
         const amountUsd = parseFloat(resource.amount?.value ?? "0");
         const givenName = resource.payer?.name?.given_name ?? "";
         const surname = resource.payer?.name?.surname ?? "";
         const guestName = `${givenName} ${surname}`.trim();
         const payerEmail = resource.payer?.email_address ?? guestEmail;
+        const recipientEmail = guestEmail || payerEmail || null;
 
         // INSERT con OR IGNORE — si el webhook llega duplicado por reintento,
         // no creamos filas dobles (paypal_order_id es UNIQUE).
         const result = await env.DB.prepare(
           `INSERT OR IGNORE INTO reservations
              (property_slug, check_in, check_out, guest_name, guest_email,
-              paypal_order_id, amount_usd, status, raw_payload)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)`,
+              guest_phone, guest_phone_normalized, paypal_order_id,
+              amount_usd, status, raw_payload)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)`,
         )
           .bind(
             propertySlug,
             checkIn,
             checkOut,
             guestName || null,
-            payerEmail || guestEmail || null,
+            recipientEmail,
+            guestPhone || null,
+            guestPhone || null,
             orderId,
             amountUsd || null,
             rawBody,
@@ -256,6 +299,86 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           .run();
 
         const inserted = result.meta?.changes ?? 0;
+
+        // ── Notificación email (Fase 3.5) ──────────────────────────────────
+        // Idempotencia: solo enviamos si la fila acaba de insertarse Y aún
+        // no fue notificada. Si webhook duplicado o ya notificada, skip.
+        let emailMessage = "";
+        if (inserted > 0 && recipientEmail) {
+          try {
+            // Verificar idempotencia leyendo la fila recién insertada
+            const existing = await env.DB.prepare(
+              `SELECT notified_at FROM reservations WHERE paypal_order_id = ?`,
+            )
+              .bind(orderId)
+              .first<{ notified_at: string | null }>();
+
+            if (existing && !existing.notified_at) {
+              const propertyName =
+                PROPERTY_NAMES[propertySlug] || propertySlug;
+              const nights = nightsBetween(checkIn, checkOut);
+
+              const emailResult = await sendReservationConfirmationEmail(
+                {
+                  guestName: guestName || "huésped",
+                  guestEmail: recipientEmail,
+                  guestPhone,
+                  propertyName,
+                  checkInISO: checkIn,
+                  checkOutISO: checkOut,
+                  nights,
+                  amountUsd,
+                  paypalOrderId: orderId,
+                },
+                {
+                  RESEND_API_KEY: env.RESEND_API_KEY ?? "",
+                  EMAIL_FROM: env.EMAIL_FROM ?? "",
+                  EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+                },
+              );
+
+              if (emailResult.ok) {
+                await env.DB.prepare(
+                  `UPDATE reservations
+                      SET notified_at = datetime('now'),
+                          updated_at = datetime('now')
+                    WHERE paypal_order_id = ?`,
+                )
+                  .bind(orderId)
+                  .run();
+                emailMessage = ` · Email enviado (Resend ID: ${emailResult.resendId ?? "n/a"})`;
+              } else {
+                await env.DB.prepare(
+                  `UPDATE reservations
+                      SET notification_error = ?,
+                          updated_at = datetime('now')
+                    WHERE paypal_order_id = ?`,
+                )
+                  .bind(emailResult.error?.slice(0, 1000) ?? "unknown", orderId)
+                  .run();
+                emailMessage = ` · Email FALLÓ: ${emailResult.error?.slice(0, 200) ?? "unknown"}`;
+              }
+            }
+          } catch (emailErr) {
+            // Capturamos sin fallar el webhook — el pago YA está procesado.
+            const errMsg = (emailErr as Error).message;
+            console.error("Error enviando email de confirmación:", errMsg);
+            try {
+              await env.DB.prepare(
+                `UPDATE reservations
+                    SET notification_error = ?,
+                        updated_at = datetime('now')
+                  WHERE paypal_order_id = ?`,
+              )
+                .bind(`Excepción: ${errMsg.slice(0, 950)}`, orderId)
+                .run();
+            } catch {
+              // ignore — no podemos hacer nada más
+            }
+            emailMessage = ` · Email EXCEPCIÓN: ${errMsg.slice(0, 200)}`;
+          }
+        }
+
         return logAndReturn(200, {
           paypalEventId: webhookEvent.id,
           eventType,
@@ -263,9 +386,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           verificationStatus: "SUCCESS",
           processed: 1,
           errorMessage:
-            inserted > 0
+            (inserted > 0
               ? `Reserva insertada: ${propertySlug} ${checkIn}→${checkOut}`
-              : `Reserva ya existía (webhook duplicado): ${orderId}`,
+              : `Reserva ya existía (webhook duplicado): ${orderId}`) +
+            emailMessage,
         });
       }
 

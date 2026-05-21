@@ -506,6 +506,10 @@ export default function BookingWidget({
                 const grandTotalStr = (
                   parseFloat(itemTotalStr) + parseFloat(handlingStr)
                 ).toFixed(2);
+                // Phone normalizado (solo dígitos) para incluir en custom_id —
+                // el webhook lo usa para generar el link wa.me en el email de
+                // confirmación, y futuro WhatsApp push automático (Fase 5).
+                const phoneDigits = guestPhone.replace(/\D/g, "");
                 return actions.order.create({
                   intent: "CAPTURE",
                   purchase_units: [
@@ -525,7 +529,9 @@ export default function BookingWidget({
                         },
                       },
                       description: `Reserva ${propertyName} — ${nights} noches (${checkInIso} al ${checkOutIso})`,
-                      custom_id: `${propertySlug}|${checkInIso}|${checkOutIso}|${guestEmail}`,
+                      // Formato: slug|checkIn|checkOut|email|phone (5 partes).
+                      // El webhook (functions/api/paypal-webhook.ts) parsea este string.
+                      custom_id: `${propertySlug}|${checkInIso}|${checkOutIso}|${guestEmail}|${phoneDigits}`,
                     },
                   ],
                 });
