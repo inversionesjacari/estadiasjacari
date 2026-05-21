@@ -35,6 +35,10 @@ interface AvailabilityResponse {
   slug: string;
   blockedDates: string[]; // YYYY-MM-DD
   lastSync: string;
+  /** "full" = todo OK, "partial" = algunas fuentes fallaron, "unavailable" = ninguna fuente Airbnb respondió. */
+  airbnbSyncStatus?: "full" | "partial" | "unavailable";
+  /** Mensajes de warning si alguna fuente falló (env var faltante o fetch error). */
+  warnings?: string[];
 }
 
 interface ExchangeRateResponse {
@@ -82,9 +86,16 @@ export default function BookingWidget({
   // ── ESTADO DE DISPONIBILIDAD ────────────────────────────────────────────
   const [blockedDates, setBlockedDates] = useState<Date[]>([]);
   const [loadingAvailability, setLoadingAvailability] = useState(true);
+  // `availabilityError` solo se setea si el endpoint falla COMPLETAMENTE
+  // (network error, 5xx fatal). Para errores parciales (env vars faltantes o
+  // fetches fallidos en algunas fuentes), usamos `availabilityWarning` que
+  // muestra un banner amarillo sin bloquear el calendar.
   const [availabilityError, setAvailabilityError] = useState<string | null>(
     null,
   );
+  const [availabilitySyncStatus, setAvailabilitySyncStatus] = useState<
+    "full" | "partial" | "unavailable" | null
+  >(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
 
   // ── ESTADO DE TIPO DE CAMBIO USD/HNL ────────────────────────────────────
@@ -124,6 +135,7 @@ export default function BookingWidget({
         if (cancelled) return;
         setBlockedDates(data.blockedDates.map(parseIsoDate));
         setLastSync(data.lastSync);
+        setAvailabilitySyncStatus(data.airbnbSyncStatus ?? "full");
         setLoadingAvailability(false);
       })
       .catch((err: Error) => {
@@ -330,6 +342,34 @@ export default function BookingWidget({
             <span className="text-gray-500 text-sm">/ noche</span>
           </div>
         </div>
+
+        {/* Banner: sincronización Airbnb degradada (env vars caídas o fetch falló).
+            El calendar sigue visible — solo avisamos al cliente que verifique por
+            WhatsApp antes de reservar para evitar conflictos con Airbnb. */}
+        {availabilitySyncStatus &&
+          availabilitySyncStatus !== "full" &&
+          !loadingAvailability && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800 leading-relaxed">
+              <p className="font-semibold mb-1">
+                ⚠️ Sincronización con Airbnb en proceso
+              </p>
+              <p>
+                El calendario puede no reflejar todas las fechas ocupadas. Si
+                tienes duda sobre disponibilidad, confirma por WhatsApp al{" "}
+                <a
+                  href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
+                    `Hola, quiero verificar disponibilidad de ${propertyName} antes de reservar.`,
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline font-medium"
+                >
+                  +504 8839-0145
+                </a>{" "}
+                antes de pagar.
+              </p>
+            </div>
+          )}
 
         {/* Calendario de fechas */}
         <div className="mb-4">

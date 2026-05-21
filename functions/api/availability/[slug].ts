@@ -14,14 +14,26 @@
 //   {
 //     "slug": "villa-b11-palma-real",
 //     "blockedDates": ["2026-06-15", "2026-06-16", ...],
+//     "sources": [...],
+//     "warnings": [...],            // ← presente si alguna fuente falló
+//     "airbnbSyncStatus": "full" | "partial" | "unavailable",
 //     "lastSync": "2026-05-21T12:34:56.789Z",
-//     "source": "airbnb"
+//     "source": "airbnb+d1"
 //   }
 //
-// Errores:
-//   404 — slug desconocido
-//   500 — env var faltante
-//   502 — Airbnb no respondió o respondió con error / iCal inválido
+// Política de errores (fail-open con visibilidad):
+//   - Si faltan env vars de Airbnb o el fetch falla, el endpoint NO devuelve 500.
+//     Devuelve 200 con `warnings[]` poblado y `airbnbSyncStatus` distinto de "full".
+//     El frontend muestra el calendar con las fechas que sí pudo obtener
+//     (D1 + cualquier source de Airbnb que respondió) y un banner amarillo
+//     advirtiéndole al cliente que confirme por WhatsApp antes de reservar.
+//   - Esto protege al sitio: si las env vars de Cloudflare se pierden o las
+//     URLs iCal expiran, el sitio sigue funcional con degradación graceful
+//     en vez de quedar completamente bloqueado.
+//
+// Errores HTTP que sí se devuelven:
+//   404 — slug desconocido (problema de código, no de configuración)
+//   502 — parse error del iCal Y no hay otras fuentes válidas (caso muy raro)
 //
 
 // @ts-ignore — ical.js no publica tipos oficiales
@@ -111,13 +123,15 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
 
-  // 2. Resolver URLs desde env vars — todas las del slug deben estar presentes
+  // 2. Resolver URLs desde env vars — antes era "todas o nada"; ahora cada
+  //    fuente faltante se reporta como warning pero NO bloquea el endpoint.
+  //    Esto evita que el sitio se "rompa" si una env var se pierde.
   const sources: {
     envVarName: IcalEnvKey;
     url: string;
     onlyReserved: boolean;
   }[] = [];
-  const missing: string[] = [];
+  const warnings: string[] = [];
   for (const config of sourceConfigs) {
     const url = env[config.envVarName];
     if (url) {
@@ -127,23 +141,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         onlyReserved: config.onlyReserved ?? false,
       });
     } else {
-      missing.push(config.envVarName);
+      warnings.push(
+        `Falta env var ${config.envVarName} — configúrala en Cloudflare Pages → Settings → Environment variables (Production) con la URL iCal exportable de Airbnb.`,
+      );
     }
-  }
-  if (missing.length > 0) {
-    return json(
-      {
-        error: "missing_env_var",
-        message:
-          `Faltan variables de entorno: ${missing.join(", ")}. ` +
-          `Configúralas en Cloudflare Pages → Settings → Environment variables ` +
-          `con las URLs iCal exportables de Airbnb ` +
-          `(Calendar → Sync calendars → Export calendar).`,
-        slug,
-        missing,
-      },
-      500
-    );
   }
 
   // 3. Fetch en paralelo de todas las URLs configuradas para este slug
@@ -184,35 +185,30 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     })
   );
 
-  // Si alguna fuente falló al fetch, devolver 502 con detalle por fuente
+  // Si alguna fuente falló al fetch, registrar como warning pero NO bloquear.
+  // El frontend mostrará el banner de degradación y el cliente verá las
+  // fuentes que sí funcionaron + las reservas D1.
   const failedFetches = fetchResults.filter((r) => !r.ok);
-  if (failedFetches.length > 0) {
-    return json(
-      {
-        error: "airbnb_fetch_failed",
-        message:
-          "Una o más URLs iCal de Airbnb fallaron al consultar. " +
-          "No se devuelven fechas parciales para evitar mostrar disponibilidad incorrecta.",
-        slug,
-        failures: failedFetches.map((f) => ({
-          source: f.envVarName,
-          error: f.ok ? undefined : f.error,
-        })),
-      },
-      502
-    );
+  for (const failure of failedFetches) {
+    if (!failure.ok) {
+      warnings.push(
+        `Fuente ${failure.envVarName} falló al consultar: ${failure.error}`,
+      );
+    }
   }
 
-  // 4. Parsear cada iCal y unir las fechas bloqueadas (set para dedup)
+  // 4. Parsear cada iCal y unir las fechas bloqueadas (set para dedup).
+  //    Si una fuente falla al parsear, se registra warning y se siguen
+  //    procesando las otras — no rompemos el endpoint por un parse error.
   const allDates = new Set<string>();
   const perSource: {
     source: string;
     blockedCount: number;
     onlyReserved?: boolean;
   }[] = [];
-  try {
-    for (const result of fetchResults) {
-      if (!result.ok) continue; // imposible aquí (ya verificamos), pero TS lo necesita
+  for (const result of fetchResults) {
+    if (!result.ok) continue;
+    try {
       const dates = parseICalToBlockedDates(result.text, result.onlyReserved);
       dates.forEach((d) => allDates.add(d));
       perSource.push({
@@ -220,18 +216,11 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         blockedCount: dates.length,
         onlyReserved: result.onlyReserved,
       });
+    } catch (err) {
+      warnings.push(
+        `Fuente ${result.envVarName} falló al parsear iCal: ${(err as Error).message}`,
+      );
     }
-  } catch (err) {
-    return json(
-      {
-        error: "ical_parse_error",
-        message:
-          `No se pudo parsear la respuesta de Airbnb como iCal: ` +
-          `${(err as Error).message}`,
-        slug,
-      },
-      502
-    );
   }
 
   // 4b. Agregar fechas de reservas pagadas en el sitio (D1, status pending/confirmed)
@@ -280,20 +269,46 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     }
   }
 
-  // 5. Respuesta exitosa con Cache-Control para el navegador y CDN
+  // 5. Calcular estado de sincronización con Airbnb (visibilidad para el frontend)
+  //    - "full": todas las fuentes Airbnb respondieron OK
+  //    - "partial": algunas respondieron, otras fallaron
+  //    - "unavailable": ninguna fuente Airbnb pudo consultarse
+  const totalAirbnbSources = sourceConfigs.length;
+  const okAirbnbSources = perSource.filter(
+    (s) => s.source !== "D1_RESERVATIONS",
+  ).length;
+  let airbnbSyncStatus: "full" | "partial" | "unavailable";
+  if (okAirbnbSources === totalAirbnbSources) {
+    airbnbSyncStatus = "full";
+  } else if (okAirbnbSources > 0) {
+    airbnbSyncStatus = "partial";
+  } else {
+    airbnbSyncStatus = "unavailable";
+  }
+
+  // Si la sincronización está degradada, reducir el cache CDN para que el
+  // calendar se recupere más rápido cuando el problema se resuelva.
+  const cacheControl =
+    airbnbSyncStatus === "full"
+      ? "public, max-age=300, s-maxage=900"
+      : "public, max-age=60, s-maxage=60";
+
+  // 6. Respuesta exitosa (siempre 200 — fail-open). El frontend usa
+  //    `airbnbSyncStatus` y `warnings` para decidir si muestra un banner.
   return json(
     {
       slug,
       blockedDates: Array.from(allDates).sort(),
       sources: perSource,
+      warnings: warnings.length > 0 ? warnings : undefined,
+      airbnbSyncStatus,
       lastSync: new Date().toISOString(),
       source: "airbnb+d1",
     },
     200,
     {
-      // Navegador: 5 min · CDN: 15 min (alineado con el cf.cacheTtl de arriba)
-      "Cache-Control": "public, max-age=300, s-maxage=900",
-    }
+      "Cache-Control": cacheControl,
+    },
   );
 };
 
