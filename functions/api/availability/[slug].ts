@@ -27,14 +27,22 @@
 // @ts-ignore — ical.js no publica tipos oficiales
 import ICAL from "ical.js";
 
-interface Env {
-  AIRBNB_ICAL_VILLA_B11_PALMA_REAL?: string;
-  AIRBNB_ICAL_CASA_BRISA?: string;
-  AIRBNB_ICAL_CASA_MAREA?: string;
-  AIRBNB_ICAL_LAS_GEMELAS_DE_TELA?: string;
-  AIRBNB_ICAL_CENTRO_MORAZAN?: string;
-  AIRBNB_ICAL_CASA_LARA_TOWNHOUSE?: string;
-  AIRBNB_ICAL_LA_FLORIDA?: string;
+/** Nombres de env vars que contienen URLs iCal de Airbnb (strings). */
+type IcalEnvKey =
+  | "AIRBNB_ICAL_VILLA_B11_PALMA_REAL"
+  | "AIRBNB_ICAL_CASA_BRISA"
+  | "AIRBNB_ICAL_CASA_MAREA"
+  | "AIRBNB_ICAL_LAS_GEMELAS_DE_TELA"
+  | "AIRBNB_ICAL_CENTRO_MORAZAN"
+  | "AIRBNB_ICAL_CASA_LARA_TOWNHOUSE"
+  | "AIRBNB_ICAL_LA_FLORIDA";
+
+type IcalEnv = { [K in IcalEnvKey]?: string };
+
+interface Env extends IcalEnv {
+  // Binding D1 (opcional — si no está configurado, el endpoint sigue funcionando
+  // con solo Airbnb, lo cual es el comportamiento de Fase 1/2).
+  DB?: D1Database;
 }
 
 /**
@@ -48,7 +56,7 @@ interface Env {
  *    casas individuales, solo las reservas reales del listing Gemelas.
  */
 type SourceConfig = {
-  envVarName: keyof Env;
+  envVarName: IcalEnvKey;
   onlyReserved?: boolean;
 };
 
@@ -105,7 +113,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   // 2. Resolver URLs desde env vars — todas las del slug deben estar presentes
   const sources: {
-    envVarName: keyof Env;
+    envVarName: IcalEnvKey;
     url: string;
     onlyReserved: boolean;
   }[] = [];
@@ -198,9 +206,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   // 4. Parsear cada iCal y unir las fechas bloqueadas (set para dedup)
   const allDates = new Set<string>();
   const perSource: {
-    source: keyof Env;
+    source: string;
     blockedCount: number;
-    onlyReserved: boolean;
+    onlyReserved?: boolean;
   }[] = [];
   try {
     for (const result of fetchResults) {
@@ -226,6 +234,52 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
 
+  // 4b. Agregar fechas de reservas pagadas en el sitio (D1, status pending/confirmed)
+  //     Si el binding DB no está configurado o falla, ignoramos silenciosamente
+  //     — el endpoint sigue respondiendo solo con datos de Airbnb (Fase 1/2).
+  if (env.DB) {
+    try {
+      // Solo reservas futuras o actuales (check_out >= hoy en UTC)
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const { results } = await env.DB.prepare(
+        `SELECT check_in, check_out
+           FROM reservations
+          WHERE property_slug = ?
+            AND status IN ('pending', 'confirmed')
+            AND check_out >= ?`,
+      )
+        .bind(slug, todayIso)
+        .all<{ check_in: string; check_out: string }>();
+
+      let d1Count = 0;
+      for (const row of results ?? []) {
+        // Expandir cada reserva en fechas individuales (DTEND exclusivo, igual que iCal)
+        const start = new Date(row.check_in + "T00:00:00Z");
+        const end = new Date(row.check_out + "T00:00:00Z");
+        const cursor = new Date(start);
+        while (cursor < end) {
+          allDates.add(cursor.toISOString().slice(0, 10));
+          cursor.setUTCDate(cursor.getUTCDate() + 1);
+          d1Count++;
+        }
+      }
+      perSource.push({
+        source: "D1_RESERVATIONS",
+        blockedCount: d1Count,
+      });
+    } catch (err) {
+      // No fallar el endpoint si D1 tiene problemas — log para debug.
+      console.error(
+        `[availability/${slug}] Error consultando D1:`,
+        (err as Error).message,
+      );
+      perSource.push({
+        source: "D1_RESERVATIONS",
+        blockedCount: -1,
+      });
+    }
+  }
+
   // 5. Respuesta exitosa con Cache-Control para el navegador y CDN
   return json(
     {
@@ -233,7 +287,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
       blockedDates: Array.from(allDates).sort(),
       sources: perSource,
       lastSync: new Date().toISOString(),
-      source: "airbnb",
+      source: "airbnb+d1",
     },
     200,
     {
