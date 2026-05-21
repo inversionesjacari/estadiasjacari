@@ -343,33 +343,11 @@ export default function BookingWidget({
           </div>
         </div>
 
-        {/* Banner: sincronización Airbnb degradada (env vars caídas o fetch falló).
-            El calendar sigue visible — solo avisamos al cliente que verifique por
-            WhatsApp antes de reservar para evitar conflictos con Airbnb. */}
-        {availabilitySyncStatus &&
-          availabilitySyncStatus !== "full" &&
-          !loadingAvailability && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800 leading-relaxed">
-              <p className="font-semibold mb-1">
-                ⚠️ Sincronización con Airbnb en proceso
-              </p>
-              <p>
-                El calendario puede no reflejar todas las fechas ocupadas. Si
-                tienes duda sobre disponibilidad, confirma por WhatsApp al{" "}
-                <a
-                  href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-                    `Hola, quiero verificar disponibilidad de ${propertyName} antes de reservar.`,
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline font-medium"
-                >
-                  +504 8839-0145
-                </a>{" "}
-                antes de pagar.
-              </p>
-            </div>
-          )}
+        {/* (Nota: cuando `availabilitySyncStatus !== "full"`, el sync con Airbnb
+            está degradado y el calendar no refleja todas las fechas bloqueadas
+            externas. No mostramos banner para no ensuciar la UI — el riesgo se
+            mitiga porque el sitio acepta solo reservas con cobro directo y el
+            staff puede gestionar conflictos manualmente vía WhatsApp.) */}
 
         {/* Calendario de fechas */}
         <div className="mb-4">
