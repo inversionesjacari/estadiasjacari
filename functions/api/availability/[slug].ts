@@ -38,26 +38,52 @@ interface Env {
 }
 
 /**
- * Mapeo de slug de propiedad a una o más variables de entorno con URLs iCal
- * de Airbnb. Cuando un slug mapea a varias URLs, las fechas bloqueadas son la
- * unión de todas (cualquier reserva en cualquiera de los listings bloquea).
+ * Configuración de cada fuente iCal para un slug.
+ *  - envVarName: nombre de la variable de entorno con la URL del iCal.
+ *  - onlyReserved: si true, solo cuenta VEVENTs con SUMMARY = "Reserved"
+ *    (reservas reales del propio listing). Se usa para iCals cruzados
+ *    como Las Gemelas de Tela, donde Airbnb sincroniza automáticamente
+ *    las reservas de Casa Brisa y Casa Marea con SUMMARY "Airbnb (Not
+ *    available)" — esos bloqueos NO deben propagarse de vuelta a las
+ *    casas individuales, solo las reservas reales del listing Gemelas.
+ */
+type SourceConfig = {
+  envVarName: keyof Env;
+  onlyReserved?: boolean;
+};
+
+/**
+ * Mapeo de slug de propiedad → lista de fuentes iCal.
  *
  * Caso especial — Las Gemelas de Tela:
- *   "Las Gemelas" es un 3er listing en Airbnb que renta Casa Brisa + Casa
- *   Marea juntas (para grupos de hasta 12). Cuando ese listing se reserva,
- *   AMBAS casas físicas están ocupadas — por eso `casa-brisa` y `casa-marea`
- *   en el sitio incluyen `AIRBNB_ICAL_LAS_GEMELAS_DE_TELA` en su lista.
+ *   Es un 3er listing en Airbnb que renta Casa Brisa + Casa Marea juntas
+ *   para grupos de hasta 12 personas. Comportamiento de Airbnb:
+ *   - Reserva real en Casa Marea → "Reserved" en Marea, "Airbnb (Not available)"
+ *     en Las Gemelas (sync auto)
+ *   - Reserva real en Casa Brisa → "Reserved" en Brisa
+ *   - Reserva real en Las Gemelas → "Reserved" en Las Gemelas
+ *
+ *   Por lo tanto:
+ *   - Casa Brisa lee: su propio iCal completo + Gemelas filtrado a solo "Reserved"
+ *     (evita que las "Not available" derivadas de Marea bloqueen Brisa por error).
+ *   - Casa Marea lee: su propio iCal completo + Gemelas filtrado a solo "Reserved".
  *
  * Los slugs canónicos viven en src/data/properties.ts — si cambia alguno,
  * actualizar este mapping en sincronía.
  */
-const SLUG_TO_ENVS: Record<string, (keyof Env)[]> = {
-  "villa-b11-palma-real": ["AIRBNB_ICAL_VILLA_B11_PALMA_REAL"],
-  "casa-brisa": ["AIRBNB_ICAL_CASA_BRISA", "AIRBNB_ICAL_LAS_GEMELAS_DE_TELA"],
-  "casa-marea": ["AIRBNB_ICAL_CASA_MAREA", "AIRBNB_ICAL_LAS_GEMELAS_DE_TELA"],
-  "centro-morazan": ["AIRBNB_ICAL_CENTRO_MORAZAN"],
-  "casa-lara-townhouse": ["AIRBNB_ICAL_CASA_LARA_TOWNHOUSE"],
-  "la-florida": ["AIRBNB_ICAL_LA_FLORIDA"],
+const SLUG_TO_SOURCES: Record<string, SourceConfig[]> = {
+  "villa-b11-palma-real": [{ envVarName: "AIRBNB_ICAL_VILLA_B11_PALMA_REAL" }],
+  "casa-brisa": [
+    { envVarName: "AIRBNB_ICAL_CASA_BRISA" },
+    { envVarName: "AIRBNB_ICAL_LAS_GEMELAS_DE_TELA", onlyReserved: true },
+  ],
+  "casa-marea": [
+    { envVarName: "AIRBNB_ICAL_CASA_MAREA" },
+    { envVarName: "AIRBNB_ICAL_LAS_GEMELAS_DE_TELA", onlyReserved: true },
+  ],
+  "centro-morazan": [{ envVarName: "AIRBNB_ICAL_CENTRO_MORAZAN" }],
+  "casa-lara-townhouse": [{ envVarName: "AIRBNB_ICAL_CASA_LARA_TOWNHOUSE" }],
+  "la-florida": [{ envVarName: "AIRBNB_ICAL_LA_FLORIDA" }],
 };
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -65,27 +91,35 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const slug = String(params.slug ?? "");
 
   // 1. Validar slug conocido
-  const envVarNames = SLUG_TO_ENVS[slug];
-  if (!envVarNames) {
+  const sourceConfigs = SLUG_TO_SOURCES[slug];
+  if (!sourceConfigs) {
     return json(
       {
         error: "unknown_slug",
         message: `Slug "${slug}" no está registrado.`,
-        knownSlugs: Object.keys(SLUG_TO_ENVS),
+        knownSlugs: Object.keys(SLUG_TO_SOURCES),
       },
       404
     );
   }
 
   // 2. Resolver URLs desde env vars — todas las del slug deben estar presentes
-  const sources: { envVarName: keyof Env; url: string }[] = [];
+  const sources: {
+    envVarName: keyof Env;
+    url: string;
+    onlyReserved: boolean;
+  }[] = [];
   const missing: string[] = [];
-  for (const envVarName of envVarNames) {
-    const url = env[envVarName];
+  for (const config of sourceConfigs) {
+    const url = env[config.envVarName];
     if (url) {
-      sources.push({ envVarName, url });
+      sources.push({
+        envVarName: config.envVarName,
+        url,
+        onlyReserved: config.onlyReserved ?? false,
+      });
     } else {
-      missing.push(envVarName);
+      missing.push(config.envVarName);
     }
   }
   if (missing.length > 0) {
@@ -106,7 +140,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   // 3. Fetch en paralelo de todas las URLs configuradas para este slug
   const fetchResults = await Promise.all(
-    sources.map(async ({ envVarName, url }) => {
+    sources.map(async ({ envVarName, url, onlyReserved }) => {
       try {
         const resp = await fetch(url, {
           headers: {
@@ -120,14 +154,21 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         if (!resp.ok) {
           return {
             envVarName,
+            onlyReserved,
             ok: false as const,
             error: `Airbnb devolvió HTTP ${resp.status}. La URL puede estar caducada — regenérala en Airbnb y actualiza la env var.`,
           };
         }
-        return { envVarName, ok: true as const, text: await resp.text() };
+        return {
+          envVarName,
+          onlyReserved,
+          ok: true as const,
+          text: await resp.text(),
+        };
       } catch (err) {
         return {
           envVarName,
+          onlyReserved,
           ok: false as const,
           error: `Error de red: ${(err as Error).message}`,
         };
@@ -156,13 +197,21 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   // 4. Parsear cada iCal y unir las fechas bloqueadas (set para dedup)
   const allDates = new Set<string>();
-  const perSource: { source: keyof Env; blockedCount: number }[] = [];
+  const perSource: {
+    source: keyof Env;
+    blockedCount: number;
+    onlyReserved: boolean;
+  }[] = [];
   try {
     for (const result of fetchResults) {
       if (!result.ok) continue; // imposible aquí (ya verificamos), pero TS lo necesita
-      const dates = parseICalToBlockedDates(result.text);
+      const dates = parseICalToBlockedDates(result.text, result.onlyReserved);
       dates.forEach((d) => allDates.add(d));
-      perSource.push({ source: result.envVarName, blockedCount: dates.length });
+      perSource.push({
+        source: result.envVarName,
+        blockedCount: dates.length,
+        onlyReserved: result.onlyReserved,
+      });
     }
   } catch (err) {
     return json(
@@ -198,8 +247,17 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
  * Convierte un iCal de Airbnb en una lista de fechas individuales bloqueadas.
  * Convención iCal: DTSTART inclusivo, DTEND exclusivo (el día de check-out
  * sigue disponible para que otro huésped haga check-in).
+ *
+ * Si `onlyReserved=true`, solo cuenta VEVENTs con SUMMARY = "Reserved"
+ * (reservas reales del propio listing). Útil para iCals cruzados donde
+ * Airbnb sincroniza automáticamente bloqueos derivados de otros listings
+ * (esos llegan con SUMMARY "Airbnb (Not available)" y NO deben propagarse
+ * de vuelta a las casas individuales — ya están en sus iCals propios).
  */
-function parseICalToBlockedDates(icalText: string): string[] {
+function parseICalToBlockedDates(
+  icalText: string,
+  onlyReserved = false,
+): string[] {
   const jcalData = ICAL.parse(icalText);
   const vcalendar = new ICAL.Component(jcalData);
   const vevents = vcalendar.getAllSubcomponents("vevent");
@@ -207,6 +265,17 @@ function parseICalToBlockedDates(icalText: string): string[] {
   const dates = new Set<string>();
   for (const vevent of vevents) {
     const event = new ICAL.Event(vevent);
+
+    if (onlyReserved) {
+      const summary = (event.summary ?? "").trim();
+      // "Reserved" = reserva real en el propio listing
+      // "Airbnb (Not available)" / "Not available" / "Blocked" = sync auto o
+      // bloqueo manual del owner — ignorar cuando es iCal cruzado
+      if (!/^reserved$/i.test(summary)) {
+        continue;
+      }
+    }
+
     const start: Date = event.startDate.toJSDate();
     const end: Date = event.endDate.toJSDate();
 
