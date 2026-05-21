@@ -5,3 +5,7 @@ out
 *.log
 .env*.local
 next-env.d.ts
+
+# Cloudflare Pages Functions / Wrangler
+.wrangler/
+.dev.vars
