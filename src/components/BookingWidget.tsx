@@ -319,7 +319,7 @@ export default function BookingWidget({
     >
       <div className="bg-white rounded-2xl border border-gray-200 shadow-card p-6 sticky top-24">
         {/* Precio */}
-        <div className="mb-5">
+        <div className="mb-4">
           <h3 className="text-base font-bold text-primary mb-1">
             Reservar ahora
           </h3>
@@ -330,9 +330,30 @@ export default function BookingWidget({
             <span className="text-gray-500 text-sm">/ noche</span>
           </div>
           <p className="text-gray-400 text-xs mt-0.5">
-            equivalente a USD ${effectivePricePerNightUSD.toFixed(2)}
-            {exchangeRate && ` · TC del día L. ${exchangeRate.toFixed(2)}`}
-            {" · cobro procesado por PayPal en dólares"}
+            ≈ USD ${effectivePricePerNightUSD.toFixed(2)}
+            {exchangeRate && ` · referencia TC L. ${exchangeRate.toFixed(2)}`}
+          </p>
+        </div>
+
+        {/* Disclaimer: cómo funciona el cobro */}
+        <div className="bg-secondary/5 border border-secondary/20 rounded-xl p-3 mb-5 text-xs text-gray-600 leading-relaxed">
+          <p className="flex items-start gap-1.5">
+            <span aria-hidden className="text-secondary flex-shrink-0 mt-0.5">
+              ℹ️
+            </span>
+            <span>
+              <span className="font-semibold text-primary">
+                Sobre el cobro:
+              </span>{" "}
+              PayPal procesa pagos en dólares estadounidenses (USD), no en
+              Lempiras. La tasa de cambio que mostramos
+              {exchangeRate ? ` (L. ${exchangeRate.toFixed(2)} = $1 USD)` : ""}{" "}
+              es{" "}
+              <span className="font-semibold">solo una referencia del día</span>
+              . El monto final en Lempiras que verás en tu tarjeta lo
+              determinará el banco emisor según su propio tipo de cambio, por
+              lo que puede variar ligeramente del valor mostrado aquí.
+            </span>
           </p>
         </div>
 
@@ -433,11 +454,7 @@ export default function BookingWidget({
                 <span>L. {grandTotalHNL.toLocaleString()}</span>
               </div>
               <p className="text-xs text-gray-400 text-right">
-                ≈ USD ${grandTotalUSD.toFixed(2)}
-                {exchangeRate
-                  ? ` · TC L. ${exchangeRate.toFixed(2)}${rateDate ? ` (${rateDate})` : ""}`
-                  : ""}
-                {" · cargo final en dólares"}
+                ≈ USD ${grandTotalUSD.toFixed(2)} (referencia)
               </p>
             </div>
           </div>
