@@ -10,6 +10,8 @@
 // Cloudflare Pages — solo se puede importar desde otros archivos de functions/.
 //
 
+import { sendViaResend } from "./resend";
+
 const WHATSAPP_NUMBER = "50488390145";
 const SUPPORT_EMAIL = "hola@estadiasjacari.com";
 
@@ -46,12 +48,6 @@ export async function sendReservationConfirmationEmail(
   data: ReservationEmailData,
   env: EmailEnv,
 ): Promise<EmailResult> {
-  if (!env.RESEND_API_KEY) {
-    return { ok: false, error: "Falta env var RESEND_API_KEY" };
-  }
-  if (!env.EMAIL_FROM) {
-    return { ok: false, error: "Falta env var EMAIL_FROM" };
-  }
   if (!data.guestEmail) {
     return { ok: false, error: "guestEmail vacío — no hay destinatario" };
   }
@@ -60,39 +56,9 @@ export async function sendReservationConfirmationEmail(
   const html = buildHtmlBody(data);
   const text = buildPlainTextBody(data);
 
-  try {
-    const resp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: env.EMAIL_FROM,
-        to: data.guestEmail,
-        ...(env.EMAIL_REPLY_TO ? { reply_to: env.EMAIL_REPLY_TO } : {}),
-        subject,
-        html,
-        text,
-      }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      return {
-        ok: false,
-        error: `Resend HTTP ${resp.status}: ${body.slice(0, 300)}`,
-      };
-    }
-
-    const json = (await resp.json()) as { id?: string };
-    return { ok: true, resendId: json.id };
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Error de red al llamar a Resend: ${(err as Error).message}`,
-    };
-  }
+  // El envío (incl. validación de RESEND_API_KEY/EMAIL_FROM) lo centraliza
+  // sendViaResend. SendEmailResult tiene la misma forma que EmailResult.
+  return sendViaResend({ to: data.guestEmail, subject, html, text }, env);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,8 +119,8 @@ DETALLES DE TU RESERVA
 
 ¿QUÉ SIGUE?
 
-El día de tu check-in te enviaremos por WhatsApp un set completo de
-instrucciones para que puedas ingresar fácilmente a la propiedad
+La noche anterior a tu llegada te enviaremos por correo y WhatsApp un set
+completo de instrucciones para que puedas ingresar fácilmente a la propiedad
 (dirección exacta, código de la puerta o forma de recoger las llaves,
 contacto del encargado local, etc.).
 
@@ -260,7 +226,7 @@ function buildHtmlBody(data: ReservationEmailData): string {
             <td style="padding:28px 32px 0 32px;">
               <h3 style="margin:0 0 10px 0; font-size:17px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">¿Qué sigue?</h3>
               <p style="margin:0; font-size:14px; line-height:1.7; color:#374151;">
-                El <strong>día de tu check-in</strong> te enviaremos por WhatsApp un set completo de instrucciones para que puedas ingresar fácilmente a la propiedad: dirección exacta, código de la puerta o forma de recoger las llaves, contacto del encargado local, y cualquier detalle importante de tu estadía.
+                La <strong>noche anterior a tu llegada</strong> te enviaremos por correo y WhatsApp un set completo de instrucciones para que puedas ingresar fácilmente a la propiedad: dirección exacta, código de la puerta o forma de recoger las llaves, contacto del encargado local, y cualquier detalle importante de tu estadía.
               </p>
             </td>
           </tr>
