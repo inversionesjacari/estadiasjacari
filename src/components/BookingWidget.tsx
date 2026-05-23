@@ -108,8 +108,10 @@ export default function BookingWidget({
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
-  const [showPayPal, setShowPayPal] = useState(false);
-  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  // Máquina de pasos: form → review → payment → success
+  const [step, setStep] = useState<"form" | "review" | "payment" | "success">(
+    "form",
+  );
   const [orderId, setOrderId] = useState("");
 
   // ── EFECTO: cargar disponibilidad desde el endpoint ─────────────────────
@@ -226,11 +228,11 @@ export default function BookingWidget({
       setRange(undefined);
       return;
     }
-    setShowPayPal(true);
+    setStep("review");
   };
 
   // ── PANTALLA DE CONFIRMACIÓN ────────────────────────────────────────────
-  if (paymentSuccess) {
+  if (step === "success") {
     const checkInStr = range?.from ? format(range.from, "yyyy-MM-dd") : "";
     const checkOutStr = range?.to ? format(range.to, "yyyy-MM-dd") : "";
     const waText = encodeURIComponent(
@@ -327,7 +329,7 @@ export default function BookingWidget({
   // ── FORMULARIO PRINCIPAL ────────────────────────────────────────────────
   return (
     <PayPalScriptProvider
-      options={{ clientId: PAYPAL_CLIENT_ID, currency: "USD" }}
+      options={{ clientId: PAYPAL_CLIENT_ID, currency: "USD", locale: "es_MX" }}
     >
       <div className="bg-white rounded-2xl border border-gray-200 shadow-card p-6 sticky top-24">
         {/* Precio */}
@@ -364,7 +366,7 @@ export default function BookingWidget({
                 selected={range}
                 onSelect={(r) => {
                   setRange(r);
-                  setShowPayPal(false);
+                  setStep("form");
                 }}
                 disabled={[
                   { before: minDate },
@@ -448,7 +450,7 @@ export default function BookingWidget({
         )}
 
         {/* Datos del huésped */}
-        {!showPayPal && (
+        {step === "form" && (
           <div className="space-y-3 mb-4">
             <input
               type="text"
@@ -477,7 +479,7 @@ export default function BookingWidget({
               className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {nights > 0 && !rangeHasBlockedDateInside
-                ? `Pagar L. ${grandTotalHNL.toLocaleString()}`
+                ? "Continuar →"
                 : "Selecciona las fechas"}
             </button>
 
@@ -490,8 +492,119 @@ export default function BookingWidget({
           </div>
         )}
 
+        {/* Pantalla de revisión — paso intermedio antes del pago */}
+        {step === "review" && nights > 0 && !rangeHasBlockedDateInside && (
+          <div className="space-y-4 mb-4">
+            <h4 className="text-sm font-bold text-primary">
+              Revisa tu reserva
+            </h4>
+
+            {/* Propiedad y fechas */}
+            <div className="bg-gray-50 rounded-xl p-4 space-y-3 text-sm">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-1">
+                  Propiedad
+                </p>
+                <p className="font-semibold text-primary">{propertyName}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-1">
+                    Check-in
+                  </p>
+                  <p className="font-medium text-primary">
+                    {range?.from &&
+                      format(range.from, "d 'de' MMM yyyy", { locale: es })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-1">
+                    Check-out
+                  </p>
+                  <p className="font-medium text-primary">
+                    {range?.to &&
+                      format(range.to, "d 'de' MMM yyyy", { locale: es })}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-1">
+                  Noches
+                </p>
+                <p className="font-medium text-primary">
+                  {nights} {nights === 1 ? "noche" : "noches"}
+                </p>
+              </div>
+            </div>
+
+            {/* Desglose de precio */}
+            <div className="bg-gray-50 rounded-xl p-4 space-y-2 text-sm">
+              <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-2">
+                Desglose
+              </p>
+              <div className="flex justify-between">
+                <span className="text-gray-600">
+                  L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
+                  {nights === 1 ? "noche" : "noches"}
+                </span>
+                <span className="font-medium">
+                  L. {nightsTotalHNL.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Costo de limpieza (único)</span>
+                <span className="font-medium">
+                  L. {cleaningFeeHNL.toLocaleString()}
+                </span>
+              </div>
+              <div className="border-t border-gray-200 pt-2 mt-1 flex justify-between font-bold text-primary text-base">
+                <span>Total</span>
+                <span>L. {grandTotalHNL.toLocaleString()}</span>
+              </div>
+              <p className="text-xs text-gray-500 text-right">
+                ≈ USD ${grandTotalUSD.toFixed(2)}
+              </p>
+            </div>
+
+            {/* Datos del huésped */}
+            <div className="bg-gray-50 rounded-xl p-4 space-y-1 text-sm">
+              <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-2">
+                Datos del huésped
+              </p>
+              <p className="font-semibold text-primary">{guestName}</p>
+              <p className="text-gray-600 text-xs">{guestEmail}</p>
+              <p className="text-gray-600 text-xs">{guestPhone}</p>
+            </div>
+
+            {/* Disclaimer USD */}
+            <p className="text-xs text-gray-500 leading-relaxed">
+              El cobro se procesa en dólares estadounidenses (USD) porque
+              PayPal no acepta Lempiras. El monto exacto en tu tarjeta lo
+              determinará tu banco según su tipo de cambio del día.
+            </p>
+
+            {/* Botones */}
+            <div className="space-y-2">
+              <button
+                onClick={() => setStep("payment")}
+                className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition"
+              >
+                Confirmar y pagar L. {grandTotalHNL.toLocaleString()}
+              </button>
+              <button
+                onClick={() => setStep("form")}
+                className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition"
+              >
+                ← Volver a editar
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Botón PayPal */}
-        {showPayPal && nights > 0 && !rangeHasBlockedDateInside && (
+        {step === "payment" && nights > 0 && !rangeHasBlockedDateInside && (
           <div>
             <div className="bg-gray-50 rounded-xl p-3 mb-3 text-sm">
               <p className="font-semibold text-primary">{guestName}</p>
@@ -557,7 +670,7 @@ export default function BookingWidget({
               onApprove={async (data, actions) => {
                 await actions.order?.capture();
                 setOrderId(data.orderID);
-                setPaymentSuccess(true);
+                setStep("success");
               }}
               onError={(err) => {
                 // Log detallado en consola para debug; alert simple para el usuario.
@@ -569,10 +682,10 @@ export default function BookingWidget({
             />
 
             <button
-              onClick={() => setShowPayPal(false)}
+              onClick={() => setStep("review")}
               className="w-full text-gray-400 text-xs mt-2 hover:text-gray-600 transition"
             >
-              ← Editar información
+              ← Volver al resumen
             </button>
           </div>
         )}
