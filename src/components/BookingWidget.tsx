@@ -619,8 +619,10 @@ export default function BookingWidget({
                     // el webhook lo usa para generar el link wa.me en el email de
                     // confirmación, y futuro WhatsApp push automático (Fase 5).
                     const phoneDigits = guestPhone.replace(/\D/g, "");
-                    return actions.order.create({
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    return (actions.order.create as any)({
                       intent: "CAPTURE",
+                      application_context: { shipping_preference: "NO_SHIPPING" },
                       purchase_units: [
                         {
                           amount: {

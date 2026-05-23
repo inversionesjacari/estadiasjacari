@@ -164,9 +164,9 @@ function buildHtmlBody(data: ReservationEmailData): string {
 
           <!-- Header con marca -->
           <tr>
-            <td style="background:#003F51; padding:28px 32px;">
-              <h1 style="margin:0; font-size:22px; font-weight:600; color:#ffffff; letter-spacing:-0.01em; font-family: 'DM Serif Display', Georgia, serif;">Estadías Jacarí</h1>
-              <p style="margin:6px 0 0 0; font-size:13px; color:rgba(255,255,255,0.7);">Alquileres temporales en Honduras</p>
+            <td style="background:#003F51; padding:24px 32px;">
+              <img src="https://estadiasjacari.com/logo-white.svg" alt="Estadías Jacarí" height="36" style="display:block; height:36px; max-width:200px;">
+              <p style="margin:8px 0 0 0; font-size:13px; color:rgba(255,255,255,0.7);">Alquileres temporales en Honduras</p>
             </td>
           </tr>
 

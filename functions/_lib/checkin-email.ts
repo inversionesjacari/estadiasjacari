@@ -71,6 +71,13 @@ export async function sendCheckinReminderEmail(
 // módulo independiente y sin acoplar el Correo #1 con el Correo #2)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Fecha de hoy en Honduras (YYYY-MM-DD). */
+function todayHn(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Tegucigalpa",
+  }).format(new Date());
+}
+
 const MONTHS_ES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
   "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -111,8 +118,9 @@ function buildPlainTextBody(data: CheckinReminderData): string {
   const lines: string[] = [];
   lines.push(`Hola ${data.guestName},`);
   lines.push("");
+  const isToday = data.checkInISO === todayHn();
   lines.push(
-    `¡Mañana es tu llegada a ${i.propertyName || "tu propiedad"}! Aquí tienes toda la información para tu check-in.`,
+    `¡${isToday ? "Hoy" : "Mañana"} es tu llegada a ${i.propertyName || "tu propiedad"}! Aquí tienes toda la información para tu check-in.`,
   );
   lines.push("");
   lines.push("DETALLES DE TU ESTADÍA");
@@ -131,12 +139,6 @@ function buildPlainTextBody(data: CheckinReminderData): string {
     lines.push(i.accessInstructions);
     lines.push("");
   }
-  if (i.wifiNetwork || i.wifiPassword) {
-    lines.push("WIFI");
-    if (i.wifiNetwork) lines.push(`- Red: ${i.wifiNetwork}`);
-    if (i.wifiPassword) lines.push(`- Contraseña: ${i.wifiPassword}`);
-    lines.push("");
-  }
   if (i.localContactName || i.localContactPhone) {
     lines.push("CONTACTO LOCAL");
     if (i.localContactName) lines.push(`- ${i.localContactName}`);
@@ -145,7 +147,7 @@ function buildPlainTextBody(data: CheckinReminderData): string {
   }
   if (i.extraNotes) {
     lines.push("NOTAS ADICIONALES");
-    lines.push(i.extraNotes);
+    i.extraNotes.split("\n").map(l => l.trim()).filter(Boolean).forEach(l => lines.push(`• ${l}`));
     lines.push("");
   }
 
@@ -177,36 +179,30 @@ function section(title: string, body: string): string {
           </tr>`;
 }
 
+/** Bloque de sección con título + lista de bullets (una línea = un bullet). */
+function sectionBullets(title: string, body: string): string {
+  const items = body.split("\n").map(l => l.trim()).filter(Boolean);
+  const lis = items.map(l => `<li style="font-size:14px; line-height:1.7; color:#374151; margin-bottom:2px;">${escapeHtml(l)}</li>`).join("");
+  return `
+          <tr>
+            <td style="padding:22px 32px 0 32px;">
+              <h3 style="margin:0 0 8px 0; font-size:16px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">${escapeHtml(title)}</h3>
+              <ul style="margin:0; padding-left:18px;">${lis}</ul>
+            </td>
+          </tr>`;
+}
+
 function buildHtmlBody(data: CheckinReminderData): string {
   const i = data.info;
   const name = escapeHtml(data.guestName || "huésped");
   const propertyName = escapeHtml(i.propertyName || "tu propiedad");
   const waLink = buildWhatsAppLink(data);
+  const isToday = data.checkInISO === todayHn();
 
   // Secciones condicionales (solo se renderizan si hay dato).
   let sections = "";
   if (i.arrivalInstructions) sections += section("Cómo llegar", i.arrivalInstructions);
   if (i.accessInstructions) sections += section("Cómo ingresar", i.accessInstructions);
-
-  // Wifi como tarjeta destacada.
-  let wifiBlock = "";
-  if (i.wifiNetwork || i.wifiPassword) {
-    const net = i.wifiNetwork
-      ? `<tr><td style="font-size:13px; color:#6B7280; padding:3px 0; width:110px;">Red</td><td style="font-size:14px; color:#1A1A1A; font-weight:600; padding:3px 0;">${escapeHtml(i.wifiNetwork)}</td></tr>`
-      : "";
-    const pass = i.wifiPassword
-      ? `<tr><td style="font-size:13px; color:#6B7280; padding:3px 0;">Contraseña</td><td style="font-size:14px; color:#1A1A1A; font-weight:600; font-family: 'SF Mono', Monaco, Consolas, monospace; padding:3px 0;">${escapeHtml(i.wifiPassword)}</td></tr>`
-      : "";
-    wifiBlock = `
-          <tr>
-            <td style="padding:22px 32px 0 32px;">
-              <h3 style="margin:0 0 8px 0; font-size:16px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">WiFi</h3>
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F8F7F4; border-radius:10px;">
-                <tr><td style="padding:14px 16px;"><table role="presentation" cellpadding="0" cellspacing="0" border="0">${net}${pass}</table></td></tr>
-              </table>
-            </td>
-          </tr>`;
-  }
 
   let contactBlock = "";
   if (i.localContactName || i.localContactPhone) {
@@ -218,7 +214,7 @@ function buildHtmlBody(data: CheckinReminderData): string {
   }
 
   let notesBlock = "";
-  if (i.extraNotes) notesBlock = section("Notas adicionales", i.extraNotes);
+  if (i.extraNotes) notesBlock = sectionBullets("Notas adicionales", i.extraNotes);
 
   return `<!doctype html>
 <html lang="es">
@@ -235,9 +231,9 @@ function buildHtmlBody(data: CheckinReminderData): string {
 
           <!-- Header con marca -->
           <tr>
-            <td style="background:#003F51; padding:28px 32px;">
-              <h1 style="margin:0; font-size:22px; font-weight:600; color:#ffffff; letter-spacing:-0.01em; font-family: 'DM Serif Display', Georgia, serif;">Estadías Jacarí</h1>
-              <p style="margin:6px 0 0 0; font-size:13px; color:rgba(255,255,255,0.7);">Alquileres temporales en Honduras</p>
+            <td style="background:#003F51; padding:24px 32px;">
+              <img src="https://estadiasjacari.com/logo-white.svg" alt="Estadías Jacarí" height="36" style="display:block; height:36px; max-width:200px;">
+              <p style="margin:8px 0 0 0; font-size:13px; color:rgba(255,255,255,0.7);">Alquileres temporales en Honduras</p>
             </td>
           </tr>
 
@@ -245,11 +241,11 @@ function buildHtmlBody(data: CheckinReminderData): string {
           <tr>
             <td style="padding:32px 32px 0 32px;">
               <div style="display:inline-block; background:#FEF3C7; color:#92400E; padding:6px 14px; border-radius:9999px; font-size:13px; font-weight:600;">
-                🔑 Tu llegada es mañana
+                🔑 Tu llegada es ${isToday ? "hoy" : "mañana"}
               </div>
               <h2 style="margin:18px 0 6px 0; font-size:22px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">¡Todo listo, ${name}!</h2>
               <p style="margin:0; font-size:15px; line-height:1.6; color:#374151;">
-                Mañana es tu check-in en <strong>${propertyName}</strong>. Aquí tienes toda la información para tu llegada.
+                ${isToday ? "Hoy" : "Mañana"} es tu check-in en <strong>${propertyName}</strong>. Aquí tienes toda la información para tu llegada.
               </p>
             </td>
           </tr>
@@ -275,7 +271,7 @@ function buildHtmlBody(data: CheckinReminderData): string {
               </table>
             </td>
           </tr>
-${sections}${wifiBlock}${contactBlock}${notesBlock}
+${sections}${contactBlock}${notesBlock}
 
           <!-- CTA WhatsApp -->
           <tr>
