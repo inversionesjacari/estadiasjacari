@@ -96,7 +96,6 @@ export default function BookingWidget({
   const [availabilitySyncStatus, setAvailabilitySyncStatus] = useState<
     "full" | "partial" | "unavailable" | null
   >(null);
-  const [lastSync, setLastSync] = useState<string | null>(null);
 
   // ── ESTADO DE TIPO DE CAMBIO USD/HNL ────────────────────────────────────
   // Si la API falla, queda en null y caemos al pricePerNightUSD hardcoded.
@@ -108,10 +107,11 @@ export default function BookingWidget({
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
-  // Máquina de pasos: form → review → payment → success
-  const [step, setStep] = useState<"form" | "review" | "payment" | "success">(
-    "form",
-  );
+  // Máquina de pasos: form → review → success
+  // En "review", `paypalRevealed` controla si se muestran los botones
+  // PayPal abajo (sin perder el resumen de arriba).
+  const [step, setStep] = useState<"form" | "review" | "success">("form");
+  const [paypalRevealed, setPaypalRevealed] = useState(false);
   const [orderId, setOrderId] = useState("");
 
   // ── EFECTO: cargar disponibilidad desde el endpoint ─────────────────────
@@ -136,7 +136,6 @@ export default function BookingWidget({
       .then((data) => {
         if (cancelled) return;
         setBlockedDates(data.blockedDates.map(parseIsoDate));
-        setLastSync(data.lastSync);
         setAvailabilitySyncStatus(data.airbnbSyncStatus ?? "full");
         setLoadingAvailability(false);
       })
@@ -367,6 +366,7 @@ export default function BookingWidget({
                 onSelect={(r) => {
                   setRange(r);
                   setStep("form");
+                  setPaypalRevealed(false);
                 }}
                 disabled={[
                   { before: minDate },
@@ -403,17 +403,6 @@ export default function BookingWidget({
             </div>
           )}
 
-          {lastSync && !loadingAvailability && (
-            <p className="text-xs text-gray-400 mt-2 text-center">
-              Disponibilidad actualizada{" "}
-              {new Date(lastSync).toLocaleString("es-HN", {
-                hour: "2-digit",
-                minute: "2-digit",
-                day: "2-digit",
-                month: "short",
-              })}
-            </p>
-          )}
         </div>
 
         {/* Aviso si el rango pisa fecha bloqueada */}
@@ -585,108 +574,93 @@ export default function BookingWidget({
               determinará tu banco según su tipo de cambio del día.
             </p>
 
-            {/* Botones */}
-            <div className="space-y-2">
-              <button
-                onClick={() => setStep("payment")}
-                className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition"
-              >
-                Confirmar y pagar L. {grandTotalHNL.toLocaleString()}
-              </button>
-              <button
-                onClick={() => setStep("form")}
-                className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition"
-              >
-                ← Volver a editar
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Botón PayPal */}
-        {step === "payment" && nights > 0 && !rangeHasBlockedDateInside && (
-          <div>
-            <div className="bg-gray-50 rounded-xl p-3 mb-3 text-sm">
-              <p className="font-semibold text-primary">{guestName}</p>
-              <p className="text-gray-500 text-xs">
-                {guestEmail} · {guestPhone}
-              </p>
-              <p className="text-gray-500 text-xs mt-1">
-                {range?.from && format(range.from, "dd MMM yyyy", { locale: es })}{" "}
-                →{" "}
-                {range?.to && format(range.to, "dd MMM yyyy", { locale: es })} ·{" "}
-                {nights} {nights === 1 ? "noche" : "noches"}
-              </p>
-            </div>
-
-            <PayPalButtons
-              style={{
-                layout: "vertical",
-                color: "gold",
-                shape: "rect",
-                label: "pay",
-              }}
-              createOrder={(_data, actions) => {
-                const checkInIso = format(range!.from!, "yyyy-MM-dd");
-                const checkOutIso = format(range!.to!, "yyyy-MM-dd");
-                // Garantizar consistencia matemática: item_total + handling == total.
-                // PayPal rechaza el order si el breakdown no suma exactamente al
-                // value total con 2 decimales (causa de "Hubo un error con el pago").
-                const itemTotalStr = nightsTotalUSD.toFixed(2);
-                const handlingStr = effectiveCleaningFeeUSD.toFixed(2);
-                const grandTotalStr = (
-                  parseFloat(itemTotalStr) + parseFloat(handlingStr)
-                ).toFixed(2);
-                // Phone normalizado (solo dígitos) para incluir en custom_id —
-                // el webhook lo usa para generar el link wa.me en el email de
-                // confirmación, y futuro WhatsApp push automático (Fase 5).
-                const phoneDigits = guestPhone.replace(/\D/g, "");
-                return actions.order.create({
-                  intent: "CAPTURE",
-                  purchase_units: [
-                    {
-                      amount: {
-                        currency_code: "USD",
-                        value: grandTotalStr,
-                        breakdown: {
-                          item_total: {
+            {/* Botones / PayPal */}
+            {!paypalRevealed ? (
+              <div className="space-y-2">
+                <button
+                  onClick={() => setPaypalRevealed(true)}
+                  className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition"
+                >
+                  Confirmar y pagar L. {grandTotalHNL.toLocaleString()}
+                </button>
+                <button
+                  onClick={() => setStep("form")}
+                  className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition"
+                >
+                  ← Volver a editar
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <PayPalButtons
+                  style={{
+                    layout: "vertical",
+                    color: "gold",
+                    shape: "rect",
+                    label: "pay",
+                  }}
+                  createOrder={(_data, actions) => {
+                    const checkInIso = format(range!.from!, "yyyy-MM-dd");
+                    const checkOutIso = format(range!.to!, "yyyy-MM-dd");
+                    // Garantizar consistencia matemática: item_total + handling == total.
+                    // PayPal rechaza el order si el breakdown no suma exactamente al
+                    // value total con 2 decimales (causa de "Hubo un error con el pago").
+                    const itemTotalStr = nightsTotalUSD.toFixed(2);
+                    const handlingStr = effectiveCleaningFeeUSD.toFixed(2);
+                    const grandTotalStr = (
+                      parseFloat(itemTotalStr) + parseFloat(handlingStr)
+                    ).toFixed(2);
+                    // Phone normalizado (solo dígitos) para incluir en custom_id —
+                    // el webhook lo usa para generar el link wa.me en el email de
+                    // confirmación, y futuro WhatsApp push automático (Fase 5).
+                    const phoneDigits = guestPhone.replace(/\D/g, "");
+                    return actions.order.create({
+                      intent: "CAPTURE",
+                      purchase_units: [
+                        {
+                          amount: {
                             currency_code: "USD",
-                            value: itemTotalStr,
+                            value: grandTotalStr,
+                            breakdown: {
+                              item_total: {
+                                currency_code: "USD",
+                                value: itemTotalStr,
+                              },
+                              handling: {
+                                currency_code: "USD",
+                                value: handlingStr,
+                              },
+                            },
                           },
-                          handling: {
-                            currency_code: "USD",
-                            value: handlingStr,
-                          },
+                          description: `Reserva ${propertyName} — ${nights} noches (${checkInIso} al ${checkOutIso})`,
+                          // Formato: slug|checkIn|checkOut|email|phone (5 partes).
+                          // El webhook (functions/api/paypal-webhook.ts) parsea este string.
+                          custom_id: `${propertySlug}|${checkInIso}|${checkOutIso}|${guestEmail}|${phoneDigits}`,
                         },
-                      },
-                      description: `Reserva ${propertyName} — ${nights} noches (${checkInIso} al ${checkOutIso})`,
-                      // Formato: slug|checkIn|checkOut|email|phone (5 partes).
-                      // El webhook (functions/api/paypal-webhook.ts) parsea este string.
-                      custom_id: `${propertySlug}|${checkInIso}|${checkOutIso}|${guestEmail}|${phoneDigits}`,
-                    },
-                  ],
-                });
-              }}
-              onApprove={async (data, actions) => {
-                await actions.order?.capture();
-                setOrderId(data.orderID);
-                setStep("success");
-              }}
-              onError={(err) => {
-                // Log detallado en consola para debug; alert simple para el usuario.
-                console.error("PayPal onError:", err);
-                alert(
-                  "Hubo un error con el pago. Por favor intenta de nuevo o contáctanos por WhatsApp al +504 8839-0145.",
-                );
-              }}
-            />
-
-            <button
-              onClick={() => setStep("review")}
-              className="w-full text-gray-400 text-xs mt-2 hover:text-gray-600 transition"
-            >
-              ← Volver al resumen
-            </button>
+                      ],
+                    });
+                  }}
+                  onApprove={async (data, actions) => {
+                    await actions.order?.capture();
+                    setOrderId(data.orderID);
+                    setStep("success");
+                  }}
+                  onError={(err) => {
+                    // Log detallado en consola para debug; alert simple para el usuario.
+                    console.error("PayPal onError:", err);
+                    alert(
+                      "Hubo un error con el pago. Por favor intenta de nuevo o contáctanos por WhatsApp al +504 8839-0145.",
+                    );
+                  }}
+                />
+                <button
+                  onClick={() => setPaypalRevealed(false)}
+                  className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition"
+                >
+                  ← Volver a editar
+                </button>
+              </div>
+            )}
           </div>
         )}
 

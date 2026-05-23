@@ -87,7 +87,7 @@ export const properties: Property[] = [
     slug: "casa-brisa",
     name: "Casa Brisa",
     type: "Casa residencial",
-    location: "Honduras Shores Plantation, Tela, Atlántida",
+    location: "Honduras Shores Plantation, San Juan, Tela, Atlántida",
     city: "Tela",
     capacity: 6,
     bedrooms: [
@@ -130,7 +130,7 @@ export const properties: Property[] = [
       "/images/casa-brisa/06.png",
     ],
     mapEmbed:
-      "https://www.google.com/maps?q=Honduras+Shores+Plantation+Tela&output=embed",
+      "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
     gemelas: true,
     pricePerNightUSD: 2,
     cleaningFeeUSD: 2,
@@ -145,7 +145,7 @@ export const properties: Property[] = [
     slug: "casa-marea",
     name: "Casa Marea",
     type: "Casa residencial",
-    location: "Honduras Shores Plantation, Tela, Atlántida",
+    location: "Honduras Shores Plantation, San Juan, Tela, Atlántida",
     city: "Tela",
     capacity: 6,
     bedrooms: [
@@ -185,7 +185,7 @@ export const properties: Property[] = [
       "/images/casa-marea/08.jpg",
     ],
     mapEmbed:
-      "https://www.google.com/maps?q=Honduras+Shores+Plantation+Tela&output=embed",
+      "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
     gemelas: true,
     pricePerNightUSD: 90,
     cleaningFeeUSD: 14,
