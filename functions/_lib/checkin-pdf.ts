@@ -4,8 +4,16 @@
 // `estadias-jacari-checkin-pdfs`, bindeado como `CHECKIN_PDFS` en Pages
 // (Settings → Bindings → R2 bucket).
 //
-// Convención de filename: `<slug>.pdf` exacto (los slugs viven en
-// `src/data/properties.ts`). Ej: `casa-brisa.pdf`.
+// Convención de filename: el código acepta DOS variantes para evitar fricción
+// si el dueño guarda los archivos con guion bajo (estilo Windows) o guion medio
+// (estilo URL). Se intenta primero la versión canónica con guion medio (igual al
+// slug) y si no existe se cae a la versión con guion bajo:
+//   1. `<slug>.pdf`              ej. `casa-brisa.pdf`        ← canónico
+//   2. `<slug.replace("-", "_")>.pdf`  ej. `casa_brisa.pdf`  ← fallback
+//
+// (El cliente sigue recibiendo siempre el adjunto con el nombre canónico
+// `instrucciones-checkin-<slug>.pdf` con guion medio, independiente de cómo
+// esté guardado en R2.)
 //
 // El bucket es PRIVADO — Cloudflare NO lo sirve por HTTP. Solo las Pages
 // Functions con el binding pueden leer los objetos. Los códigos de puerta
@@ -24,11 +32,14 @@ export interface PdfResult {
   /** Nombre sugerido para el adjunto al cliente (ej. "instrucciones-checkin-casa-brisa.pdf"). */
   filename?: string;
   sizeBytes?: number;
+  /** Key real usada en R2 (útil para debug — puede ser hyphen o underscore). */
+  r2Key?: string;
   error?: string;
 }
 
 /**
  * Lee el PDF de check-in para un slug. Nunca lanza excepción.
+ * Prueba hasta 2 keys: `<slug>.pdf` y `<slug_underscored>.pdf`.
  */
 export async function getCheckinPdf(
   slug: string,
@@ -37,21 +48,31 @@ export async function getCheckinPdf(
   if (!env.CHECKIN_PDFS) {
     return { found: false, error: "Binding CHECKIN_PDFS no configurado" };
   }
-  const key = `${slug}.pdf`;
+
+  const canonicalKey = `${slug}.pdf`;
+  const underscoredKey = `${slug.replace(/-/g, "_")}.pdf`;
+  // Dedupe en caso de que el slug ya no tenga guiones (igual key dos veces).
+  const keysToTry = canonicalKey === underscoredKey
+    ? [canonicalKey]
+    : [canonicalKey, underscoredKey];
+
   try {
-    const obj = await env.CHECKIN_PDFS.get(key);
-    if (!obj) {
-      return {
-        found: false,
-        error: `No hay PDF en R2 para slug "${slug}" (key=${key})`,
-      };
+    for (const key of keysToTry) {
+      const obj = await env.CHECKIN_PDFS.get(key);
+      if (obj) {
+        const buf = await obj.arrayBuffer();
+        return {
+          found: true,
+          bytes: new Uint8Array(buf),
+          filename: `instrucciones-checkin-${slug}.pdf`,
+          sizeBytes: buf.byteLength,
+          r2Key: key,
+        };
+      }
     }
-    const buf = await obj.arrayBuffer();
     return {
-      found: true,
-      bytes: new Uint8Array(buf),
-      filename: `instrucciones-checkin-${slug}.pdf`,
-      sizeBytes: buf.byteLength,
+      found: false,
+      error: `No hay PDF en R2 para slug "${slug}" (intentadas: ${keysToTry.join(", ")})`,
     };
   } catch (err) {
     return { found: false, error: `Error leyendo R2: ${(err as Error).message}` };
