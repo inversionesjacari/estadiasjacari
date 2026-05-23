@@ -16,11 +16,22 @@ export interface ResendEnv {
   EMAIL_REPLY_TO?: string;
 }
 
+export interface ResendAttachment {
+  /** Nombre con el que el cliente verá el adjunto (incluir extensión). */
+  filename: string;
+  /** Contenido del archivo codificado en base64. */
+  content: string;
+  /** Opcional: Resend infiere `application/pdf` etc. por la extensión del filename. */
+  contentType?: string;
+}
+
 export interface SendEmailParams {
   to: string;
   subject: string;
   html: string;
   text: string;
+  /** Adjuntos opcionales. Resend acepta hasta 40 MB total por correo. */
+  attachments?: ResendAttachment[];
 }
 
 export interface SendEmailResult {
@@ -61,6 +72,9 @@ export async function sendViaResend(
         subject: params.subject,
         html: params.html,
         text: params.text,
+        ...(params.attachments && params.attachments.length > 0
+          ? { attachments: params.attachments }
+          : {}),
       }),
     });
 

@@ -2,6 +2,11 @@
 //
 // @ts-ignore — import relativo a Pages Function helper compartido
 import { sendReservationConfirmationEmail } from "../_lib/email";
+// Fase 3.7 — edge case mismo-día
+import { getCheckinInfo } from "../_lib/checkin-info";
+import { getCheckinPdf } from "../_lib/checkin-pdf";
+import { sendCheckinReminderEmail } from "../_lib/checkin-email";
+import { todayHn } from "../_lib/dates";
 
 //
 // POST /api/paypal-webhook
@@ -36,6 +41,10 @@ interface Env {
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string; // ej. 'Estadías Jacarí <hola@estadiasjacari.com>'
   EMAIL_REPLY_TO?: string;
+  // Fase 3.7 — edge case mismo-día (Correo #2 inline desde el webhook)
+  SHEET_WEBHOOK_URL?: string; // Apps Script Web App (opcional — cae a cache D1)
+  SHEET_WEBHOOK_SECRET?: string;
+  CHECKIN_PDFS?: R2Bucket; // bucket privado con PDFs `<slug>.pdf`
 }
 
 /**
@@ -379,6 +388,118 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           }
         }
 
+        // ── Edge case mismo-día (Fase 3.7) ──────────────────────────────────
+        // Si check_in es HOY (hora Honduras), enviar Correo #2 inline con PDF.
+        // El cron diario corre a las 6 PM HN buscando MAÑANA — sin esto, las
+        // reservas hechas el mismo día (permitidas hasta las 18:00 HN por la
+        // UI) nunca recibirían las instrucciones de check-in.
+        let checkinMsg = "";
+        if (inserted > 0 && recipientEmail && checkIn === todayHn()) {
+          try {
+            // Idempotencia: solo enviar si aún no se mandó (el cron de las
+            // 6 PM tampoco debe reenviar tras nuestro envío inline).
+            const existing2 = await env.DB.prepare(
+              `SELECT checkin_reminder_sent_at FROM reservations WHERE paypal_order_id = ?`,
+            )
+              .bind(orderId)
+              .first<{ checkin_reminder_sent_at: string | null }>();
+
+            if (existing2 && !existing2.checkin_reminder_sent_at) {
+              const infoResult = await getCheckinInfo(propertySlug, {
+                DB: env.DB,
+                SHEET_WEBHOOK_URL: env.SHEET_WEBHOOK_URL,
+                SHEET_WEBHOOK_SECRET: env.SHEET_WEBHOOK_SECRET,
+              });
+
+              if (!infoResult.info) {
+                // Sin info de check-in en Sheet ni en cache D1 → no podemos
+                // mandar Correo #2 útil. Marcar error y dejar que el dueño
+                // gestione manual (avisándole con un correo separado).
+                const reason = `Mismo-día sin info de check-in para "${propertySlug}": ${infoResult.error?.slice(0, 600) ?? "desconocido"}`;
+                await env.DB.prepare(
+                  `UPDATE reservations
+                      SET checkin_reminder_error = ?,
+                          updated_at = datetime('now')
+                    WHERE paypal_order_id = ?`,
+                )
+                  .bind(reason, orderId)
+                  .run();
+                checkinMsg = ` · Correo #2 NO enviado (mismo-día sin info de check-in)`;
+              } else {
+                const pdfResult = await getCheckinPdf(propertySlug, env);
+                const propertyName =
+                  infoResult.info.propertyName ||
+                  PROPERTY_NAMES[propertySlug] ||
+                  propertySlug;
+
+                const reminderResult = await sendCheckinReminderEmail(
+                  {
+                    guestName: guestName || "huésped",
+                    guestEmail: recipientEmail,
+                    guestPhone,
+                    checkInISO: checkIn,
+                    checkOutISO: checkOut,
+                    info: { ...infoResult.info, propertyName },
+                    pdf:
+                      pdfResult.found && pdfResult.bytes
+                        ? { bytes: pdfResult.bytes, filename: pdfResult.filename! }
+                        : undefined,
+                  },
+                  {
+                    RESEND_API_KEY: env.RESEND_API_KEY ?? "",
+                    EMAIL_FROM: env.EMAIL_FROM ?? "",
+                    EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+                  },
+                );
+
+                if (reminderResult.ok) {
+                  await env.DB.prepare(
+                    `UPDATE reservations
+                        SET checkin_reminder_sent_at = datetime('now'),
+                            checkin_reminder_error = NULL,
+                            updated_at = datetime('now')
+                      WHERE paypal_order_id = ?`,
+                  )
+                    .bind(orderId)
+                    .run();
+                  checkinMsg = ` · Correo #2 enviado (mismo-día, Resend ID: ${reminderResult.resendId ?? "n/a"}${pdfResult.found ? ", PDF adjunto" : ", SIN PDF"})`;
+                } else {
+                  await env.DB.prepare(
+                    `UPDATE reservations
+                        SET checkin_reminder_error = ?,
+                            updated_at = datetime('now')
+                      WHERE paypal_order_id = ?`,
+                  )
+                    .bind(
+                      reminderResult.error?.slice(0, 1000) ?? "unknown",
+                      orderId,
+                    )
+                    .run();
+                  checkinMsg = ` · Correo #2 FALLÓ (mismo-día): ${reminderResult.error?.slice(0, 200) ?? "unknown"}`;
+                }
+              }
+            } else {
+              checkinMsg = ` · Correo #2 mismo-día skip (ya notificado)`;
+            }
+          } catch (reminderErr) {
+            const errMsg = (reminderErr as Error).message;
+            console.error("Error enviando Correo #2 mismo-día:", errMsg);
+            try {
+              await env.DB.prepare(
+                `UPDATE reservations
+                    SET checkin_reminder_error = ?,
+                        updated_at = datetime('now')
+                  WHERE paypal_order_id = ?`,
+              )
+                .bind(`Excepción mismo-día: ${errMsg.slice(0, 950)}`, orderId)
+                .run();
+            } catch {
+              // ignore — best-effort log
+            }
+            checkinMsg = ` · Correo #2 EXCEPCIÓN (mismo-día): ${errMsg.slice(0, 200)}`;
+          }
+        }
+
         return logAndReturn(200, {
           paypalEventId: webhookEvent.id,
           eventType,
@@ -389,7 +510,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
             (inserted > 0
               ? `Reserva insertada: ${propertySlug} ${checkIn}→${checkOut}`
               : `Reserva ya existía (webhook duplicado): ${orderId}`) +
-            emailMessage,
+            emailMessage +
+            checkinMsg,
         });
       }
 

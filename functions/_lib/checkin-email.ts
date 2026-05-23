@@ -11,6 +11,7 @@
 //
 
 import { sendViaResend, type ResendEnv, type SendEmailResult } from "./resend";
+import { uint8ToBase64 } from "./checkin-pdf";
 import type { CheckinInfo } from "./checkin-info";
 
 const WHATSAPP_NUMBER = "50488390145";
@@ -23,6 +24,11 @@ export interface CheckinReminderData {
   checkInISO: string; // YYYY-MM-DD
   checkOutISO: string; // YYYY-MM-DD
   info: CheckinInfo;
+  /** PDF de bienvenida opcional (bytes leídos de R2 vía `getCheckinPdf`). */
+  pdf?: {
+    bytes: Uint8Array;
+    filename: string;
+  };
 }
 
 /**
@@ -42,7 +48,22 @@ export async function sendCheckinReminderEmail(
   const html = buildHtmlBody(data);
   const text = buildPlainTextBody(data);
 
-  return sendViaResend({ to: data.guestEmail, subject, html, text }, env);
+  // Si llega `pdf`, lo adjuntamos en base64. Resend cobra el adjunto contra
+  // el límite de 40 MB total del correo. Si no hay PDF, el correo igual sale
+  // (graceful degradation — el cuerpo tiene toda la info).
+  const attachments = data.pdf
+    ? [
+        {
+          filename: data.pdf.filename,
+          content: uint8ToBase64(data.pdf.bytes),
+        },
+      ]
+    : undefined;
+
+  return sendViaResend(
+    { to: data.guestEmail, subject, html, text, attachments },
+    env,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

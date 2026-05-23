@@ -26,6 +26,8 @@
 import { getCheckinInfo } from "../../_lib/checkin-info";
 import { sendCheckinReminderEmail } from "../../_lib/checkin-email";
 import { sendViaResend } from "../../_lib/resend";
+import { getCheckinPdf } from "../../_lib/checkin-pdf";
+import { hnDatePlusDays } from "../../_lib/dates";
 
 interface Env {
   DB: D1Database;
@@ -35,6 +37,8 @@ interface Env {
   EMAIL_REPLY_TO?: string;
   SHEET_WEBHOOK_URL?: string;
   SHEET_WEBHOOK_SECRET?: string;
+  /** Bucket R2 con PDFs de check-in privados (filename: `<slug>.pdf`). */
+  CHECKIN_PDFS?: R2Bucket;
 }
 
 interface ReservationRow {
@@ -45,24 +49,6 @@ interface ReservationRow {
   guest_name: string | null;
   guest_email: string | null;
   guest_phone: string | null;
-}
-
-/** Fecha actual en Honduras (YYYY-MM-DD) desplazada `days` días. */
-function hnDatePlusDays(days: number): string {
-  // en-CA produce formato YYYY-MM-DD.
-  const todayHn = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Tegucigalpa",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-  const [y, m, d] = todayHn.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  const yy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getUTCDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -181,13 +167,31 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       continue;
     }
 
+    // PDF de bienvenida desde R2 (graceful degradation: si falta, mandamos
+    // el correo sin adjunto + avisamos al dueño que suba el PDF de esa propiedad).
+    const pdfResult = await getCheckinPdf(r.property_slug, env);
+    if (!pdfResult.found && !dryRun) {
+      // No bloquea el correo — solo aviso al dueño.
+      await notifyOwner(
+        env,
+        r,
+        `PDF de check-in faltante en R2 para "${r.property_slug}": ${pdfResult.error}. El correo se envió igual con la info en el cuerpo, pero conviene subir el PDF.`,
+      );
+    }
+
     if (dryRun) {
-      details.push({ id: r.id, slug: r.property_slug, guestEmail: r.guest_email, status: "sent", infoSource: source });
+      details.push({
+        id: r.id,
+        slug: r.property_slug,
+        guestEmail: r.guest_email,
+        status: "sent",
+        infoSource: source,
+      });
       sent++;
       continue;
     }
 
-    // Enviar Correo #2
+    // Enviar Correo #2 (con PDF si está disponible)
     const result = await sendCheckinReminderEmail(
       {
         guestName: r.guest_name || "huésped",
@@ -196,6 +200,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         checkInISO: r.check_in,
         checkOutISO: r.check_out,
         info,
+        pdf:
+          pdfResult.found && pdfResult.bytes
+            ? { bytes: pdfResult.bytes, filename: pdfResult.filename! }
+            : undefined,
       },
       {
         RESEND_API_KEY: env.RESEND_API_KEY ?? "",
