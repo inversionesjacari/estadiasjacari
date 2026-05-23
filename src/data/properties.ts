@@ -332,10 +332,10 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Lomas+de+la+Florida+Tegucigalpa&output=embed",
-    pricePerNightUSD: 26,
-    cleaningFeeUSD: 14,
-    pricePerNightHNL: 650,
-    cleaningFeeHNL: 350,
+    pricePerNightUSD: 2,
+    cleaningFeeUSD: 2,
+    pricePerNightHNL: 50,
+    cleaningFeeHNL: 50,
   },
 ];
 
