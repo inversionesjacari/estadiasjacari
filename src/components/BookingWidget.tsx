@@ -250,13 +250,18 @@ export default function BookingWidget({
         </p>
         <div className="bg-green-50 rounded-xl p-4 text-sm text-left space-y-1 mb-4">
           <p>
+            <span className="font-semibold">Huésped:</span> {guestName}
+          </p>
+          <p>
             <span className="font-semibold">Propiedad:</span> {propertyName}
           </p>
           <p>
-            <span className="font-semibold">Check-in:</span> {checkInStr}
+            <span className="font-semibold">Check-in:</span> {checkInStr}{" "}
+            <span className="text-gray-500">(3:00 PM)</span>
           </p>
           <p>
-            <span className="font-semibold">Check-out:</span> {checkOutStr}
+            <span className="font-semibold">Check-out:</span> {checkOutStr}{" "}
+            <span className="text-gray-500">(11:00 AM)</span>
           </p>
           <p>
             <span className="font-semibold">Noches:</span> {nights}
@@ -282,7 +287,7 @@ export default function BookingWidget({
           Confirmar llegada por WhatsApp →
         </a>
         <p className="text-xs text-gray-400 mt-3">
-          Nos pondremos en contacto contigo en menos de 24 horas.
+          Un día antes de tu check-in nos pondremos en contacto contigo.
         </p>
       </div>
     );

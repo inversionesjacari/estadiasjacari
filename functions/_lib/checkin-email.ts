@@ -117,8 +117,8 @@ function buildPlainTextBody(data: CheckinReminderData): string {
   lines.push("");
   lines.push("DETALLES DE TU ESTADÍA");
   if (i.propertyName) lines.push(`- Propiedad: ${i.propertyName}`);
-  lines.push(`- Check-in: ${formatDateEs(data.checkInISO)}`);
-  lines.push(`- Check-out: ${formatDateEs(data.checkOutISO)}`);
+  lines.push(`- Check-in: ${formatDateEs(data.checkInISO)} (entrada: 3:00 PM)`);
+  lines.push(`- Check-out: ${formatDateEs(data.checkOutISO)} (salida: 11:00 AM)`);
   lines.push("");
 
   if (i.arrivalInstructions) {
@@ -249,8 +249,30 @@ function buildHtmlBody(data: CheckinReminderData): string {
               </div>
               <h2 style="margin:18px 0 6px 0; font-size:22px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">¡Todo listo, ${name}!</h2>
               <p style="margin:0; font-size:15px; line-height:1.6; color:#374151;">
-                Mañana es tu check-in en <strong>${propertyName}</strong> (${escapeHtml(formatDateEs(data.checkInISO))}). Aquí tienes toda la información para tu llegada.
+                Mañana es tu check-in en <strong>${propertyName}</strong>. Aquí tienes toda la información para tu llegada.
               </p>
+            </td>
+          </tr>
+
+          <!-- Detalles fechas -->
+          <tr>
+            <td style="padding:20px 32px 0 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F8F7F4; border-radius:10px;">
+                <tr>
+                  <td style="padding:14px 16px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="font-size:13px; color:#6B7280; padding:3px 0; width:110px;">Check-in</td>
+                        <td style="font-size:14px; color:#1A1A1A; font-weight:600; padding:3px 0;">${escapeHtml(formatDateEs(data.checkInISO))} <span style="color:#6B7280; font-size:12px; font-weight:400;">(3:00 PM)</span></td>
+                      </tr>
+                      <tr>
+                        <td style="font-size:13px; color:#6B7280; padding:3px 0;">Check-out</td>
+                        <td style="font-size:14px; color:#1A1A1A; font-weight:600; padding:3px 0;">${escapeHtml(formatDateEs(data.checkOutISO))} <span style="color:#6B7280; font-size:12px; font-weight:400;">(11:00 AM)</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
 ${sections}${wifiBlock}${contactBlock}${notesBlock}

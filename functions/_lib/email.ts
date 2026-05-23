@@ -111,8 +111,8 @@ function buildPlainTextBody(data: ReservationEmailData): string {
 
 DETALLES DE TU RESERVA
 - Propiedad: ${data.propertyName}
-- Check-in: ${formatDateEs(data.checkInISO)}
-- Check-out: ${formatDateEs(data.checkOutISO)}
+- Check-in: ${formatDateEs(data.checkInISO)} (entrada: 3:00 PM)
+- Check-out: ${formatDateEs(data.checkOutISO)} (salida: 11:00 AM)
 - Noches: ${data.nights}
 - Monto pagado: USD $${data.amountUsd.toFixed(2)}
 - Número de orden PayPal: ${data.paypalOrderId}
@@ -196,11 +196,11 @@ function buildHtmlBody(data: ReservationEmailData): string {
                       </tr>
                       <tr>
                         <td style="font-size:13px; color:#6B7280; padding:4px 0;">Check-in</td>
-                        <td style="font-size:14px; color:#1A1A1A; padding:4px 0;">${g.checkIn}</td>
+                        <td style="font-size:14px; color:#1A1A1A; padding:4px 0;">${g.checkIn} <span style="color:#6B7280; font-size:12px;">(3:00 PM)</span></td>
                       </tr>
                       <tr>
                         <td style="font-size:13px; color:#6B7280; padding:4px 0;">Check-out</td>
-                        <td style="font-size:14px; color:#1A1A1A; padding:4px 0;">${g.checkOut}</td>
+                        <td style="font-size:14px; color:#1A1A1A; padding:4px 0;">${g.checkOut} <span style="color:#6B7280; font-size:12px;">(11:00 AM)</span></td>
                       </tr>
                       <tr>
                         <td style="font-size:13px; color:#6B7280; padding:4px 0;">Noches</td>
