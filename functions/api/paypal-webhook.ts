@@ -8,6 +8,9 @@ import { getCheckinPdf } from "../_lib/checkin-pdf";
 import { sendCheckinReminderEmail } from "../_lib/checkin-email";
 import { todayHn } from "../_lib/dates";
 import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
+// Auditoría Sesión 2 — B1 doble booking
+import { refundPayPalCapture } from "../_lib/paypal-refund";
+import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
 
 //
 // POST /api/paypal-webhook
@@ -289,6 +292,129 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         const guestName = `${givenName} ${surname}`.trim();
         const payerEmail = resource.payer?.email_address ?? guestEmail;
         const recipientEmail = guestEmail || payerEmail || null;
+
+        // ── Detección de doble booking (Auditoría Sesión 2 — B1) ────────────
+        // Antes de aceptar el cobro, verificar que el rango no esté ya tomado
+        // por otra reserva (status pending/confirmed) que NO sea ésta misma
+        // (importante para webhook reintentado: orderId igual = mismo cobro).
+        //
+        // Si detecta overlap: refund automático vía PayPal API + INSERT como
+        // 'cancelled' + correo de disculpa al huésped. El huésped recibe su
+        // dinero de vuelta en 3-5 días hábiles, no llega un huésped duplicado
+        // a la propiedad.
+        //
+        // Fail-open: si la query de overlap falla por bug nuestro, dejamos
+        // pasar el cobro normalmente. Mejor un doble booking eventual (raro)
+        // que rechazar pagos válidos por error de infraestructura.
+        try {
+          const overlap = await env.DB.prepare(
+            `SELECT paypal_order_id, guest_email, guest_name, check_in, check_out
+               FROM reservations
+              WHERE property_slug = ?
+                AND status IN ('pending', 'confirmed')
+                AND paypal_order_id != ?
+                AND check_in < ?
+                AND check_out > ?
+              LIMIT 1`,
+          )
+            .bind(propertySlug, orderId, checkOut, checkIn)
+            .first<{
+              paypal_order_id: string;
+              guest_email: string | null;
+              guest_name: string | null;
+              check_in: string;
+              check_out: string;
+            }>();
+
+          if (overlap) {
+            // 1. Refund automático
+            const refundResult = await refundPayPalCapture(
+              {
+                PAYPAL_CLIENT_ID: env.PAYPAL_CLIENT_ID,
+                PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
+                PAYPAL_API_BASE: env.PAYPAL_API_BASE,
+              },
+              {
+                captureId,
+                amountUsd: amountUsd > 0 ? amountUsd : undefined,
+                noteToPayer:
+                  "Refund automático: las fechas fueron tomadas por otro huésped simultáneamente.",
+                accessToken,
+              },
+            );
+
+            // 2. INSERT como cancelled (audit trail). UNIQUE en paypal_order_id
+            // garantiza que si el webhook se reintenta, no duplicamos.
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO reservations
+                 (property_slug, check_in, check_out, guest_name, guest_email,
+                  guest_phone, guest_phone_normalized, paypal_order_id,
+                  amount_usd, status, raw_payload, notification_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'cancelled', ?, ?)`,
+            )
+              .bind(
+                propertySlug,
+                checkIn,
+                checkOut,
+                guestName || null,
+                recipientEmail,
+                guestPhone || null,
+                guestPhone || null,
+                orderId,
+                amountUsd || null,
+                rawBody,
+                `OVERLAP con orden ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}). Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"}, status ${refundResult.status ?? "n/a"})` : `FALLÓ — ${refundResult.error?.slice(0, 400) ?? "error desconocido"}`}`,
+              )
+              .run();
+
+            // 3. Correo de disculpa al huésped
+            let apologyMsg = "";
+            if (recipientEmail) {
+              try {
+                const apologyResult = await sendOverlapApologyEmail(
+                  {
+                    guestName: guestName || "huésped",
+                    guestEmail: recipientEmail,
+                    propertyName: PROPERTY_NAMES[propertySlug] || propertySlug,
+                    checkInISO: checkIn,
+                    checkOutISO: checkOut,
+                    amountUsd,
+                    refundId: refundResult.refundId,
+                    refundStatus: refundResult.status,
+                  },
+                  {
+                    RESEND_API_KEY: env.RESEND_API_KEY ?? "",
+                    EMAIL_FROM: env.EMAIL_FROM ?? "",
+                    EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+                  },
+                );
+                apologyMsg = apologyResult.ok
+                  ? ` · Correo disculpa enviado (${apologyResult.resendId ?? "n/a"})`
+                  : ` · Correo disculpa FALLÓ: ${apologyResult.error?.slice(0, 150)}`;
+              } catch (apologyErr) {
+                apologyMsg = ` · Correo disculpa EXCEPCIÓN: ${(apologyErr as Error).message.slice(0, 150)}`;
+              }
+            }
+
+            return logAndReturn(200, {
+              paypalEventId: webhookEvent.id,
+              eventType,
+              orderId,
+              verificationStatus: "SUCCESS",
+              processed: 1,
+              errorMessage:
+                `OVERLAP detectado con orden ${overlap.paypal_order_id}. ` +
+                `Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"})` : `FALLÓ — ${refundResult.error?.slice(0, 200)}`}` +
+                apologyMsg,
+            });
+          }
+        } catch (overlapErr) {
+          // Fail-open: continuar con flujo normal aunque la detección falle.
+          console.error(
+            "Error en detección de overlap (fail-open, continúa flow normal):",
+            (overlapErr as Error).message,
+          );
+        }
 
         // INSERT con OR IGNORE — si el webhook llega duplicado por reintento,
         // no creamos filas dobles (paypal_order_id es UNIQUE).

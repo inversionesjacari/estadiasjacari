@@ -75,6 +75,45 @@ function parseIsoDate(iso: string): Date {
   return new Date(y, m - 1, d);
 }
 
+// ── Validadores de form (Auditoría Sesión 2 — M2) ──────────────────────────
+// Devuelven undefined si el valor es válido, o un string de error en español.
+//
+// Reglas conservadoras: queremos rechazar inputs claramente malos sin generar
+// fricción en casos válidos. PayPal hace validación adicional al pagar.
+
+function validateName(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return "Ingresa tu nombre.";
+  if (trimmed.length < 2) return "Nombre muy corto.";
+  // Permitir nombres de una sola palabra (ej. apellidos compuestos con guion).
+  // Lo que rechazamos: caracteres no-letra (números, símbolos extraños).
+  if (!/^[\p{L}\p{M} '\-.]+$/u.test(trimmed)) {
+    return "Usa solo letras, espacios, apóstrofes o guiones.";
+  }
+  return undefined;
+}
+
+function validateEmail(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return "Ingresa tu correo electrónico.";
+  // Regex pragmático — no busca cumplir RFC 5322 al pie de la letra,
+  // solo descarta basura obvia.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) {
+    return "El correo no parece válido.";
+  }
+  return undefined;
+}
+
+function validatePhone(value: string): string | undefined {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return "Ingresa tu teléfono o WhatsApp.";
+  // Mínimo 8 dígitos = números móviles de Honduras sin código país (8 dígitos).
+  // Aceptamos más largos para incluir códigos de país internacionales.
+  if (digits.length < 8) return "Número muy corto (mínimo 8 dígitos).";
+  if (digits.length > 15) return "Número muy largo.";
+  return undefined;
+}
+
 export default function BookingWidget({
   propertyName,
   propertySlug,
@@ -107,12 +146,22 @@ export default function BookingWidget({
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
+  // Errores de validación inline (Auditoría Sesión 2 — M2)
+  const [formErrors, setFormErrors] = useState<{
+    name?: string;
+    email?: string;
+    phone?: string;
+  }>({});
   // Máquina de pasos: form → review → success
   // En "review", `paypalRevealed` controla si se muestran los botones
   // PayPal abajo (sin perder el resumen de arriba).
   const [step, setStep] = useState<"form" | "review" | "success">("form");
   const [paypalRevealed, setPaypalRevealed] = useState(false);
   const [orderId, setOrderId] = useState("");
+  // Estado de revalidación pre-PayPal (Auditoría Sesión 2 — B1 frontend)
+  const [revalidating, setRevalidating] = useState(false);
+  // Mensaje cuando el usuario cancela el modal de PayPal (Auditoría — M1)
+  const [paypalCancelMsg, setPaypalCancelMsg] = useState<string | null>(null);
 
   // ── EFECTO: cargar disponibilidad desde el endpoint ─────────────────────
   useEffect(() => {
@@ -212,22 +261,70 @@ export default function BookingWidget({
   }, [range, blockedDates]);
 
   const handleProceed = () => {
-    if (!guestName.trim() || !guestEmail.trim() || !guestPhone.trim()) {
-      alert("Por favor completa tu nombre, correo y teléfono.");
-      return;
+    // Validación inline — sin alert(), errores junto a cada input
+    const errors = {
+      name: validateName(guestName),
+      email: validateEmail(guestEmail),
+      phone: validatePhone(guestPhone),
+    };
+    setFormErrors(errors);
+
+    if (errors.name || errors.email || errors.phone) {
+      return; // Los errores se muestran inline; usuario corrige.
     }
-    if (nights <= 0) {
-      alert("Por favor selecciona fechas válidas.");
-      return;
-    }
-    if (rangeHasBlockedDateInside) {
-      alert(
-        "El rango seleccionado incluye fechas no disponibles. Por favor escoge otro.",
-      );
-      setRange(undefined);
+
+    if (nights <= 0 || rangeHasBlockedDateInside) {
+      // Caso defensivo — el botón ya está disabled cuando esto pasa.
       return;
     }
     setStep("review");
+  };
+
+  // Revalida disponibilidad pegándole de nuevo al endpoint ANTES de mostrar
+  // los botones PayPal. Evita doble booking en el window form → pago: alguien
+  // pudo haber reservado las mismas fechas mientras este usuario llenaba el
+  // form. Si el rango sigue libre → mostrar PayPal. Si está tomado → resetear.
+  //
+  // Fail-open: si la revalidación falla por red/server, mostramos PayPal igual
+  // (mejor permitir un cobro que quede en cancelled vía detección server-side
+  // que bloquear UX por bug nuestro).
+  const handleConfirmAndShowPayPal = async () => {
+    if (!range?.from || !range?.to) return;
+    setRevalidating(true);
+    setPaypalCancelMsg(null);
+    try {
+      const resp = await fetch(`/api/availability/${propertySlug}`, {
+        cache: "no-store",
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as AvailabilityResponse;
+        const freshBlocked = data.blockedDates.map(parseIsoDate);
+        const stillFree = !freshBlocked.some((blocked) =>
+          isWithinInterval(blocked, {
+            start: range.from!,
+            end: addDays(range.to!, -1),
+          }) && !isSameDay(blocked, range.to!),
+        );
+        if (!stillFree) {
+          alert(
+            "Lo sentimos — alguien acaba de reservar esas fechas. " +
+              "Selecciona otras del calendario.",
+          );
+          setBlockedDates(freshBlocked);
+          setRange(undefined);
+          setStep("form");
+          setRevalidating(false);
+          return;
+        }
+      }
+      // OK (resp.ok=true sin overlap, o resp.ok=false fail-open) → mostrar PayPal
+      setPaypalRevealed(true);
+    } catch {
+      // Network error — fail-open
+      setPaypalRevealed(true);
+    } finally {
+      setRevalidating(false);
+    }
   };
 
   // ── PANTALLA DE CONFIRMACIÓN ────────────────────────────────────────────
@@ -443,30 +540,93 @@ export default function BookingWidget({
           </div>
         )}
 
-        {/* Datos del huésped */}
+        {/* Datos del huésped — validación inline (Auditoría M2) */}
         {step === "form" && (
           <div className="space-y-3 mb-4">
-            <input
-              type="text"
-              placeholder="Nombre completo"
-              value={guestName}
-              onChange={(e) => setGuestName(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-secondary"
-            />
-            <input
-              type="email"
-              placeholder="Correo electrónico"
-              value={guestEmail}
-              onChange={(e) => setGuestEmail(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-secondary"
-            />
-            <input
-              type="tel"
-              placeholder="Teléfono / WhatsApp"
-              value={guestPhone}
-              onChange={(e) => setGuestPhone(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-secondary"
-            />
+            <div>
+              <input
+                type="text"
+                placeholder="Nombre completo"
+                value={guestName}
+                onChange={(e) => {
+                  setGuestName(e.target.value);
+                  if (formErrors.name) {
+                    setFormErrors({ ...formErrors, name: undefined });
+                  }
+                }}
+                onBlur={() =>
+                  setFormErrors({
+                    ...formErrors,
+                    name: validateName(guestName),
+                  })
+                }
+                aria-invalid={!!formErrors.name}
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  formErrors.name
+                    ? "border-red-300 focus:ring-red-300"
+                    : "border-gray-200 focus:ring-secondary"
+                }`}
+              />
+              {formErrors.name && (
+                <p className="text-xs text-red-600 mt-1">{formErrors.name}</p>
+              )}
+            </div>
+            <div>
+              <input
+                type="email"
+                placeholder="Correo electrónico"
+                value={guestEmail}
+                onChange={(e) => {
+                  setGuestEmail(e.target.value);
+                  if (formErrors.email) {
+                    setFormErrors({ ...formErrors, email: undefined });
+                  }
+                }}
+                onBlur={() =>
+                  setFormErrors({
+                    ...formErrors,
+                    email: validateEmail(guestEmail),
+                  })
+                }
+                aria-invalid={!!formErrors.email}
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  formErrors.email
+                    ? "border-red-300 focus:ring-red-300"
+                    : "border-gray-200 focus:ring-secondary"
+                }`}
+              />
+              {formErrors.email && (
+                <p className="text-xs text-red-600 mt-1">{formErrors.email}</p>
+              )}
+            </div>
+            <div>
+              <input
+                type="tel"
+                placeholder="Teléfono / WhatsApp"
+                value={guestPhone}
+                onChange={(e) => {
+                  setGuestPhone(e.target.value);
+                  if (formErrors.phone) {
+                    setFormErrors({ ...formErrors, phone: undefined });
+                  }
+                }}
+                onBlur={() =>
+                  setFormErrors({
+                    ...formErrors,
+                    phone: validatePhone(guestPhone),
+                  })
+                }
+                aria-invalid={!!formErrors.phone}
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  formErrors.phone
+                    ? "border-red-300 focus:ring-red-300"
+                    : "border-gray-200 focus:ring-secondary"
+                }`}
+              />
+              {formErrors.phone && (
+                <p className="text-xs text-red-600 mt-1">{formErrors.phone}</p>
+              )}
+            </div>
             <button
               onClick={handleProceed}
               disabled={nights <= 0 || rangeHasBlockedDateInside}
@@ -579,18 +739,32 @@ export default function BookingWidget({
               determinará tu banco según su tipo de cambio del día.
             </p>
 
+            {/* Mensaje si el usuario canceló el modal de PayPal (Auditoría M1) */}
+            {paypalCancelMsg && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+                {paypalCancelMsg}
+              </div>
+            )}
+
             {/* Botones / PayPal */}
             {!paypalRevealed ? (
               <div className="space-y-2">
                 <button
-                  onClick={() => setPaypalRevealed(true)}
-                  className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition"
+                  onClick={handleConfirmAndShowPayPal}
+                  disabled={revalidating}
+                  className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition disabled:opacity-60 disabled:cursor-wait"
                 >
-                  Confirmar y pagar L. {grandTotalHNL.toLocaleString()}
+                  {revalidating
+                    ? "Verificando disponibilidad..."
+                    : `Confirmar y pagar L. ${grandTotalHNL.toLocaleString()}`}
                 </button>
                 <button
-                  onClick={() => setStep("form")}
-                  className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition"
+                  onClick={() => {
+                    setStep("form");
+                    setPaypalCancelMsg(null);
+                  }}
+                  disabled={revalidating}
+                  className="w-full text-gray-500 text-xs py-2 hover:text-gray-700 transition disabled:opacity-60"
                 >
                   ← Volver a editar
                 </button>
@@ -619,8 +793,31 @@ export default function BookingWidget({
                     // el webhook lo usa para generar el link wa.me en el email de
                     // confirmación, y futuro WhatsApp push automático (Fase 5).
                     const phoneDigits = guestPhone.replace(/\D/g, "");
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    return (actions.order.create as any)({
+                    // Args del order tipados localmente — el tipo del SDK
+                    // (`Parameters<typeof actions.order.create>[0]`) es muy
+                    // restrictivo y no incluye `intent` ni `application_context`
+                    // (ambos válidos en la REST API real). Definimos el shape
+                    // exacto que necesitamos y lo casteamos UNA sola vez al
+                    // tipo que espera el SDK.
+                    type PayPalOrderRequest = {
+                      intent: "CAPTURE";
+                      application_context?: {
+                        shipping_preference?: "NO_SHIPPING";
+                      };
+                      purchase_units: Array<{
+                        amount: {
+                          currency_code: string;
+                          value: string;
+                          breakdown?: {
+                            item_total: { currency_code: string; value: string };
+                            handling: { currency_code: string; value: string };
+                          };
+                        };
+                        description?: string;
+                        custom_id?: string;
+                      }>;
+                    };
+                    const args: PayPalOrderRequest = {
                       intent: "CAPTURE",
                       application_context: { shipping_preference: "NO_SHIPPING" },
                       purchase_units: [
@@ -645,12 +842,23 @@ export default function BookingWidget({
                           custom_id: `${propertySlug}|${checkInIso}|${checkOutIso}|${guestEmail}|${phoneDigits}`,
                         },
                       ],
-                    });
+                    };
+                    type CreateArgs = Parameters<typeof actions.order.create>[0];
+                    return actions.order.create(args as unknown as CreateArgs);
                   }}
                   onApprove={async (data, actions) => {
                     await actions.order?.capture();
                     setOrderId(data.orderID);
                     setStep("success");
+                  }}
+                  onCancel={() => {
+                    // Auditoría M1 — usuario cerró modal PayPal sin pagar.
+                    // Volvemos a la pantalla de revisión con mensaje claro
+                    // y permitimos reintentar. Las fechas siguen seleccionadas.
+                    setPaypalRevealed(false);
+                    setPaypalCancelMsg(
+                      "Cancelaste el pago. Tus fechas siguen seleccionadas — puedes reintentar cuando quieras.",
+                    );
                   }}
                   onError={(err) => {
                     // Log detallado en consola para debug; alert simple para el usuario.
