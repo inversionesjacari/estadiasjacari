@@ -27,7 +27,9 @@ import { getCheckinInfo } from "../../_lib/checkin-info";
 import { sendCheckinReminderEmail } from "../../_lib/checkin-email";
 import { sendViaResend } from "../../_lib/resend";
 import { getCheckinPdf } from "../../_lib/checkin-pdf";
-import { hnDatePlusDays } from "../../_lib/dates";
+import { hnDatePlusDays, todayHn } from "../../_lib/dates";
+import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../../_lib/whatsapp";
+import { normalizePhone, isValidE164 } from "../../_lib/phone";
 
 interface Env {
   DB: D1Database;
@@ -39,6 +41,9 @@ interface Env {
   SHEET_WEBHOOK_SECRET?: string;
   /** Bucket R2 con PDFs de check-in privados (filename: `<slug>.pdf`). */
   CHECKIN_PDFS?: R2Bucket;
+  // Fase 5 — WhatsApp Cloud API
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
 }
 
 interface ReservationRow {
@@ -228,6 +233,65 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       } catch {
         // Si falla el UPDATE, el correo ya salió; en la próxima corrida
         // podría reenviarse. Riesgo bajo (un correo duplicado, no crítico).
+      }
+
+      // ── WhatsApp (Fase 5) ───────────────────────────────────────────────
+      // Solo intentar si: (1) hay config Meta, (2) el huésped tiene teléfono
+      // válido, (3) el PDF existe (sin PDF no mandamos el template document),
+      // (4) no fue enviado antes (whatsapp_sent_at IS NULL).
+      if (
+        env.WHATSAPP_ACCESS_TOKEN &&
+        env.WHATSAPP_PHONE_NUMBER_ID &&
+        r.guest_phone &&
+        pdfResult.found &&
+        pdfResult.bytes
+      ) {
+        try {
+          const existing = await env.DB.prepare(
+            `SELECT whatsapp_sent_at FROM reservations WHERE id = ?`,
+          )
+            .bind(r.id)
+            .first<{ whatsapp_sent_at: string | null }>();
+
+          if (existing && !existing.whatsapp_sent_at) {
+            const { e164 } = normalizePhone(r.guest_phone);
+            if (isValidE164(e164)) {
+              const propertyName = info.propertyName || r.property_slug;
+              const checkInDateEs = formatCheckinDateForTemplate(r.check_in, todayHn());
+              const waResult = await sendCheckinReminderWhatsApp(
+                {
+                  toPhone: e164,
+                  guestName: r.guest_name || "huésped",
+                  propertyName,
+                  checkInDateEs,
+                  pdfBytes: pdfResult.bytes,
+                  pdfFilename: pdfResult.filename ?? `instrucciones-checkin-${r.property_slug}.pdf`,
+                },
+                { WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID },
+              );
+
+              await env.DB.prepare(
+                `UPDATE reservations
+                    SET whatsapp_sent_at    = ?,
+                        whatsapp_error      = ?,
+                        whatsapp_message_id = ?,
+                        updated_at          = datetime('now')
+                  WHERE id = ?`,
+              )
+                .bind(
+                  waResult.ok ? new Date().toISOString() : null,
+                  waResult.ok ? null : (waResult.error ?? "error desconocido").slice(0, 1000),
+                  waResult.messageId ?? null,
+                  r.id,
+                )
+                .run();
+            }
+          }
+        } catch (waErr) {
+          // WhatsApp es best-effort: el correo ya salió. Nunca bloqueamos
+          // ni marcamos la reserva como fallida por error de WhatsApp.
+          console.error(`WhatsApp cron error (id=${r.id}):`, (waErr as Error).message);
+        }
       }
     } else {
       failed++;

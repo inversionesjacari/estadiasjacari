@@ -8,6 +8,9 @@ import { getCheckinPdf } from "../_lib/checkin-pdf";
 import { sendCheckinReminderEmail } from "../_lib/checkin-email";
 import { todayHn } from "../_lib/dates";
 import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
+// Fase 5 — WhatsApp Cloud API
+import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../_lib/whatsapp";
+import { normalizePhone, isValidE164 } from "../_lib/phone";
 // Auditoría Sesión 2 — B1 doble booking
 import { refundPayPalCapture } from "../_lib/paypal-refund";
 import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
@@ -49,6 +52,9 @@ interface Env {
   SHEET_WEBHOOK_URL?: string; // Apps Script Web App (opcional — cae a cache D1)
   SHEET_WEBHOOK_SECRET?: string;
   CHECKIN_PDFS?: R2Bucket; // bucket privado con PDFs `<slug>.pdf`
+  // Fase 5 — WhatsApp Cloud API
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
 }
 
 /**
@@ -595,6 +601,58 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
                     .bind(orderId)
                     .run();
                   checkinMsg = ` · Correo #2 enviado (mismo-día, Resend ID: ${reminderResult.resendId ?? "n/a"}${pdfResult.found ? ", PDF adjunto" : ", SIN PDF"})`;
+
+                  // ── WhatsApp mismo-día (Fase 5) ──────────────────────────
+                  // Best-effort: el correo ya salió. Nunca bloquear ni fallar
+                  // el webhook por errores de WhatsApp.
+                  if (
+                    env.WHATSAPP_ACCESS_TOKEN &&
+                    env.WHATSAPP_PHONE_NUMBER_ID &&
+                    guestPhone &&
+                    pdfResult.found &&
+                    pdfResult.bytes
+                  ) {
+                    try {
+                      const { e164 } = normalizePhone(guestPhone);
+                      if (isValidE164(e164)) {
+                        const waPropertyName =
+                          infoResult.info?.propertyName ||
+                          PROPERTY_NAMES[propertySlug] ||
+                          propertySlug;
+                        const waResult = await sendCheckinReminderWhatsApp(
+                          {
+                            toPhone: e164,
+                            guestName: guestName || "huésped",
+                            propertyName: waPropertyName,
+                            checkInDateEs: formatCheckinDateForTemplate(checkIn, todayHn()),
+                            pdfBytes: pdfResult.bytes,
+                            pdfFilename: pdfResult.filename ?? `instrucciones-checkin-${propertySlug}.pdf`,
+                          },
+                          { WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID },
+                        );
+                        await env.DB.prepare(
+                          `UPDATE reservations
+                              SET whatsapp_sent_at    = ?,
+                                  whatsapp_error      = ?,
+                                  whatsapp_message_id = ?,
+                                  updated_at          = datetime('now')
+                            WHERE paypal_order_id = ?`,
+                        )
+                          .bind(
+                            waResult.ok ? new Date().toISOString() : null,
+                            waResult.ok ? null : (waResult.error ?? "error desconocido").slice(0, 1000),
+                            waResult.messageId ?? null,
+                            orderId,
+                          )
+                          .run();
+                        checkinMsg += waResult.ok
+                          ? ` · WhatsApp enviado (${waResult.messageId ?? "sin id"})`
+                          : ` · WhatsApp FALLÓ: ${waResult.error?.slice(0, 150)}`;
+                      }
+                    } catch (waErr) {
+                      checkinMsg += ` · WhatsApp EXCEPCIÓN: ${(waErr as Error).message.slice(0, 150)}`;
+                    }
+                  }
                 } else {
                   await env.DB.prepare(
                     `UPDATE reservations
