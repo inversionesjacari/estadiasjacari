@@ -119,10 +119,10 @@ DETALLES DE TU RESERVA
 
 ¿QUÉ SIGUE?
 
-La noche anterior a tu llegada te enviaremos por correo y WhatsApp un set
-completo de instrucciones para que puedas ingresar fácilmente a la propiedad
-(dirección exacta, código de la puerta o forma de recoger las llaves,
-contacto del encargado local, etc.).
+La noche anterior a tu llegada te enviaremos por correo un set completo de
+instrucciones para que puedas ingresar fácilmente a la propiedad (dirección
+exacta, código de la puerta o forma de recoger las llaves, contacto del
+encargado local, etc.).
 
 Si tienes cualquier pregunta antes de tu llegada, escríbenos al
 WhatsApp +504 8839-0145 (puedes usar este link directo):
@@ -226,7 +226,7 @@ function buildHtmlBody(data: ReservationEmailData): string {
             <td style="padding:28px 32px 0 32px;">
               <h3 style="margin:0 0 10px 0; font-size:17px; color:#003F51; font-family: 'DM Serif Display', Georgia, serif; font-weight:400;">¿Qué sigue?</h3>
               <p style="margin:0; font-size:14px; line-height:1.7; color:#374151;">
-                La <strong>noche anterior a tu llegada</strong> te enviaremos por correo y WhatsApp un set completo de instrucciones para que puedas ingresar fácilmente a la propiedad: dirección exacta, código de la puerta o forma de recoger las llaves, contacto del encargado local, y cualquier detalle importante de tu estadía.
+                La <strong>noche anterior a tu llegada</strong> te enviaremos por correo un set completo de instrucciones para que puedas ingresar fácilmente a la propiedad: dirección exacta, código de la puerta o forma de recoger las llaves, contacto del encargado local, y cualquier detalle importante de tu estadía.
               </p>
             </td>
           </tr>

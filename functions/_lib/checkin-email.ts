@@ -44,7 +44,8 @@ export async function sendCheckinReminderEmail(
   }
 
   const propertyName = data.info.propertyName || "tu propiedad";
-  const subject = `🔑 Instrucciones para tu llegada — ${propertyName} (${formatDateEs(data.checkInISO)})`;
+  const isToday = data.checkInISO === todayHn();
+  const subject = `🔑 ${isToday ? "Hoy" : "Mañana"} — Instrucciones para tu llegada a ${propertyName}`;
   const html = buildHtmlBody(data);
   const text = buildPlainTextBody(data);
 

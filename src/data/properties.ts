@@ -132,10 +132,10 @@ export const properties: Property[] = [
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
     gemelas: true,
-    pricePerNightUSD: 2,
-    cleaningFeeUSD: 2,
-    pricePerNightHNL: 50,
-    cleaningFeeHNL: 50,
+    pricePerNightUSD: 90,
+    cleaningFeeUSD: 14,
+    pricePerNightHNL: 2500,
+    cleaningFeeHNL: 350,
   },
 
   // ──────────────────────────────────────────────────────────
