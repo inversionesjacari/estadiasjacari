@@ -38,6 +38,7 @@
 
 // @ts-ignore — ical.js no publica tipos oficiales
 import ICAL from "ical.js";
+import { fetchWithTimeout, TIMEOUT } from "../../_lib/fetch";
 
 /** Nombres de env vars que contienen URLs iCal de Airbnb (strings). */
 type IcalEnvKey =
@@ -151,15 +152,19 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const fetchResults = await Promise.all(
     sources.map(async ({ envVarName, url, onlyReserved }) => {
       try {
-        const resp = await fetch(url, {
-          headers: {
-            "User-Agent": "EstadiasJacari/1.0 (+https://estadiasjacari.com)",
-            Accept: "text/calendar, text/plain;q=0.5",
+        const resp = await fetchWithTimeout(
+          url,
+          {
+            headers: {
+              "User-Agent": "EstadiasJacari/1.0 (+https://estadiasjacari.com)",
+              Accept: "text/calendar, text/plain;q=0.5",
+            },
+            // Edge cache: 15 min — Cloudflare reusará la respuesta sin re-pegarle
+            // a Airbnb. Esto reemplaza temporalmente al KV cache de Fase 2.
+            cf: { cacheTtl: 900, cacheEverything: true },
           },
-          // Edge cache: 15 min — Cloudflare reusará la respuesta sin re-pegarle
-          // a Airbnb. Esto reemplaza temporalmente al KV cache de Fase 2.
-          cf: { cacheTtl: 900, cacheEverything: true },
-        });
+          TIMEOUT.STANDARD,
+        );
         if (!resp.ok) {
           return {
             envVarName,

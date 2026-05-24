@@ -7,6 +7,7 @@ import { getCheckinInfo } from "../_lib/checkin-info";
 import { getCheckinPdf } from "../_lib/checkin-pdf";
 import { sendCheckinReminderEmail } from "../_lib/checkin-email";
 import { todayHn } from "../_lib/dates";
+import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
 
 //
 // POST /api/paypal-webhook
@@ -163,16 +164,20 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   // 4. Obtener access token PayPal
   let accessToken: string;
   try {
-    const tokenResp = await fetch(`${apiBase}/v1/oauth2/token`, {
-      method: "POST",
-      headers: {
-        Authorization:
-          "Basic " + btoa(`${env.PAYPAL_CLIENT_ID}:${env.PAYPAL_CLIENT_SECRET}`),
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
+    const tokenResp = await fetchWithTimeout(
+      `${apiBase}/v1/oauth2/token`,
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            "Basic " + btoa(`${env.PAYPAL_CLIENT_ID}:${env.PAYPAL_CLIENT_SECRET}`),
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body: "grant_type=client_credentials",
       },
-      body: "grant_type=client_credentials",
-    });
+      TIMEOUT.CRITICAL,
+    );
     if (!tokenResp.ok) {
       const text = await tokenResp.text();
       return logAndReturn(502, {
@@ -203,7 +208,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   try {
-    const verifyResp = await fetch(
+    const verifyResp = await fetchWithTimeout(
       `${apiBase}/v1/notifications/verify-webhook-signature`,
       {
         method: "POST",
@@ -221,6 +226,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           webhook_event: webhookEvent,
         }),
       },
+      TIMEOUT.CRITICAL,
     );
     if (!verifyResp.ok) {
       const text = await verifyResp.text();

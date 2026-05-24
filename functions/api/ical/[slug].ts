@@ -181,3 +181,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
     },
   });
 };
+
+// HEAD requests usan el mismo handler que GET (Airbnb / curl / validators
+// a veces hacen HEAD para verificar que la URL existe antes de importar).
+// Cloudflare Pages tira el body automáticamente para HEAD, así que solo los
+// headers (incluyendo Content-Type y Content-Disposition) llegan al cliente.
+export const onRequestHead = onRequestGet;

@@ -10,6 +10,8 @@
 // Cloudflare Pages — solo se puede importar desde otros archivos de functions/.
 //
 
+import { fetchWithTimeout, TIMEOUT } from "./fetch";
+
 export interface ResendEnv {
   RESEND_API_KEY: string;
   EMAIL_FROM: string; // ej. 'Estadías Jacarí <hola@estadiasjacari.com>'
@@ -59,24 +61,28 @@ export async function sendViaResend(
   }
 
   try {
-    const resp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
+    const resp = await fetchWithTimeout(
+      "https://api.resend.com/emails",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: env.EMAIL_FROM,
+          to: params.to,
+          ...(env.EMAIL_REPLY_TO ? { reply_to: env.EMAIL_REPLY_TO } : {}),
+          subject: params.subject,
+          html: params.html,
+          text: params.text,
+          ...(params.attachments && params.attachments.length > 0
+            ? { attachments: params.attachments }
+            : {}),
+        }),
       },
-      body: JSON.stringify({
-        from: env.EMAIL_FROM,
-        to: params.to,
-        ...(env.EMAIL_REPLY_TO ? { reply_to: env.EMAIL_REPLY_TO } : {}),
-        subject: params.subject,
-        html: params.html,
-        text: params.text,
-        ...(params.attachments && params.attachments.length > 0
-          ? { attachments: params.attachments }
-          : {}),
-      }),
-    });
+      TIMEOUT.CRITICAL,
+    );
 
     if (!resp.ok) {
       const body = await resp.text();

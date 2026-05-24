@@ -18,6 +18,8 @@
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
 
+import { fetchWithTimeout, TIMEOUT } from "./fetch";
+
 export interface CheckinInfo {
   slug: string;
   propertyName?: string;
@@ -144,11 +146,15 @@ export async function getCheckinInfo(
       url.searchParams.set("secret", env.SHEET_WEBHOOK_SECRET);
       url.searchParams.set("slug", slug);
 
-      const resp = await fetch(url.toString(), {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        redirect: "follow", // Apps Script Web Apps redirigen a googleusercontent
-      });
+      const resp = await fetchWithTimeout(
+        url.toString(),
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          redirect: "follow", // Apps Script Web Apps redirigen a googleusercontent
+        },
+        TIMEOUT.STANDARD,
+      );
 
       const bodyText = await resp.text();
       if (!resp.ok) {

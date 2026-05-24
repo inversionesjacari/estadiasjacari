@@ -34,6 +34,7 @@ import { sendCheckinReminderEmail } from "../../_lib/checkin-email";
 import { getCheckinInfo } from "../../_lib/checkin-info";
 import { getCheckinPdf } from "../../_lib/checkin-pdf";
 import { todayHn, hnDatePlusDays } from "../../_lib/dates";
+import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 
 interface Env {
   DB: D1Database;
@@ -90,6 +91,32 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = request.headers.get("authorization") ?? "";
   if (auth !== `Bearer ${env.CRON_SECRET}`) {
     return json({ ok: false, error: "No autorizado" }, 401);
+  }
+
+  // 1b. Rate limit por IP — protege contra leak del CRON_SECRET
+  // 10 requests/min por IP. Suficiente para tests manuales legítimos,
+  // bloquea spam si el secret se filtra.
+  const ip = getClientIp(request);
+  const rl = await checkRateLimit(env, {
+    endpoint: "admin/test-email",
+    ip,
+    max: 10,
+    windowSec: 60,
+  });
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: `Rate limit excedido: ${rl.currentCount} requests en los últimos 60s. Reintenta en ${rl.retryAfterSec}s.`,
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(rl.retryAfterSec),
+        },
+      },
+    );
   }
 
   // 2. Parse body

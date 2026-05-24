@@ -24,6 +24,8 @@
 //   502 — ambas fuentes (primary y fallback) fallaron
 //
 
+import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
+
 // URLs primary y fallback de la misma API (jsdelivr CDN + Cloudflare Pages mirror).
 const PRIMARY_URL =
   "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json";
@@ -40,13 +42,17 @@ export const onRequestGet: PagesFunction = async () => {
 
   for (const url of [PRIMARY_URL, FALLBACK_URL]) {
     try {
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "EstadiasJacari/1.0 (+https://estadiasjacari.com)",
+      const resp = await fetchWithTimeout(
+        url,
+        {
+          headers: {
+            "User-Agent": "EstadiasJacari/1.0 (+https://estadiasjacari.com)",
+          },
+          // Edge cache 12h — el TC se actualiza diariamente, no necesitamos más fresh.
+          cf: { cacheTtl: 43200, cacheEverything: true },
         },
-        // Edge cache 12h — el TC se actualiza diariamente, no necesitamos más fresh.
-        cf: { cacheTtl: 43200, cacheEverything: true },
-      });
+        TIMEOUT.STANDARD,
+      );
       if (!resp.ok) {
         attempts.push({ url, error: `HTTP ${resp.status}` });
         continue;
