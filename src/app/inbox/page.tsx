@@ -143,6 +143,22 @@ function getAvatarColor(phone: string): string {
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
 }
 
+/**
+ * Set curado de emojis para el picker — los más útiles para gestión de
+ * alquileres temporales. 40 emojis ordenados por frecuencia esperada de uso:
+ *   - Saludos/agradecimientos
+ *   - Reservas/check-in/check-out
+ *   - Lugar (playa, casa, etc.)
+ *   - Indicadores de confirmación
+ */
+const COMMON_EMOJIS = [
+  "🙂", "😄", "😊", "🙏", "👋", "❤️", "🎉", "✨",
+  "👍", "👌", "✅", "❌", "⚠️", "🤝", "💯", "🔥",
+  "🏝️", "🌴", "🌊", "☀️", "🌞", "🌙", "🏖️", "🌅",
+  "🏡", "🔑", "📍", "🗺️", "🚗", "✈️", "🏊", "📅",
+  "🕒", "📞", "📧", "💬", "💵", "💳", "⭐", "🇭🇳",
+];
+
 /** Avatar circular con iniciales sobre color sólido determinístico. */
 function Avatar({
   name,
@@ -181,7 +197,38 @@ export default function InboxPage() {
   const [sending, setSending] = useState(false);
   const [loadingConv, setLoadingConv] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Auto-grow del textarea según contenido (max 200px = ~8 líneas) ────────
+  function autoGrowTextarea(el: HTMLTextAreaElement | null): void {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }
+
+  // ── Insertar texto en la posición del cursor del textarea ─────────────────
+  function insertAtCursor(text: string): void {
+    const el = composeRef.current;
+    if (!el) {
+      setComposeText((prev) => prev + text);
+      return;
+    }
+    const start = el.selectionStart ?? composeText.length;
+    const end = el.selectionEnd ?? composeText.length;
+    const next = composeText.slice(0, start) + text + composeText.slice(end);
+    setComposeText(next);
+    // Re-posicionar cursor después del texto insertado, en siguiente tick
+    setTimeout(() => {
+      if (composeRef.current) {
+        const pos = start + text.length;
+        composeRef.current.focus();
+        composeRef.current.setSelectionRange(pos, pos);
+        autoGrowTextarea(composeRef.current);
+      }
+    }, 0);
+  }
 
   // ── Auth check inicial ───────────────────────────────────────────────────
   const fetchConversations = useCallback(async (): Promise<void> => {
@@ -302,6 +349,11 @@ export default function InboxPage() {
       const data = (await resp.json()) as SendResponse;
       if (data.ok) {
         setComposeText("");
+        // Reset altura del textarea (sino queda con el tamaño del mensaje viejo)
+        if (composeRef.current) {
+          composeRef.current.style.height = "auto";
+        }
+        setEmojiOpen(false);
         loadMessages(selectedPhone);
         fetchConversations();
       } else {
@@ -521,20 +573,72 @@ export default function InboxPage() {
               {/* Composer */}
               <form
                 onSubmit={handleSend}
-                className="bg-white border-t border-gray-200 p-4 flex gap-3"
+                className="bg-white border-t border-gray-200 p-4 flex gap-3 items-end relative"
               >
-                <input
-                  type="text"
+                {/* Emoji picker — popover absoluto sobre el textarea */}
+                {emojiOpen && (
+                  <div
+                    className="absolute bottom-full left-4 mb-2 bg-white border border-gray-200 rounded-xl shadow-lg p-3 grid grid-cols-8 gap-1 z-10"
+                    style={{ width: "20rem" }}
+                  >
+                    {COMMON_EMOJIS.map((e) => (
+                      <button
+                        key={e}
+                        type="button"
+                        onClick={() => {
+                          insertAtCursor(e);
+                          setEmojiOpen(false);
+                        }}
+                        className="text-xl hover:bg-gray-100 rounded p-1 transition"
+                        aria-label={`Insertar ${e}`}
+                      >
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Botón emoji */}
+                <button
+                  type="button"
+                  onClick={() => setEmojiOpen((v) => !v)}
+                  disabled={sending}
+                  className="text-2xl text-muted hover:text-primary transition disabled:opacity-50 self-end pb-1"
+                  aria-label="Abrir selector de emojis"
+                >
+                  😊
+                </button>
+
+                {/* Textarea con auto-grow */}
+                <textarea
+                  ref={composeRef}
                   value={composeText}
-                  onChange={(e) => setComposeText(e.target.value)}
-                  placeholder="Escribir mensaje..."
-                  className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
+                  onChange={(e) => {
+                    setComposeText(e.target.value);
+                    autoGrowTextarea(e.target);
+                  }}
+                  onKeyDown={(e) => {
+                    // Cmd/Ctrl+Enter → enviar (atajo power-user)
+                    // Enter solo → nueva línea (comportamiento natural del textarea)
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      if (composeText.trim() && !sending) {
+                        handleSend(e as unknown as React.FormEvent<HTMLFormElement>);
+                      }
+                    }
+                  }}
+                  placeholder="Escribir mensaje... (Enter para nueva línea, Cmd+Enter para enviar)"
+                  rows={1}
+                  className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
+                  style={{ maxHeight: "200px" }}
                   disabled={sending}
                 />
+
+                {/* Botón enviar */}
                 <button
                   type="submit"
                   disabled={sending || !composeText.trim()}
-                  className="bg-primary text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-primary/90 transition disabled:opacity-50"
+                  className="bg-primary text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-primary/90 transition disabled:opacity-50 self-end"
                 >
                   {sending ? "..." : "Enviar"}
                 </button>
