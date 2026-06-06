@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Estadías Jacarí — Security headers para assets servidos desde Cloudflare Pages
+#
+# Aplica a TODAS las respuestas del CDN (HTML, JS, CSS, imágenes, fuentes).
+# Las respuestas de Functions (/api/*) reciben security headers desde
+# functions/_middleware.ts — duplicado intencional para que NUNCA salga una
+# respuesta sin headers, vengan del CDN o de Functions.
+#
+# Sintaxis Cloudflare Pages:
+#   - Una línea con el path pattern (soporta * y :placeholder)
+#   - Líneas siguientes indentadas con 2 espacios: "Header-Name: valor"
+#   - Bloques múltiples acumulan headers (no se sobreescriben).
+#   Ref: https://developers.cloudflare.com/pages/configuration/headers/
+#
+# CSP — política conservadora:
+#   - script-src: self + 'unsafe-inline' (Next.js inyecta scripts inline en el
+#     bootstrap del export estático; sus hashes cambian por build, así que
+#     nonces/hashes no son prácticos sin runtime). PayPal SDK añade los suyos.
+#   - style-src: self + 'unsafe-inline' (Tailwind genera inline en algunos casos
+#     + React style={} attribute).
+#   - font-src: self only — next/font self-hostea Google Fonts en build time.
+#   - frame-src: paypal.com (popup de pago 3DS) + google.com (embed Maps).
+#   - frame-ancestors 'none': nadie puede iframear el sitio (más estricto que
+#     X-Frame-Options DENY; modernos navegadores priorizan este).
+#   - upgrade-insecure-requests: cualquier http:// en assets se promueve a https://
+#
+# Si una integración nueva rompe la CSP, ver consola del navegador (errores
+# "Refused to load X because it violates the following Content Security Policy")
+# y agregar el dominio específico al bloque correspondiente.
+# ─────────────────────────────────────────────────────────────────────────────
+
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=(), browsing-topics=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://www.paypal.com https://www.paypalobjects.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: https://*.paypal.com https://*.paypalobjects.com; connect-src 'self' https://*.paypal.com; frame-src https://www.paypal.com https://www.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests
+
+# Assets de Next.js con content-hash en el filename — cache "eterno"
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Imágenes locales — cache moderado (30 días); no están content-hashed
+/images/*
+  Cache-Control: public, max-age=2592000
+
+/branding/*
+  Cache-Control: public, max-age=2592000

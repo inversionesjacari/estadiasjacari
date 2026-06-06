@@ -30,6 +30,8 @@ import { getCheckinPdf } from "../../_lib/checkin-pdf";
 import { hnDatePlusDays, todayHn } from "../../_lib/dates";
 import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../../_lib/whatsapp";
 import { normalizePhone, isValidE164 } from "../../_lib/phone";
+import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
+import { requireBearerAuth } from "../../_lib/admin-auth";
 
 interface Env {
   DB: D1Database;
@@ -92,14 +94,33 @@ async function notifyOwner(
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  // 1. Auth
-  if (!env.CRON_SECRET) {
-    return json({ ok: false, error: "Falta env var CRON_SECRET" }, 500);
-  }
-  const auth = request.headers.get("authorization") ?? "";
-  const expected = `Bearer ${env.CRON_SECRET}`;
-  if (auth !== expected) {
-    return json({ ok: false, error: "No autorizado" }, 401);
+  // 1. Auth (timing-safe Bearer compare via helper compartido)
+  const authResult = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
+  if (!authResult.ok) return authResult.response!;
+
+  // 1b. Rate limit por IP — defensa adicional si CRON_SECRET se filtra.
+  // 30/min es holgado para el cron legítimo (1/día) + tests manuales con curl.
+  const ip = getClientIp(request);
+  const rl = await checkRateLimit(env, {
+    endpoint: "cron/checkin-reminders",
+    ip,
+    max: 30,
+    windowSec: 60,
+  });
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: `Rate limit excedido: ${rl.currentCount} en 60s. Reintenta en ${rl.retryAfterSec}s.`,
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(rl.retryAfterSec),
+        },
+      },
+    );
   }
 
   // 2. Fecha objetivo (mañana HN por defecto; override por ?date= para test)

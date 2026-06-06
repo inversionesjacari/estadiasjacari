@@ -35,6 +35,7 @@ import { getCheckinInfo } from "../../_lib/checkin-info";
 import { getCheckinPdf } from "../../_lib/checkin-pdf";
 import { todayHn, hnDatePlusDays } from "../../_lib/dates";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
+import { requireBearerAuth } from "../../_lib/admin-auth";
 
 interface Env {
   DB: D1Database;
@@ -84,14 +85,9 @@ function json(body: unknown, status = 200): Response {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  // 1. Auth
-  if (!env.CRON_SECRET) {
-    return json({ ok: false, error: "Falta env var CRON_SECRET" }, 500);
-  }
-  const auth = request.headers.get("authorization") ?? "";
-  if (auth !== `Bearer ${env.CRON_SECRET}`) {
-    return json({ ok: false, error: "No autorizado" }, 401);
-  }
+  // 1. Auth (timing-safe Bearer compare via helper compartido)
+  const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
+  if (!auth.ok) return auth.response!;
 
   // 1b. Rate limit por IP — protege contra leak del CRON_SECRET
   // 10 requests/min por IP. Suficiente para tests manuales legítimos,
