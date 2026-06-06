@@ -29,6 +29,7 @@ import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
 import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
+import { verifyMetaSignature } from "../_lib/meta-signature";
 
 interface Env {
   DB: D1Database;
@@ -36,6 +37,13 @@ interface Env {
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
   WHATSAPP_WEBHOOK_VERIFY_TOKEN?: string;
+  /**
+   * App Secret de la app de Meta (Developers → App → Settings → Basic →
+   * App Secret). Usado para verificar `x-hub-signature-256` en cada POST
+   * del webhook. SIN esto, cualquiera puede POSTear payloads falsos y
+   * disparar emails, respuestas del bot, escritura en D1, etc.
+   */
+  WHATSAPP_APP_SECRET?: string;
   // Sheet (para getCheckinInfo)
   SHEET_WEBHOOK_URL?: string;
   SHEET_WEBHOOK_SECRET?: string;
@@ -138,12 +146,48 @@ interface MetaWebhookBody {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  // Siempre responder 200 a Meta — leer body y procesar best-effort
+  // Filosofía: SIEMPRE responder 200 a Meta. Si respondemos error, Meta reintenta
+  // exponencialmente y ensucia los logs sin lograr nada. Toda fail-condition se
+  // loguea localmente y termina con 200.
+
+  // 1. Leer raw body — CRÍTICO para verificación HMAC byte-exacta.
+  //    JSON.parse + JSON.stringify cambian whitespace/order de keys → firma
+  //    diferente → falso negativo.
+  const rawBody = await request.text();
+
+  // 2. Verificar firma Meta (x-hub-signature-256).
+  //    Sin App Secret configurado → no procesamos (fail closed).
+  //    Sin header de firma → no procesamos (request no viene de Meta legítimo).
+  //    Firma inválida → no procesamos (posible spoofing).
+  if (!env.WHATSAPP_APP_SECRET) {
+    console.error(
+      "⚠️ WHATSAPP_APP_SECRET no configurado — webhook ignorado por seguridad. " +
+        "Configura el env var en Cloudflare Pages → Settings → Environment variables (Encrypted).",
+    );
+    return new Response("ok", { status: 200 });
+  }
+  const signatureHeader = request.headers.get("x-hub-signature-256");
+  if (!signatureHeader) {
+    console.error(
+      "⚠️ Webhook POST sin header x-hub-signature-256 — ignorado. " +
+        "Esto NO debería pasar si la petición viene de Meta.",
+    );
+    return new Response("ok", { status: 200 });
+  }
+  const sigOk = await verifyMetaSignature(rawBody, signatureHeader, env.WHATSAPP_APP_SECRET);
+  if (!sigOk) {
+    console.error(
+      "⚠️ Firma Meta inválida — webhook ignorado (posible spoofing o secret incorrecto).",
+    );
+    return new Response("ok", { status: 200 });
+  }
+
+  // 3. Firma verificada — parsear el body ya validado.
   let body: MetaWebhookBody;
   try {
-    body = (await request.json()) as MetaWebhookBody;
+    body = JSON.parse(rawBody) as MetaWebhookBody;
   } catch (err) {
-    console.error("Webhook POST: body no es JSON válido:", err);
+    console.error("Webhook POST: body firmado pero no es JSON válido:", err);
     return new Response("ok", { status: 200 });
   }
 
