@@ -199,7 +199,15 @@ export default function InboxPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Marca al cambiar de conversación → fuerza scroll al final una vez,
+   * después se desactiva hasta que vos vuelvas a estar cerca del fondo.
+   * Evita que el refresh cada 10s te tire al final si estás leyendo arriba.
+   */
+  const forceScrollOnNextLoadRef = useRef(true);
+  const prevMessageCountRef = useRef(0);
 
   // ── Auto-grow del textarea según contenido (max 200px = ~8 líneas) ────────
   function autoGrowTextarea(el: HTMLTextAreaElement | null): void {
@@ -279,10 +287,29 @@ export default function InboxPage() {
       }
       const data = (await resp.json()) as MessagesResponse;
       if (data.ok && data.messages) {
+        // Decisión de auto-scroll — solo en estos casos:
+        //   1. Forzado (primera carga de la conversación o después de enviar)
+        //   2. Llegó mensaje nuevo Y estabas cerca del final (< 100px)
+        // Si estás leyendo arriba, NO te bajamos — respetamos tu scroll.
+        const container = messagesContainerRef.current;
+        const hasNewMessages = data.messages.length > prevMessageCountRef.current;
+        const isNearBottom = container
+          ? container.scrollHeight - container.scrollTop - container.clientHeight < 100
+          : true;
+        const shouldScroll =
+          forceScrollOnNextLoadRef.current || (hasNewMessages && isNearBottom);
+
         setMessages(data.messages);
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-        }, 100);
+        prevMessageCountRef.current = data.messages.length;
+
+        if (shouldScroll) {
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({
+              behavior: forceScrollOnNextLoadRef.current ? "auto" : "smooth",
+            });
+            forceScrollOnNextLoadRef.current = false;
+          }, 100);
+        }
       }
     } catch (err) {
       console.error("loadMessages error", err);
@@ -293,6 +320,9 @@ export default function InboxPage() {
 
   function selectConversation(phone: string): void {
     setSelectedPhone(phone);
+    // Cambio de conversación → fuerza scroll al final una vez
+    forceScrollOnNextLoadRef.current = true;
+    prevMessageCountRef.current = 0;
     loadMessages(phone);
   }
 
@@ -354,6 +384,9 @@ export default function InboxPage() {
           composeRef.current.style.height = "auto";
         }
         setEmojiOpen(false);
+        // Después de enviar SÍ queremos saltar al final (estás participando
+        // activamente en la conversación).
+        forceScrollOnNextLoadRef.current = true;
         loadMessages(selectedPhone);
         fetchConversations();
       } else {
@@ -542,7 +575,7 @@ export default function InboxPage() {
               })()}
 
               {/* Mensajes */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-3">
+              <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6 space-y-3">
                 {loadingMsgs && messages.length === 0 && (
                   <p className="text-center text-muted text-sm">Cargando...</p>
                 )}
