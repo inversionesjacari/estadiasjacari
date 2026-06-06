@@ -78,6 +78,99 @@ const PROPERTY_NAMES: Record<string, string> = {
   "la-florida": "La Florida",
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers de presentación
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Formatea un E.164 sin '+' a algo más legible:
+ *   "50498074023" → "+504 9807-4023"
+ *   "16465894168" → "+1 (646) 589-4168"
+ *
+ * Heurística simple por código de país. Para números que no matchean ningún
+ * patrón conocido, retorna `+<dígitos>`.
+ */
+function formatPhone(e164: string): string {
+  const digits = e164.replace(/\D/g, "");
+  // Honduras +504 + 8 dígitos
+  if (digits.startsWith("504") && digits.length === 11) {
+    return `+504 ${digits.slice(3, 7)}-${digits.slice(7)}`;
+  }
+  // USA/Canadá +1 + 10 dígitos
+  if (digits.startsWith("1") && digits.length === 11) {
+    return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  // México +52 + 10 dígitos
+  if (digits.startsWith("52") && digits.length === 12) {
+    return `+52 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
+  }
+  return `+${digits}`;
+}
+
+/** Iniciales para el avatar (max 2 chars). */
+function getInitials(name: string | null, phone: string): string {
+  if (name) {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  // Sin nombre → últimos 2 dígitos del teléfono
+  return phone.slice(-2);
+}
+
+/**
+ * Color de avatar determinístico por phone hash — el mismo número siempre
+ * muestra el mismo color. Paleta tipo Material — colores planos suaves.
+ */
+const AVATAR_COLORS = [
+  "bg-rose-500",
+  "bg-orange-500",
+  "bg-amber-500",
+  "bg-lime-600",
+  "bg-emerald-500",
+  "bg-teal-500",
+  "bg-cyan-500",
+  "bg-sky-500",
+  "bg-indigo-500",
+  "bg-violet-500",
+  "bg-fuchsia-500",
+  "bg-pink-500",
+];
+
+function getAvatarColor(phone: string): string {
+  let h = 0;
+  for (let i = 0; i < phone.length; i++) h = (h * 31 + phone.charCodeAt(i)) | 0;
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+}
+
+/** Avatar circular con iniciales sobre color sólido determinístico. */
+function Avatar({
+  name,
+  phone,
+  size = "md",
+}: {
+  name: string | null;
+  phone: string;
+  size?: "sm" | "md" | "lg";
+}) {
+  const initials = getInitials(name, phone);
+  const color = getAvatarColor(phone);
+  const sizeClass =
+    size === "lg"
+      ? "w-11 h-11 text-base"
+      : size === "sm"
+        ? "w-8 h-8 text-[11px]"
+        : "w-10 h-10 text-sm";
+  return (
+    <div
+      className={`${sizeClass} ${color} rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0`}
+      aria-hidden="true"
+    >
+      {initials}
+    </div>
+  );
+}
+
 export default function InboxPage() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -308,44 +401,53 @@ export default function InboxPage() {
               <li
                 key={c.phone}
                 onClick={() => selectConversation(c.phone)}
-                className={`px-4 py-3 border-b border-gray-100 cursor-pointer transition ${
+                className={`px-4 py-3 border-b border-gray-100 cursor-pointer transition flex gap-3 ${
                   selectedPhone === c.phone
                     ? "bg-secondary/10"
                     : "hover:bg-gray-50"
                 }`}
               >
-                <div className="flex items-baseline justify-between mb-1">
-                  <span className="font-semibold text-primary text-sm">
-                    {c.reservation?.guestName ?? `+${c.phone}`}
-                  </span>
-                  <span className="text-[10px] text-muted">{formatTimeAgo(c.lastAt)}</span>
-                </div>
-                {c.reservation && (
-                  <p className="text-[11px] text-secondary mb-1">
-                    {PROPERTY_NAMES[c.reservation.propertySlug ?? ""] ?? c.reservation.propertySlug}
-                    {c.reservation.checkIn && ` · ${c.reservation.checkIn}`}
+                <Avatar
+                  name={c.reservation?.guestName ?? null}
+                  phone={c.phone}
+                  size="md"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline justify-between mb-0.5 gap-2">
+                    <span className="font-semibold text-primary text-sm truncate">
+                      {c.reservation?.guestName ?? formatPhone(c.phone)}
+                    </span>
+                    <span className="text-[10px] text-muted whitespace-nowrap">
+                      {formatTimeAgo(c.lastAt)}
+                    </span>
+                  </div>
+                  {c.reservation && (
+                    <p className="text-[11px] text-secondary mb-0.5">
+                      {PROPERTY_NAMES[c.reservation.propertySlug ?? ""] ?? c.reservation.propertySlug}
+                      {c.reservation.checkIn && ` · ${c.reservation.checkIn}`}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted truncate">
+                    {c.lastDirection === "out" && <span className="text-secondary">Tú: </span>}
+                    {c.lastMessage}
                   </p>
-                )}
-                <p className="text-xs text-muted truncate">
-                  {c.lastDirection === "out" && <span className="text-secondary">Tú: </span>}
-                  {c.lastMessage}
-                </p>
-                <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  {c.escalated && (
-                    <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
-                      ⚠ escalado
-                    </span>
-                  )}
-                  {c.lastMatchedRule && c.lastMatchedRule !== "manual_inbox" && (
-                    <span className="text-[10px] bg-secondary/15 text-secondary px-1.5 py-0.5 rounded">
-                      🤖 {c.lastMatchedRule}
-                    </span>
-                  )}
-                  {!c.reservation && (
-                    <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
-                      sin reserva
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    {c.escalated && (
+                      <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
+                        ⚠ escalado
+                      </span>
+                    )}
+                    {c.lastMatchedRule && c.lastMatchedRule !== "manual_inbox" && (
+                      <span className="text-[10px] bg-secondary/15 text-secondary px-1.5 py-0.5 rounded">
+                        🤖 {c.lastMatchedRule}
+                      </span>
+                    )}
+                    {!c.reservation && (
+                      <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
+                        sin reserva
+                      </span>
+                    )}
+                  </div>
                 </div>
               </li>
             ))}
@@ -361,12 +463,31 @@ export default function InboxPage() {
           ) : (
             <>
               {/* Header conversación */}
-              <div className="bg-white border-b border-gray-200 px-6 py-3">
-                <h2 className="font-semibold text-primary">
-                  {conversations.find((c) => c.phone === selectedPhone)?.reservation?.guestName ?? `+${selectedPhone}`}
-                </h2>
-                <p className="text-xs text-muted">+{selectedPhone}</p>
-              </div>
+              {(() => {
+                const conv = conversations.find((c) => c.phone === selectedPhone);
+                const guestName = conv?.reservation?.guestName ?? null;
+                return (
+                  <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
+                    <Avatar name={guestName} phone={selectedPhone} size="lg" />
+                    <div className="min-w-0">
+                      <h2 className="font-semibold text-primary leading-tight">
+                        {guestName ?? formatPhone(selectedPhone)}
+                      </h2>
+                      {/* Solo mostrar el teléfono debajo si arriba estamos
+                          mostrando un nombre — sino sería un duplicado. */}
+                      {guestName && (
+                        <p className="text-xs text-muted">{formatPhone(selectedPhone)}</p>
+                      )}
+                      {conv?.reservation && (
+                        <p className="text-[11px] text-secondary mt-0.5">
+                          {PROPERTY_NAMES[conv.reservation.propertySlug ?? ""] ?? conv.reservation.propertySlug}
+                          {conv.reservation.checkIn && ` · ${conv.reservation.checkIn}`}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Mensajes */}
               <div className="flex-1 overflow-y-auto p-6 space-y-3">
