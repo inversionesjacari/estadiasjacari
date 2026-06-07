@@ -78,7 +78,7 @@ function extractTokens(result: unknown): number {
 async function aiRunWithRetry(
   env: WorkersAIEnv,
   payload: unknown,
-  attempts = 2,
+  attempts = 3,
 ): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -87,7 +87,8 @@ async function aiRunWithRetry(
     } catch (err) {
       lastErr = err;
       if (i < attempts - 1) {
-        await new Promise((r) => setTimeout(r, 400));
+        // Backoff creciente: 300ms, 700ms
+        await new Promise((r) => setTimeout(r, 300 + i * 400));
       }
     }
   }

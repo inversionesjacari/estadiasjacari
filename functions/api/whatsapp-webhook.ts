@@ -348,6 +348,24 @@ async function processIncomingMessage(
   // este webhook NO responde (lo hará el del mensaje más nuevo, con más contexto).
   const currentMsgId = inserted.meta?.last_row_id ?? 0;
 
+  // Chequeo TEMPRANO de "última palabra gana": si ya llegó un mensaje más nuevo
+  // de este número, abortamos ANTES de llamar al LLM. Evita saturar Workers AI
+  // con llamadas concurrentes que igual se descartarían (reduce el "bot_failed").
+  try {
+    const newerEarly = await env.DB.prepare(
+      `SELECT COUNT(*) AS c FROM whatsapp_messages
+        WHERE from_phone = ? AND direction = 'in' AND id > ?`,
+    )
+      .bind(fromE164, currentMsgId)
+      .first<{ c: number }>();
+    if ((newerEarly?.c ?? 0) > 0) {
+      console.log(`(early) mensaje más nuevo de ${fromE164} — omito id ${currentMsgId}`);
+      return;
+    }
+  } catch {
+    // si el chequeo falla, seguimos normal
+  }
+
   // ── Contexto del bot: reserva activa + check-in info ────────────────────
   const today = todayHn();
   const reservation = await findActiveReservation(fromE164, env.DB, today);
