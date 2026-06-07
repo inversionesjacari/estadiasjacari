@@ -260,6 +260,21 @@ async function gatherQuoteData(
     };
   }
 
+  // ── Huésped existente → escalar a un humano del equipo ────────────────────
+  // El que escribe ya tiene reserva (puede venir de otro número que no detectamos).
+  // No intentamos resolver datos de su reserva por el bot: lo pasamos a un agente.
+  if (botResult.intent === "existing_guest") {
+    await cancelQuoteFlow(phone, env.DB);
+    return {
+      reply:
+        botResult.reply ||
+        "¡Con gusto! Te conecto con alguien del equipo que tiene acceso a tu reserva para ayudarte enseguida. 🙏",
+      escalateToOwner: true,
+      ruleName:        "existing_guest_escalation",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
   // ── Merge: los datos nuevos ganan sobre los previos cuando no son null ─────
   const mergedData: QuoteData = {
     checkIn:      botResult.extractedData.checkIn      ?? previousData.checkIn,

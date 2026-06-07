@@ -209,12 +209,10 @@ export function buildAskForMissingMessage(data: QuoteData): string {
   return lines.join("\n");
 }
 
-/** Mensaje inicial de "gracias por escribirnos, dame estos datos".
- *  Cada pregunta en su propia fila (saltos de línea reales que WhatsApp respeta). */
-export const INITIAL_QUOTE_MESSAGE = `¡Hola! Gracias por escribir a Estadías Jacarí. Para colaborarte de la mejor manera, indicanos:
+/** Mensaje inicial abierto — primer contacto.
+ *  Abierto a propósito: el que escribe puede ser un lead nuevo, un huésped
+ *  con reserva activa (incluso desde otro número), o una consulta general.
+ *  Dejamos que el cliente diga qué necesita y el bot enruta desde ahí. */
+export const INITIAL_QUOTE_MESSAGE = `¡Hola! Gracias por escribir a Estadías Jacarí 🌴
 
-📍 ¿A dónde estás buscando alojamiento? (La Ceiba, Tela o Tegucigalpa)
-
-👥 ¿Cuántos huéspedes serían en total?
-
-📅 ¿En qué fechas te interesa quedarte? (llegada y salida)`;
+¿En qué podemos servirte?`;
