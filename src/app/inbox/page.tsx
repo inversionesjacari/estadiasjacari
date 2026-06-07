@@ -153,12 +153,51 @@ function getAvatarColor(phone: string): string {
  *   - Lugar (playa, casa, etc.)
  *   - Indicadores de confirmación
  */
-const COMMON_EMOJIS = [
-  "🙂", "😄", "😊", "🙏", "👋", "❤️", "🎉", "✨",
-  "👍", "👌", "✅", "❌", "⚠️", "🤝", "💯", "🔥",
-  "🏝️", "🌴", "🌊", "☀️", "🌞", "🌙", "🏖️", "🌅",
-  "🏡", "🔑", "📍", "🗺️", "🚗", "✈️", "🏊", "📅",
-  "🕒", "📞", "📧", "💬", "💵", "💳", "⭐", "🇭🇳",
+// Emojis organizados por categoría para el picker del inbox.
+const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
+  {
+    label: "Caras",
+    emojis: [
+      "😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌",
+      "😍","🥰","😘","😗","😋","😛","😜","🤪","😎","🤓","🥳","😏","😴","🤗",
+      "😅","🤔","🫡","😬","🥺","😢","😭","😤","😮","😅","😑","😐","🙄","😴",
+    ],
+  },
+  {
+    label: "Gestos",
+    emojis: [
+      "👋","🤚","🖐️","✋","👌","🤌","🤏","✌️","🤞","🫰","🤙","👍","👎","👊",
+      "✊","🙌","👏","🙏","🤝","💪","🫶","☝️","👆","👇","👉","👈","🤟","🫵",
+    ],
+  },
+  {
+    label: "Corazones",
+    emojis: [
+      "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💖","💗","💓","💕","💞",
+      "💟","❣️","💔","💝","💘",
+    ],
+  },
+  {
+    label: "Viaje y playa",
+    emojis: [
+      "🏝️","🌴","🌊","☀️","🌞","🌙","🏖️","🌅","🌄","⛱️","🏊","🏄","🚗","✈️",
+      "🛬","🗺️","📍","🧳","🌎","🏔️","🐢","🐠","🐚","🌺","🌸","🌅","⛵","🛥️",
+    ],
+  },
+  {
+    label: "Casa",
+    emojis: [
+      "🏡","🏠","🔑","🛏️","🛋️","🚿","🛁","🍳","☕","🧹","🧼","📺","🛜","📶",
+      "🔌","🅿️","🚪","🪑","🌡️","🧺","🔥","❄️","🪟","🧴",
+    ],
+  },
+  {
+    label: "Símbolos",
+    emojis: [
+      "✅","❌","⚠️","✨","🎉","🎊","💯","🔥","⭐","🌟","💫","💬","📞","📧",
+      "📅","🕒","💵","💳","🧾","🇭🇳","❗","❓","➡️","🆗","🙏","💰","📲","🔔",
+    ],
+  },
 ];
 
 /** Avatar circular con iniciales sobre color sólido determinístico. */
@@ -634,25 +673,34 @@ export default function InboxPage() {
                 onSubmit={handleSend}
                 className="bg-white border-t border-gray-200 p-4 flex gap-3 items-end relative"
               >
-                {/* Emoji picker — popover absoluto sobre el textarea */}
+                {/* Emoji picker — popover por categorías, scrolleable */}
                 {emojiOpen && (
                   <div
-                    className="absolute bottom-full left-4 mb-2 bg-white border border-gray-200 rounded-xl shadow-lg p-3 grid grid-cols-8 gap-1 z-10"
-                    style={{ width: "20rem" }}
+                    className="absolute bottom-full left-4 mb-2 bg-white border border-gray-200 rounded-xl shadow-lg z-10 overflow-y-auto"
+                    style={{ width: "20rem", maxHeight: "18rem" }}
                   >
-                    {COMMON_EMOJIS.map((e) => (
-                      <button
-                        key={e}
-                        type="button"
-                        onClick={() => {
-                          insertAtCursor(e);
-                          setEmojiOpen(false);
-                        }}
-                        className="text-xl hover:bg-gray-100 rounded p-1 transition"
-                        aria-label={`Insertar ${e}`}
-                      >
-                        {e}
-                      </button>
+                    {EMOJI_CATEGORIES.map((cat) => (
+                      <div key={cat.label} className="p-2">
+                        <p className="text-[10px] uppercase tracking-wide text-muted px-1 mb-1 sticky top-0 bg-white">
+                          {cat.label}
+                        </p>
+                        <div className="grid grid-cols-8 gap-1">
+                          {cat.emojis.map((e, i) => (
+                            <button
+                              key={`${cat.label}-${i}`}
+                              type="button"
+                              onClick={() => {
+                                insertAtCursor(e);
+                                // no cerramos: permite insertar varios seguidos
+                              }}
+                              className="text-xl hover:bg-gray-100 rounded p-1 transition"
+                              aria-label={`Insertar ${e}`}
+                            >
+                              {e}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}
