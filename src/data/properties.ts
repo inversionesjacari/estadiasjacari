@@ -202,7 +202,7 @@ export const properties: Property[] = [
     type: "Apartamento",
     location: "Torre 1, Piso 20, Apto. 1-2004 — Tegucigalpa",
     city: "Tegucigalpa",
-    capacity: 4,
+    capacity: 6,
     bedrooms: [
       { name: "Habitación principal", beds: "1 cama Queen" },
       { name: "Habitación secundaria", beds: "1 cama Queen" },
@@ -218,7 +218,7 @@ export const properties: Property[] = [
       "Piso 20 con vistas panorámicas de Tegucigalpa",
       "Acceso a amenidades del edificio",
       "Estacionamiento incluido",
-      "Capacidad para 4 personas",
+      "Capacidad para 6 personas",
     ],
     description: [
       "Centro Morazán es un apartamento de lujo en el piso 20 de Torre 1 en el corazón de Tegucigalpa, con vistas panorámicas de la capital hondureña.",
