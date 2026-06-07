@@ -13,7 +13,11 @@
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
 
-import { runConversationalBot, type WorkersAIEnv } from "./conversational-bot";
+import {
+  runConversationalBot,
+  getConversationHistory,
+  type WorkersAIEnv,
+} from "./conversational-bot";
 import {
   getState,
   upsertState,
@@ -88,6 +92,15 @@ export function isCardChoice(text: string): boolean {
 export function isTransferChoice(text: string): boolean {
   const t = text.toLowerCase();
   return /\b(transferencia|transferir|banco|cuenta|dep[oó]sito|deposito|bac|ach)\b/.test(t);
+}
+
+/** Detecta si el huésped reporta que ya hizo el pago (escalar para verificar). */
+export function isPaymentReported(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  return /\b(ya pague|ya page|ya transferi|hice el deposito|ya deposite|pago realizado|pago hecho|ya hice el pago|envie el comprobante|aqui esta el comprobante|adjunto comprobante)\b/.test(t);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -263,8 +276,11 @@ async function gatherQuoteData(
   // ── Base de conocimiento desde D1 (editable). Fallback al hardcoded. ───────
   const kbText = await buildKnowledgeBaseText(env.DB);
 
+  // ── Historial de la conversación → memoria del bot (no repetir preguntas) ──
+  const history = await getConversationHistory(phone, env.DB);
+
   // ── Llamada al bot conversacional (Workers AI / Llama) ────────────────────
-  const botResult = await runConversationalBot(text, previousData, todayIso, env, kbText);
+  const botResult = await runConversationalBot(text, previousData, todayIso, env, kbText, history);
 
   if (!botResult.ok) {
     console.error("conversational-bot failed:", botResult.error);
@@ -272,6 +288,17 @@ async function gatherQuoteData(
       reply: "Disculpa, tuve un problema técnico procesando tu mensaje. Un agente humano te responde en breve. 🙏",
       escalateToOwner: true,
       ruleName:        "bot_failed",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
+  // ── Cliente reporta que ya pagó → escalar a humano para verificar el pago ──
+  if (isPaymentReported(text)) {
+    return {
+      reply:
+        "¡Perfecto! 🙏 Déjame verificar el pago con el equipo y te confirmamos la reserva enseguida.",
+      escalateToOwner: true,
+      ruleName:        "payment_reported",
       tokensUsed:      botResult.tokensUsed,
     };
   }

@@ -16,10 +16,59 @@
 //
 
 import { PROPERTY_KNOWLEDGE_BASE } from "./property-kb";
-import { callWorkersAIJson, type WorkersAIEnv } from "./workers-ai";
+import { callWorkersAIJson, type WorkersAIEnv, type AIMessage } from "./workers-ai";
 
 // Re-export so callers can import WorkersAIEnv from here or from workers-ai directly
 export type { WorkersAIEnv };
+
+/** Un turno de la conversación (para darle memoria al bot). */
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/**
+ * Lee los últimos mensajes de la conversación con un número (in + out) y los
+ * mapea a turnos para el LLM. Le da MEMORIA al bot: ve lo que ya se dijo y no
+ * repite preguntas ni pierde el hilo.
+ *
+ * El mensaje entrante actual ya está en la DB (se inserta antes del quote flow),
+ * así que el último turno devuelto es el mensaje actual del cliente.
+ */
+export async function getConversationHistory(
+  phone: string,
+  db: D1Database,
+  limit = 14,
+): Promise<ConversationTurn[]> {
+  try {
+    const res = await db
+      .prepare(
+        `SELECT direction, body
+           FROM whatsapp_messages
+          WHERE from_phone = ? OR to_phone = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .bind(phone, phone, limit)
+      .all<{ direction: string; body: string }>();
+
+    const rows = (res.results ?? []).reverse(); // cronológico
+    const turns: ConversationTurn[] = [];
+    for (const r of rows) {
+      const body = (r.body ?? "").trim();
+      if (!body) continue;
+      if (body.startsWith("[FAILED]")) continue; // no confundir al LLM con errores
+      turns.push({
+        role: r.direction === "in" ? "user" : "assistant",
+        content: body.slice(0, 600),
+      });
+    }
+    return turns;
+  } catch (err) {
+    console.error("getConversationHistory error:", (err as Error).message);
+    return [];
+  }
+}
 import type { QuoteData, PropertySlug, City } from "./quote-extractor";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,15 +152,23 @@ export async function runConversationalBot(
   todayIso: string,
   env: WorkersAIEnv,
   kbText: string = PROPERTY_KNOWLEDGE_BASE,
+  history: ConversationTurn[] = [],
 ): Promise<ConversationalResponse> {
-  const systemPrompt = buildSystemPrompt(todayIso, kbText);
-  const userPrompt   = buildUserPrompt(userMessage, previousData);
+  const systemPrompt = buildSystemPrompt(todayIso, kbText, previousData);
+
+  // Mensajes para el LLM: system + historial completo de la conversación.
+  // El historial (leído de la DB) ya termina con el mensaje actual del cliente,
+  // dándole MEMORIA al bot — ve todo lo dicho y no repite preguntas.
+  const messages: AIMessage[] = [{ role: "system", content: systemPrompt }];
+  if (history.length > 0) {
+    messages.push(...history);
+  } else {
+    // Fallback (sin historial): solo el mensaje actual
+    messages.push({ role: "user", content: buildUserPrompt(userMessage, previousData) });
+  }
 
   const result = await callWorkersAIJson<LlamaOutput>(
-    [
-      { role: "system", content: systemPrompt },
-      { role: "user",   content: userPrompt   },
-    ],
+    messages,
     env,
     { temperature: 0.15, maxTokens: 600 },
   );
@@ -176,11 +233,26 @@ export async function runConversationalBot(
 // Construcción de prompts
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(todayIso: string, kbText: string): string {
+function buildSystemPrompt(
+  todayIso: string,
+  kbText: string,
+  previousData: QuoteData,
+): string {
+  const knownData = summarizeKnownData(previousData);
   return `Eres el asistente virtual de *Estadías Jacarí*, empresa hondureña de alquileres turísticos. Atiendes consultas de clientes potenciales vía WhatsApp.
 Hoy es ${todayIso} (zona horaria Honduras, GMT-6).
 
 ${kbText}
+
+---
+
+## MEMORIA DE LA CONVERSACIÓN (lo más importante)
+Recibís el historial COMPLETO de la conversación. Leelo siempre antes de responder.
+- NUNCA preguntes algo que el cliente YA respondió antes en el chat. Es la falla más grave.
+- Si el cliente dice "ya te dije", "ya me preguntaste", "como te comenté" → revisá el historial, encontrá el dato y usalo. No vuelvas a preguntar.
+- Acumulá los datos a lo largo del chat (propiedad, fechas, huéspedes).
+
+${knownData}
 
 ---
 
@@ -204,10 +276,14 @@ El sistema YA le envió al cliente un saludo abierto ("¡Hola! Gracias por escri
 **A) Quiere RESERVAR / cotizar / saber precios / disponibilidad (lead nuevo):**
 → Entrá al flujo de cotización (ver Paso 2). intent = "providing_data" si dio datos, o "asking_question" si solo pregunta.
 
-**B) YA TIENE una reserva con nosotros (huésped actual):**
-Señales: dice "mi reserva", "ya reservé", "soy huésped", "estoy hospedado", pregunta por el WiFi / la dirección / el código / el check-in de SU estadía ya confirmada.
+**B) YA TIENE una reserva CONFIRMADA de antes y necesita soporte (huésped actual):**
+Usá "existing_guest" SOLO si el cliente claramente ya completó y pagó una reserva en una conversación ANTERIOR y ahora pide soporte de SU estadía: pregunta por el WiFi, la dirección exacta, el código de entrada, cómo llegar, extender su estadía, etc.
 → intent = "existing_guest". reply: *"¡Con gusto! Te conecto con alguien del equipo que tiene acceso a tu reserva para ayudarte enseguida. 🙏"*
-NO intentes adivinar datos de su reserva ni inventar WiFi/direcciones.
+
+⚠️ NO uses "existing_guest" en estos casos:
+- Si el cliente está en MEDIO de esta conversación cotizando/reservando → seguí el flujo normal.
+- Si dice "ya pagué", "ya transferí", "hice el depósito" durante una cotización → intent = "confirming", reply: *"¡Perfecto! Déjame verificar el pago y te confirmo la reserva enseguida 🙏"*. NO es existing_guest.
+- Si el cliente está frustrado o te corrige ("ya te dije", "te dije que...") → NO es existing_guest. Releé el historial, encontrá el dato que te están señalando y continuá. Es la falla más grave escalar por esto.
 
 **C) Pregunta GENERAL sobre las propiedades (amenidades, ubicación, qué ofrecen):**
 → intent = "asking_question". Respondé con la base de conocimiento. Si no sabés de qué propiedad habla, preguntáselo. Después ofrecé ayudarle a cotizar.
@@ -234,10 +310,19 @@ Cuando tengas **propiedad + fechas + huéspedes** → intent "providing_data" co
 - Si el cliente hace una pregunta durante el flujo, respondéla y luego retomá donde quedaste.
 
 ### Extraer datos de cotización
-- checkIn / checkOut: YYYY-MM-DD. Relativo a hoy (${todayIso}). "este fin de semana" = próximo viernes-domingo.
+- checkIn / checkOut: YYYY-MM-DD. Relativo a hoy (${todayIso}). "este fin de semana" = próximo viernes-domingo. "hoy" = ${todayIso}.
 - guests: total de personas (adultos + niños).
 - property: slug exacto (lista abajo). Si solo dicen ciudad → city, property null.
 - city: "La Ceiba" | "Tela" | "Tegucigalpa"
+
+### Fechas: check-in (llegada) vs check-out (salida) — leé el contexto
+- La PRIMERA fecha que dan suele ser el check-in (llegada).
+- Si YA tenés el check-in y el cliente da otra fecha (o vos le preguntaste la salida), esa fecha es el check-OUT.
+- "una noche" / "solo una noche" → check-out = check-in + 1 día.
+- "X noches" → check-out = check-in + X días.
+- Si el cliente dice "salgo mañana" o "la salida es mañana" → eso es el check-OUT = mañana, NO el check-in.
+- Ejemplo: cliente dice "reservar el 7" (check-in=día 7) y luego "salgo el 8" o "una noche" → check-out=día 8. Ya tenés ambas fechas, NO sigas preguntando la salida.
+- Si ya tenés check-in + check-out + propiedad + huéspedes, NO preguntes más: poné intent "providing_data" con todo.
 
 ### Slugs válidos
 - "villa-b11-palma-real"   → Villa B11 (La Ceiba)
@@ -249,11 +334,13 @@ Cuando tengas **propiedad + fechas + huéspedes** → intent "providing_data" co
 
 ### Intención del mensaje
 Clasifica el mensaje en uno de estos:
-- "providing_data"   → está dando fechas, personas o eligiendo propiedad
-- "asking_question"  → pregunta sobre amenidades, políticas, ubicación, etc.
-- "confirming"       → acepta algo (sí, dale, perfecto, de acuerdo, listo)
-- "rejecting"        → rechaza algo (no, cancelo, no gracias)
-- "unknown"          → no se puede clasificar claramente
+- "providing_data"    → está dando fechas, personas o eligiendo propiedad
+- "asking_question"   → pregunta sobre amenidades, políticas, ubicación, etc.
+- "requesting_photos" → pide ver fotos/imágenes de una propiedad
+- "confirming"        → acepta algo (sí, dale, perfecto) o avisa que ya pagó/transfirió
+- "rejecting"         → rechaza algo (no, cancelo, no gracias)
+- "existing_guest"    → ya tiene reserva confirmada de antes y pide soporte de su estadía
+- "unknown"           → no se puede clasificar claramente
 
 ---
 
@@ -270,6 +357,23 @@ Responde ÚNICAMENTE con este JSON exacto, sin texto adicional antes ni después
   "city": "La Ceiba" | "Tela" | "Tegucigalpa" | null,
   "intent": "providing_data" | "asking_question" | "confirming" | "rejecting" | "unknown"
 }`;
+}
+
+/** Resume los datos ya conocidos para inyectarlos al system prompt. */
+function summarizeKnownData(d: QuoteData): string {
+  const parts: string[] = [];
+  if (d.property) parts.push(`- Propiedad: ${d.property}`);
+  else if (d.city) parts.push(`- Ciudad: ${d.city} (falta elegir la propiedad específica)`);
+  if (d.checkIn) parts.push(`- Check-in / llegada: ${d.checkIn}`);
+  if (d.checkOut) parts.push(`- Check-out / salida: ${d.checkOut}`);
+  if (d.guests) parts.push(`- Huéspedes: ${d.guests}`);
+  if (parts.length === 0) {
+    return "## DATOS QUE YA TENEMOS\n(todavía ninguno — recién empieza la conversación)";
+  }
+  return (
+    "## DATOS QUE YA TENEMOS DEL CLIENTE (no los vuelvas a pedir)\n" +
+    parts.join("\n")
+  );
 }
 
 function buildUserPrompt(userMessage: string, previousData: QuoteData): string {
