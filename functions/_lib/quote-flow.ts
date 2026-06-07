@@ -23,7 +23,9 @@ import {
   INITIAL_QUOTE_MESSAGE,
   type ConvState,
 } from "./quote-state";
-import { buildQuote, formatQuoteMessage } from "./quote-builder";
+import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
+import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
+import type { PropertySlug } from "./quote-extractor";
 import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
 import {
   buildTransferMessageHNL,
@@ -127,12 +129,16 @@ export async function handleQuoteIncoming(
 ): Promise<QuoteFlowResult | null> {
   const existing = await getState(phone, env.DB);
 
+  // Mapa de precios/capacidad desde D1 (editable). Fallback al hardcoded.
+  // Se construye una vez por mensaje y se pasa a todos los sub-handlers.
+  const pricingMap = await buildPricingMap(env.DB);
+
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
   if (!existing) {
     // Huésped existente sin quote flow en curso → dejar que el rule-bot responda
     if (hasActiveReservation) return null;
     // Potencial nuevo huésped → siempre iniciar el funnel (cualquier mensaje)
-    return gatherQuoteData(phone, text, emptyQuoteData(), todayIso, env, true);
+    return gatherQuoteData(phone, text, emptyQuoteData(), todayIso, env, true, pricingMap);
   }
 
   // ── CASO 2: Quote ya entregado, esperando "sí" ─────────────────────────────
@@ -147,6 +153,7 @@ export async function handleQuoteIncoming(
           guests:   existing.data.guests!,
         },
         env.DB,
+        pricingMap,
       );
       const depositLine = quote
         ? `*HNL ${quote.depositHNL.toLocaleString("es-HN")}* (≈ USD ${quote.depositUSD.toFixed(2)})`
@@ -164,12 +171,12 @@ Decime cuál preferís.`,
       };
     }
     // No confirmó → volver a recolectar datos (puede haber cambiado fechas)
-    return gatherQuoteData(phone, text, existing.data, todayIso, env, false);
+    return gatherQuoteData(phone, text, existing.data, todayIso, env, false, pricingMap);
   }
 
   // ── CASO 2.5: Esperando método de pago ────────────────────────────────────
   if (existing.state === "awaiting_payment_method") {
-    return handlePaymentMethodChoice(phone, text, existing.data, env);
+    return handlePaymentMethodChoice(phone, text, existing.data, env, pricingMap);
   }
 
   // ── CASO 2.6: Esperando captura PayPal ────────────────────────────────────
@@ -202,6 +209,7 @@ Decime cuál preferís.`,
           guests:   existing.data.guests!,
         },
         env.DB,
+        pricingMap,
       );
       return {
         reply:           buildTransferMessageUSD(quote?.depositUSD ?? 0),
@@ -221,7 +229,7 @@ Decime cuál preferís.`,
   }
 
   // ── CASO 3: awaiting_quote_data — seguir recolectando datos ───────────────
-  return gatherQuoteData(phone, text, existing.data, todayIso, env, false);
+  return gatherQuoteData(phone, text, existing.data, todayIso, env, false, pricingMap);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -241,14 +249,18 @@ async function gatherQuoteData(
   todayIso: string,
   env: QuoteFlowEnv,
   isFirstMessage: boolean,
+  pricingMap: Record<PropertySlug, PropertyPricing>,
 ): Promise<QuoteFlowResult> {
   // Si es primer mensaje, crear el estado vacío antes de llamar al bot
   if (isFirstMessage) {
     await upsertState(phone, "awaiting_quote_data", emptyQuoteData(), env.DB);
   }
 
+  // ── Base de conocimiento desde D1 (editable). Fallback al hardcoded. ───────
+  const kbText = await buildKnowledgeBaseText(env.DB);
+
   // ── Llamada al bot conversacional (Workers AI / Llama) ────────────────────
-  const botResult = await runConversationalBot(text, previousData, todayIso, env);
+  const botResult = await runConversationalBot(text, previousData, todayIso, env, kbText);
 
   if (!botResult.ok) {
     console.error("conversational-bot failed:", botResult.error);
@@ -315,6 +327,7 @@ async function gatherQuoteData(
         guests:   mergedData.guests!,
       },
       env.DB,
+      pricingMap,
     );
 
     if (!quote) {
@@ -370,6 +383,7 @@ async function handlePaymentMethodChoice(
   text: string,
   data: QuoteData,
   env: QuoteFlowEnv,
+  pricingMap: Record<PropertySlug, PropertyPricing>,
 ): Promise<QuoteFlowResult> {
   const cardChoice     = isCardChoice(text);
   const transferChoice = isTransferChoice(text);
@@ -391,6 +405,7 @@ async function handlePaymentMethodChoice(
       guests:   data.guests!,
     },
     env.DB,
+    pricingMap,
   );
 
   if (!quote || !quote.available) {

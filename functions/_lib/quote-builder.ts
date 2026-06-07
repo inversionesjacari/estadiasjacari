@@ -138,8 +138,9 @@ function nightsBetween(checkInIso: string, checkOutIso: string): number {
 export async function buildQuote(
   input: QuoteInput,
   db: D1Database,
+  pricingMap: Record<PropertySlug, PropertyPricing> = PROPERTY_PRICING,
 ): Promise<QuoteOutput | null> {
-  const pricing = PROPERTY_PRICING[input.property];
+  const pricing = pricingMap[input.property] ?? PROPERTY_PRICING[input.property];
   if (!pricing) return null;
 
   const nights = nightsBetween(input.checkIn, input.checkOut);

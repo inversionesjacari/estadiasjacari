@@ -100,8 +100,9 @@ export async function runConversationalBot(
   previousData: QuoteData,
   todayIso: string,
   env: WorkersAIEnv,
+  kbText: string = PROPERTY_KNOWLEDGE_BASE,
 ): Promise<ConversationalResponse> {
-  const systemPrompt = buildSystemPrompt(todayIso);
+  const systemPrompt = buildSystemPrompt(todayIso, kbText);
   const userPrompt   = buildUserPrompt(userMessage, previousData);
 
   const result = await callWorkersAIJson<LlamaOutput>(
@@ -173,11 +174,11 @@ export async function runConversationalBot(
 // Construcción de prompts
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(todayIso: string): string {
+function buildSystemPrompt(todayIso: string, kbText: string): string {
   return `Eres el asistente virtual de *Estadías Jacarí*, empresa hondureña de alquileres turísticos. Atiendes consultas de clientes potenciales vía WhatsApp.
 Hoy es ${todayIso} (zona horaria Honduras, GMT-6).
 
-${PROPERTY_KNOWLEDGE_BASE}
+${kbText}
 
 ---
 
