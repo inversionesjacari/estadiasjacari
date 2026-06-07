@@ -28,6 +28,7 @@ interface Conversation {
   messageCount: number;
   lastMatchedRule: string | null;
   escalated: boolean;
+  contactName: string | null;
   reservation: {
     id: number;
     guestName: string | null;
@@ -45,6 +46,7 @@ interface Message {
   body: string;
   matchedRule: string | null;
   escalated: boolean;
+  status: string | null;
   createdAt: string;
 }
 
@@ -185,6 +187,23 @@ function Avatar({
       {initials}
     </div>
   );
+}
+
+/** Checks de WhatsApp para mensajes salientes: ✓ enviado, ✓✓ entregado, ✓✓ azul leído. */
+function MessageStatus({ status }: { status: string | null }) {
+  if (!status || status === "sent") {
+    return <span title="Enviado">✓</span>;
+  }
+  if (status === "delivered") {
+    return <span title="Entregado">✓✓</span>;
+  }
+  if (status === "read") {
+    return <span className="text-sky-300" title="Leído">✓✓</span>;
+  }
+  if (status === "failed") {
+    return <span className="text-red-200" title="No se pudo entregar">⚠ falló</span>;
+  }
+  return null;
 }
 
 export default function InboxPage() {
@@ -499,14 +518,14 @@ export default function InboxPage() {
                 }`}
               >
                 <Avatar
-                  name={c.reservation?.guestName ?? null}
+                  name={c.reservation?.guestName ?? c.contactName ?? null}
                   phone={c.phone}
                   size="md"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between mb-0.5 gap-2">
                     <span className="font-semibold text-primary text-sm truncate">
-                      {c.reservation?.guestName ?? formatPhone(c.phone)}
+                      {c.reservation?.guestName ?? c.contactName ?? formatPhone(c.phone)}
                     </span>
                     <span className="text-[10px] text-muted whitespace-nowrap">
                       {formatTimeAgo(c.lastAt)}
@@ -556,7 +575,7 @@ export default function InboxPage() {
               {/* Header conversación */}
               {(() => {
                 const conv = conversations.find((c) => c.phone === selectedPhone);
-                const guestName = conv?.reservation?.guestName ?? null;
+                const guestName = conv?.reservation?.guestName ?? conv?.contactName ?? null;
                 return (
                   <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
                     <Avatar name={guestName} phone={selectedPhone} size="lg" />
@@ -598,10 +617,11 @@ export default function InboxPage() {
                       }`}
                     >
                       <p className="text-sm whitespace-pre-wrap break-words">{m.body}</p>
-                      <p className={`text-[10px] mt-1 ${m.direction === "out" ? "text-white/70" : "text-muted"}`}>
-                        {formatDate(m.createdAt)}
-                        {m.matchedRule && m.matchedRule !== "manual_inbox" && ` · 🤖 ${m.matchedRule}`}
-                        {m.escalated && " · ⚠"}
+                      <p className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === "out" ? "text-white/70 justify-end" : "text-muted"}`}>
+                        <span>{formatDate(m.createdAt)}</span>
+                        {m.matchedRule && m.matchedRule !== "manual_inbox" && <span>· 🤖 {m.matchedRule}</span>}
+                        {m.escalated && <span>· ⚠</span>}
+                        {m.direction === "out" && <MessageStatus status={m.status} />}
                       </p>
                     </div>
                   </div>

@@ -27,6 +27,7 @@ interface ConversationRow {
   message_count: number;
   last_matched_rule: string | null;
   last_escalated: number;
+  contact_name: string | null;
   guest_name: string | null;
   property_slug: string | null;
   reservation_id: number | null;
@@ -61,6 +62,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               lm.matched_rule AS last_matched_rule,
               lm.escalated AS last_escalated,
               (SELECT COUNT(*) FROM whatsapp_messages m2 WHERE m2.from_phone = lm.phone OR m2.to_phone = lm.phone) AS message_count,
+              c.profile_name AS contact_name,
               r.guest_name,
               r.property_slug,
               r.id AS reservation_id,
@@ -68,6 +70,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               r.check_out
          FROM last_msg lm
          LEFT JOIN reservations r ON r.id = lm.reservation_id
+         LEFT JOIN whatsapp_contacts c ON c.phone = lm.phone
         WHERE lm.rn = 1
         ORDER BY lm.created_at DESC
         LIMIT 100`,
@@ -83,6 +86,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         messageCount: r.message_count,
         lastMatchedRule: r.last_matched_rule,
         escalated: r.last_escalated === 1,
+        contactName: r.contact_name,
         reservation: r.reservation_id
           ? {
               id: r.reservation_id,

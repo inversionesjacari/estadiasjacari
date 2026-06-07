@@ -81,8 +81,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   try {
     await env.DB.prepare(
       `INSERT INTO whatsapp_messages
-         (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated)
-       VALUES (?, ?, 'out', ?, ?, ?, 'manual_inbox', 0)`,
+         (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+       VALUES (?, ?, 'out', ?, ?, ?, 'manual_inbox', 0, ?)`,
     )
       .bind(
         sendResult.messageId ?? null,
@@ -90,6 +90,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         env.WHATSAPP_PHONE_NUMBER_ID,
         phone,
         sendResult.ok ? text : `[FAILED] ${text}\n\nERROR: ${sendResult.error}`,
+        sendResult.ok ? "sent" : "failed",
       )
       .run();
   } catch (logErr) {

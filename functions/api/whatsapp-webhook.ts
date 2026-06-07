@@ -224,7 +224,20 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     for (const change of entry.changes ?? []) {
       if (change.field !== "messages") continue;
       const value = change.value;
-      if (!value?.messages) continue; // statuses, etc.
+
+      // Eventos de estado (sent/delivered/read/failed) → actualizar checks ✓✓
+      if (value?.statuses) {
+        for (const st of value.statuses) {
+          try {
+            await handleStatusUpdate(st, env);
+          } catch (err) {
+            const sid = (st as { id?: string })?.id ?? "?";
+            console.error(`Error en status ${sid}:`, (err as Error).message);
+          }
+        }
+      }
+
+      if (!value?.messages) continue;
       for (const msg of value.messages) {
         try {
           await processIncomingMessage(msg, value.contacts ?? [], env);
@@ -240,6 +253,33 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   return new Response("ok", { status: 200 });
 };
+
+/**
+ * Actualiza el estado de entrega de un mensaje saliente (checks de WhatsApp).
+ * Meta manda: sent → delivered → read. Usamos un ranking para no "retroceder"
+ * (ej. si read llega antes que delivered por orden de red).
+ */
+async function handleStatusUpdate(stRaw: unknown, env: Env): Promise<void> {
+  const st = stRaw as { id?: string; status?: string };
+  const id = st?.id;
+  const status = st?.status;
+  if (!id || !status) return;
+  if (!["sent", "delivered", "read", "failed"].includes(status)) return;
+
+  await env.DB.prepare(
+    `UPDATE whatsapp_messages
+        SET status = ?
+      WHERE meta_message_id = ?
+        AND COALESCE(CASE status
+              WHEN 'failed' THEN 4 WHEN 'read' THEN 3
+              WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END, 0)
+          < CASE ?
+              WHEN 'failed' THEN 4 WHEN 'read' THEN 3
+              WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END`,
+  )
+    .bind(status, id, status)
+    .run();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Procesamiento de UN mensaje entrante (idempotente)
@@ -271,6 +311,23 @@ async function processIncomingMessage(
 
   const toE164 = env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown";
   const contactName = contacts[0]?.profile?.name ?? null;
+
+  // ── Guardar/actualizar el nombre de perfil de WhatsApp ─────────────────
+  if (contactName) {
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_contacts (phone, profile_name, updated_at)
+           VALUES (?, ?, datetime('now'))
+         ON CONFLICT(phone) DO UPDATE SET
+           profile_name = excluded.profile_name,
+           updated_at   = datetime('now')`,
+      )
+        .bind(fromE164, contactName)
+        .run();
+    } catch (err) {
+      console.error("Error guardando contacto:", (err as Error).message);
+    }
+  }
 
   // ── Idempotencia: INSERT OR IGNORE del mensaje entrante ────────────────
   const inserted = await env.DB.prepare(
@@ -382,8 +439,8 @@ async function processIncomingMessage(
   try {
     await env.DB.prepare(
       `INSERT INTO whatsapp_messages
-         (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated)
-       VALUES (?, ?, 'out', ?, ?, ?, ?, ?)`,
+         (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+       VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         sendResult.messageId ?? null,
@@ -393,6 +450,7 @@ async function processIncomingMessage(
         sendResult.ok ? replyText + photoNote : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
         ruleName,
         escalate ? 1 : 0,
+        sendResult.ok ? "sent" : "failed",
       )
       .run();
   } catch (logErr) {

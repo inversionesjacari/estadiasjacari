@@ -25,6 +25,7 @@ interface MessageRow {
   body: string | null;
   matched_rule: string | null;
   escalated: number;
+  status: string | null;
   created_at: string;
 }
 
@@ -41,7 +42,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   try {
     const { results } = await env.DB.prepare(
       `SELECT id, meta_message_id, reservation_id, direction,
-              from_phone, to_phone, body, matched_rule, escalated, created_at
+              from_phone, to_phone, body, matched_rule, escalated, status, created_at
          FROM whatsapp_messages
         WHERE from_phone = ? OR to_phone = ?
         ORDER BY created_at ASC
@@ -63,6 +64,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         body: m.body ?? "",
         matchedRule: m.matched_rule,
         escalated: m.escalated === 1,
+        status: m.status,
         createdAt: m.created_at,
       })),
     });
