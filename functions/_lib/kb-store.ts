@@ -65,6 +65,13 @@ export interface KbFaq {
   active: number;
 }
 
+export interface KbRule {
+  id: number;
+  rule: string;
+  sortOrder: number;
+  active: number;
+}
+
 interface KbPropertyRow {
   slug: string;
   name: string;
@@ -184,6 +191,28 @@ export async function getFaqs(db: D1Database): Promise<KbFaq[]> {
   }
 }
 
+export async function getRules(db: D1Database): Promise<KbRule[]> {
+  try {
+    const res = await db
+      .prepare(
+        `SELECT id, rule, sort_order, active
+           FROM kb_rules
+          WHERE active = 1
+          ORDER BY sort_order ASC, id ASC`,
+      )
+      .all<{ id: number; rule: string; sort_order: number; active: number }>();
+    return (res.results ?? []).map((r) => ({
+      id: r.id,
+      rule: r.rule,
+      sortOrder: r.sort_order,
+      active: r.active,
+    }));
+  } catch (err) {
+    console.error("getRules error:", (err as Error).message);
+    return [];
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildPricingMap — para quote-builder (precio + capacidad)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,10 +256,11 @@ export async function buildPricingMap(
  * Si D1 está vacío o falla, devuelve el PROPERTY_KNOWLEDGE_BASE hardcoded.
  */
 export async function buildKnowledgeBaseText(db: D1Database): Promise<string> {
-  const [props, policies, faqs] = await Promise.all([
+  const [props, policies, faqs, rules] = await Promise.all([
     getProperties(db),
     getPolicies(db),
     getFaqs(db),
+    getRules(db),
   ]);
 
   // Si no hay propiedades en D1, usar el respaldo completo del código
@@ -245,6 +275,16 @@ export async function buildKnowledgeBaseText(db: D1Database): Promise<string> {
     "Somos una empresa de alquileres turísticos en Honduras. Todas las propiedades son privadas y completamente equipadas.",
   );
   lines.push("");
+
+  // Reglas del negocio PRIMERO (máxima prioridad — el dueño las definió)
+  if (rules.length > 0) {
+    lines.push("## ⚠️ REGLAS DEL NEGOCIO (máxima prioridad — seguilas SIEMPRE)");
+    lines.push("");
+    for (const r of rules) lines.push(`- ${r.rule}`);
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+  }
 
   // Agrupar propiedades por ciudad
   const byCity = new Map<string, KbProperty[]>();

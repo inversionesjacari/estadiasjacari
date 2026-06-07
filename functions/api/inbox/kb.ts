@@ -15,7 +15,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
-import { getProperties, getPolicies, getFaqs } from "../../_lib/kb-store";
+import { getProperties, getPolicies, getFaqs, getRules } from "../../_lib/kb-store";
 
 interface Env {
   DB: D1Database;
@@ -54,13 +54,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const auth = await requireInboxAuth(request, env);
   if (!auth.ok) return auth.response!;
 
-  const [properties, policies, faqs] = await Promise.all([
+  const [properties, policies, faqs, rules] = await Promise.all([
     getProperties(env.DB),
     getPolicies(env.DB),
     getFaqs(env.DB),
+    getRules(env.DB),
   ]);
 
-  return json({ ok: true, properties, policies, faqs });
+  return json({ ok: true, properties, policies, faqs, rules });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +99,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         return await updateFaq(p, env.DB);
       case "delete_faq":
         return await deleteFaq(p, env.DB);
+      case "create_rule":
+        return await createRule(p, env.DB);
+      case "update_rule":
+        return await updateRule(p, env.DB);
+      case "delete_rule":
+        return await deleteRule(p, env.DB);
       default:
         return json({ ok: false, error: `Acción desconocida: ${action}` }, 400);
     }
@@ -259,5 +266,53 @@ async function deleteFaq(
   if (id == null) return json({ ok: false, error: "id requerido" }, 400);
 
   await db.prepare(`DELETE FROM kb_faqs WHERE id = ?`).bind(id).run();
+  return json({ ok: true });
+}
+
+async function createRule(
+  p: Record<string, unknown>,
+  db: D1Database,
+): Promise<Response> {
+  const rule = toStr(p.rule);
+  if (!rule) return json({ ok: false, error: "La regla no puede estar vacía" }, 400);
+  const sortOrder = toInt(p.sortOrder) ?? 999;
+
+  const result = await db
+    .prepare(`INSERT INTO kb_rules (rule, sort_order) VALUES (?, ?)`)
+    .bind(rule, sortOrder)
+    .run();
+  return json({ ok: true, id: result.meta?.last_row_id });
+}
+
+async function updateRule(
+  p: Record<string, unknown>,
+  db: D1Database,
+): Promise<Response> {
+  const id = toInt(p.id);
+  if (id == null) return json({ ok: false, error: "id requerido" }, 400);
+  const rule = toStr(p.rule);
+  if (!rule) return json({ ok: false, error: "La regla no puede estar vacía" }, 400);
+  const active = p.active === false || p.active === 0 ? 0 : 1;
+
+  const result = await db
+    .prepare(
+      `UPDATE kb_rules SET rule = ?, active = ?, updated_at = datetime('now') WHERE id = ?`,
+    )
+    .bind(rule, active, id)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) {
+    return json({ ok: false, error: `Regla no encontrada: ${id}` }, 404);
+  }
+  return json({ ok: true });
+}
+
+async function deleteRule(
+  p: Record<string, unknown>,
+  db: D1Database,
+): Promise<Response> {
+  const id = toInt(p.id);
+  if (id == null) return json({ ok: false, error: "id requerido" }, 400);
+
+  await db.prepare(`DELETE FROM kb_rules WHERE id = ?`).bind(id).run();
   return json({ ok: true });
 }

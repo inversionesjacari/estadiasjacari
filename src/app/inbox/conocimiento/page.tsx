@@ -57,7 +57,14 @@ interface KbFaq {
   active: number;
 }
 
-type Tab = "propiedades" | "politicas" | "faqs";
+interface KbRule {
+  id: number;
+  rule: string;
+  sortOrder: number;
+  active: number;
+}
+
+type Tab = "reglas" | "propiedades" | "politicas" | "faqs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Página
@@ -66,10 +73,11 @@ type Tab = "propiedades" | "politicas" | "faqs";
 export default function ConocimientoPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Tab>("propiedades");
+  const [tab, setTab] = useState<Tab>("reglas");
   const [properties, setProperties] = useState<KbProperty[]>([]);
   const [policies, setPolicies] = useState<KbPolicy[]>([]);
   const [faqs, setFaqs] = useState<KbFaq[]>([]);
+  const [rules, setRules] = useState<KbRule[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -91,12 +99,14 @@ export default function ConocimientoPage() {
         properties?: KbProperty[];
         policies?: KbPolicy[];
         faqs?: KbFaq[];
+        rules?: KbRule[];
       };
       if (data.ok) {
         setAuthed(true);
         setProperties(data.properties ?? []);
         setPolicies(data.policies ?? []);
         setFaqs(data.faqs ?? []);
+        setRules(data.rules ?? []);
       }
     } catch {
       // dejar loading false abajo
@@ -157,6 +167,7 @@ export default function ConocimientoPage() {
       <div className="bg-white border-b border-gray-200 px-4">
         <nav className="flex gap-1">
           {([
+            ["reglas", "⚙️ Reglas del bot"],
             ["propiedades", "🏠 Propiedades"],
             ["politicas", "📋 Políticas"],
             ["faqs", "❓ Preguntas frecuentes"],
@@ -178,6 +189,15 @@ export default function ConocimientoPage() {
 
       {/* Contenido */}
       <main className="max-w-4xl mx-auto px-4 py-6">
+        {tab === "reglas" && (
+          <RulesTab
+            rules={rules}
+            onSaved={(msg) => {
+              load();
+              showToast(msg);
+            }}
+          />
+        )}
         {tab === "propiedades" && (
           <PropertiesTab
             properties={properties}
@@ -640,6 +660,164 @@ function FaqEditor({
               setEditing(false);
               setQuestion(faq.question);
               setAnswer(faq.answer);
+            }
+          }}
+          className="px-4 py-2 text-sm text-muted hover:text-primary"
+          disabled={saving}
+        >
+          Cancelar
+        </button>
+        <button onClick={save} disabled={saving} className="px-5 py-2 text-sm bg-primary text-white font-semibold rounded-lg hover:bg-primary/90 disabled:opacity-50">
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab Reglas del bot
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RulesTab({
+  rules,
+  onSaved,
+}: {
+  rules: KbRule[];
+  onSaved: (msg: string) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-secondary/10 border border-secondary/30 rounded-xl p-4">
+        <p className="text-sm text-primary font-medium mb-1">
+          ⚙️ Estas son las reglas de comportamiento del bot
+        </p>
+        <p className="text-sm text-muted">
+          Instrucciones que el bot sigue SIEMPRE, con máxima prioridad. Por ejemplo:
+          &quot;nunca des precios sin que los pidan&quot; o &quot;no recomiendes propiedades
+          fuera de la ciudad que pidió el cliente&quot;. Escribilas como si le hablaras a
+          un empleado nuevo.
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => setCreating(true)}
+          className="px-4 py-2 text-sm bg-secondary text-white font-semibold rounded-lg hover:bg-secondary/90"
+        >
+          + Agregar regla
+        </button>
+      </div>
+
+      {creating && (
+        <RuleEditor
+          rule={{ id: 0, rule: "", sortOrder: 999, active: 1 }}
+          isNew
+          onCancel={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
+            onSaved("Regla agregada ✅");
+          }}
+        />
+      )}
+
+      {rules.length === 0 && !creating && (
+        <p className="text-center text-muted text-sm py-8">
+          Todavía no hay reglas. Agregá la primera con el botón de arriba.
+        </p>
+      )}
+
+      {rules.map((r, i) => (
+        <RuleEditor key={r.id} rule={r} index={i + 1} onSaved={(msg) => onSaved(msg)} />
+      ))}
+    </div>
+  );
+}
+
+function RuleEditor({
+  rule,
+  index,
+  isNew,
+  onCancel,
+  onSaved,
+}: {
+  rule: KbRule;
+  index?: number;
+  isNew?: boolean;
+  onCancel?: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(!!isNew);
+  const [text, setText] = useState(rule.rule);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!text.trim()) {
+      alert("La regla no puede estar vacía");
+      return;
+    }
+    setSaving(true);
+    const res = isNew
+      ? await postKb("create_rule", { rule: text })
+      : await postKb("update_rule", { id: rule.id, rule: text });
+    setSaving(false);
+    if (res.ok) {
+      if (!isNew) setEditing(false);
+      onSaved(isNew ? "Regla agregada ✅" : "Regla guardada ✅");
+    } else {
+      alert(res.error ?? "Error guardando");
+    }
+  }
+
+  async function remove() {
+    if (!confirm("¿Borrar esta regla?")) return;
+    const res = await postKb("delete_rule", { id: rule.id });
+    if (res.ok) onSaved("Regla borrada 🗑️");
+    else alert(res.error ?? "Error borrando");
+  }
+
+  if (!editing) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-sm text-primary flex-1">
+            <span className="text-muted mr-2">{index}.</span>
+            {rule.rule}
+          </p>
+          <div className="flex gap-1 shrink-0">
+            <button onClick={() => setEditing(true)} className="px-2 py-1 text-sm text-muted hover:text-primary" title="Editar">
+              ✏️
+            </button>
+            <button onClick={remove} className="px-2 py-1 text-sm text-muted hover:text-red-600" title="Borrar">
+              🗑️
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-accent p-4">
+      <Field label="Regla (instrucción para el bot)">
+        <textarea
+          className={textareaCls}
+          rows={3}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Ej: Nunca des precios si el cliente no los ha pedido."
+          autoFocus
+        />
+      </Field>
+      <div className="mt-3 flex gap-2 justify-end">
+        <button
+          onClick={() => {
+            if (isNew) onCancel?.();
+            else {
+              setEditing(false);
+              setText(rule.rule);
             }
           }}
           className="px-4 py-2 text-sm text-muted hover:text-primary"
