@@ -24,7 +24,7 @@
 //
 
 import { normalizePhone, isValidE164 } from "../_lib/phone";
-import { sendTextMessage } from "../_lib/whatsapp";
+import { sendTextMessage, sendImageMessage } from "../_lib/whatsapp";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
@@ -361,6 +361,21 @@ async function processIncomingMessage(
   // ── Enviar respuesta por WhatsApp ──────────────────────────────────────
   const sendResult = await sendTextMessage(fromE164, replyText, env);
 
+  // Si el quote flow devolvió fotos, enviarlas después del texto (en orden).
+  // Secuencial para que lleguen ordenadas (01, 02, 03, 04).
+  if (quoteResult?.images && quoteResult.images.length > 0) {
+    for (const imageUrl of quoteResult.images) {
+      const imgResult = await sendImageMessage(fromE164, imageUrl, env);
+      if (!imgResult.ok) {
+        console.error(`Error enviando foto ${imageUrl}:`, imgResult.error);
+      }
+    }
+  }
+
+  const photoNote =
+    quoteResult?.images && quoteResult.images.length > 0
+      ? `\n[📸 ${quoteResult.images.length} fotos enviadas]`
+      : "";
   try {
     await env.DB.prepare(
       `INSERT INTO whatsapp_messages
@@ -372,7 +387,7 @@ async function processIncomingMessage(
         reservation?.id ?? null,
         toE164,
         fromE164,
-        sendResult.ok ? replyText : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
+        sendResult.ok ? replyText + photoNote : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
         ruleName,
         escalate ? 1 : 0,
       )

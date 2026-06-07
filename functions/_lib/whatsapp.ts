@@ -378,6 +378,88 @@ export async function sendTextMessage(
   return { ok: true, messageId };
 }
 
+/**
+ * Envía una imagen por su URL pública (HTTPS) al huésped.
+ * Solo funciona dentro de la ventana de 24h. Meta descarga la imagen del link.
+ *
+ * @param toPhone  E.164 sin '+'
+ * @param imageUrl URL pública HTTPS de la imagen (jpg/png, máx 5MB)
+ * @param caption  Texto opcional debajo de la imagen
+ */
+export async function sendImageMessage(
+  toPhone: string,
+  imageUrl: string,
+  env: WhatsAppEnv,
+  caption?: string,
+): Promise<SendTextResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) {
+    return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
+  }
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) {
+    return { ok: false, error: "Falta env var WHATSAPP_PHONE_NUMBER_ID" };
+  }
+  if (!toPhone || !isValidE164(toPhone)) {
+    return { ok: false, error: `Teléfono inválido: "${toPhone}"` };
+  }
+  if (!imageUrl || !/^https:\/\//i.test(imageUrl)) {
+    return { ok: false, error: `URL de imagen inválida (requiere HTTPS): "${imageUrl}"` };
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: toPhone,
+    type: "image",
+    image: caption
+      ? { link: imageUrl, caption: caption.slice(0, 1024) }
+      : { link: imageUrl },
+  };
+
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `Send image timeout/red: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  if (!resp.ok) {
+    return { ok: false, error: `Send image HTTP ${resp.status}: ${bodyText.slice(0, 500)}` };
+  }
+
+  let parsed: { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } };
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: `Send image JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+
+  if (parsed.error) {
+    return {
+      ok: false,
+      error: `Send image Meta error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "desconocido"}`,
+    };
+  }
+
+  const messageId = parsed.messages?.[0]?.id;
+  if (!messageId) {
+    return { ok: false, error: `Send image sin message id: ${bodyText.slice(0, 200)}` };
+  }
+
+  return { ok: true, messageId };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: formato de fecha en español para la variable {{3}} del template.
 // "2026-05-26" + checkIn=hoy → "hoy, 26 de mayo"

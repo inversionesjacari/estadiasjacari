@@ -27,12 +27,13 @@ import type { QuoteData, PropertySlug, City } from "./quote-extractor";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type BotIntent =
-  | "providing_data"   // el huésped dio fechas/personas/propiedad
-  | "asking_question"  // pregunta sobre propiedades/servicios
-  | "confirming"       // "sí, dale, perfecto" → acepta algo
-  | "rejecting"        // "no, cancelo, no quiero"
-  | "existing_guest"   // YA tiene reserva con nosotros → escalar a humano
-  | "unknown";         // no se puede clasificar
+  | "providing_data"    // el huésped dio fechas/personas/propiedad
+  | "asking_question"   // pregunta sobre propiedades/servicios
+  | "requesting_photos" // pide ver fotos/imágenes de una propiedad
+  | "confirming"        // "sí, dale, perfecto" → acepta algo
+  | "rejecting"         // "no, cancelo, no quiero"
+  | "existing_guest"    // YA tiene reserva con nosotros → escalar a humano
+  | "unknown";          // no se puede clasificar
 
 export interface ConversationalResponse {
   ok: boolean;
@@ -77,6 +78,7 @@ const VALID_CITIES: City[] = ["La Ceiba", "Tela", "Tegucigalpa"];
 const VALID_INTENTS: BotIntent[] = [
   "providing_data",
   "asking_question",
+  "requesting_photos",
   "confirming",
   "rejecting",
   "existing_guest",
@@ -209,6 +211,10 @@ NO intentes adivinar datos de su reserva ni inventar WiFi/direcciones.
 
 **C) Pregunta GENERAL sobre las propiedades (amenidades, ubicación, qué ofrecen):**
 → intent = "asking_question". Respondé con la base de conocimiento. Si no sabés de qué propiedad habla, preguntáselo. Después ofrecé ayudarle a cotizar.
+
+**D) Pide FOTOS / imágenes de una propiedad ("mandame fotos", "tienen imágenes", "quiero ver"):**
+→ Si ya sabés de qué propiedad → intent = "requesting_photos" y poné el slug en "property". El sistema envía las fotos automáticamente; en "reply" poné algo corto como "¡Claro! Te mando algunas fotos 📸".
+→ Si NO sabés la propiedad → intent = "asking_question" y preguntá de cuál propiedad quiere ver fotos.
 
 ### Paso 2 — Flujo de cotización (caso A)
 Pedí, de forma conversacional, los datos que falten:

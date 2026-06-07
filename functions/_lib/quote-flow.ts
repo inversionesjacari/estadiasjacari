@@ -32,6 +32,7 @@ import {
   buildTransferMessageUSD,
   isUsdRequest,
 } from "./bank-transfer";
+import { getPropertyPhotos, getGalleryUrl } from "./property-photos";
 import type { QuoteData } from "./quote-extractor";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +103,8 @@ export interface QuoteFlowResult {
   ruleName: string;
   /** Tokens LLM consumidos en este turn (0 si no se llamó). */
   tokensUsed: number;
+  /** URLs de imágenes a enviar (fotos de la propiedad). El webhook las manda. */
+  images?: string[];
 }
 
 export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv {
@@ -308,13 +311,39 @@ async function gatherQuoteData(
     !mergedData.property &&
     !mergedData.city;
 
-  if (isFirstMessage && noDataYet && botResult.intent !== "asking_question") {
+  if (
+    isFirstMessage &&
+    noDataYet &&
+    botResult.intent !== "asking_question" &&
+    botResult.intent !== "requesting_photos"
+  ) {
     return {
       reply:           INITIAL_QUOTE_MESSAGE,
       escalateToOwner: false,
       ruleName:        "quote_welcome",
       tokensUsed:      botResult.tokensUsed,
     };
+  }
+
+  // ── Pide fotos + sabemos la propiedad → enviar fotos + link a galería ─────
+  if (botResult.intent === "requesting_photos" && mergedData.property) {
+    const photos = getPropertyPhotos(mergedData.property);
+    if (photos.length > 0) {
+      // Mantener el state con lo que sepamos para seguir el flujo después
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      const galleryUrl = getGalleryUrl(mergedData.property);
+      const intro =
+        botResult.reply && botResult.reply.trim().length > 0
+          ? botResult.reply.trim()
+          : "¡Claro! Te mando algunas fotos 📸";
+      return {
+        reply: `${intro}\n\nMirá todas las fotos acá 👇\n${galleryUrl}`,
+        images: photos,
+        escalateToOwner: false,
+        ruleName: "photos_sent",
+        tokensUsed: botResult.tokensUsed,
+      };
+    }
   }
 
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────
