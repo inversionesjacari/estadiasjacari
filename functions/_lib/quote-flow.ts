@@ -374,8 +374,19 @@ async function gatherQuoteData(
     }
   }
 
+  // ── ¿Cotizar? Solo si el mensaje ACTUAL aportó un dato nuevo/distinto ─────
+  // Evita el bucle: si los datos ya estaban completos de antes y el cliente
+  // manda un saludo ("que onda") o pide alternativas ("¿qué otra tienen?"),
+  // NO recotizamos lo mismo — dejamos que el bot conversacional responda.
+  const ex = botResult.extractedData;
+  const changedQuoteData =
+    (ex.property != null && ex.property !== previousData.property) ||
+    (ex.checkIn  != null && ex.checkIn  !== previousData.checkIn) ||
+    (ex.checkOut != null && ex.checkOut !== previousData.checkOut) ||
+    (ex.guests   != null && ex.guests   !== previousData.guests);
+
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────
-  if (isQuoteDataComplete(mergedData)) {
+  if (isQuoteDataComplete(mergedData) && changedQuoteData) {
     const quote = await buildQuote(
       {
         property: mergedData.property!,
