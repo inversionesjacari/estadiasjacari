@@ -71,6 +71,30 @@ function extractTokens(result: unknown): number {
 }
 
 /**
+ * Ejecuta env.AI.run con reintentos. Workers AI a veces falla esporádicamente
+ * (saturación/timeout), sobre todo con llamadas concurrentes. 2 intentos con
+ * un pequeño backoff reducen mucho los fallos visibles para el cliente.
+ */
+async function aiRunWithRetry(
+  env: WorkersAIEnv,
+  payload: unknown,
+  attempts = 2,
+): Promise<unknown> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await env.AI!.run(MODEL, payload as Parameters<Ai["run"]>[1]);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Llama a Workers AI (Llama 3.3) con los mensajes dados y devuelve texto.
  * Fail-soft: nunca throws, devuelve { ok: false, error } si algo falla.
  */
@@ -88,11 +112,11 @@ export async function callWorkersAI(
   }
 
   try {
-    const result = await env.AI.run(MODEL, {
+    const result = await aiRunWithRetry(env, {
       messages,
       temperature: opts.temperature ?? 0.1,
       max_tokens: opts.maxTokens ?? 512,
-    } as Parameters<Ai["run"]>[1]);
+    });
 
     return {
       ok: true,
@@ -127,12 +151,12 @@ export async function callWorkersAIJson<T = unknown>(
   }
 
   try {
-    const result = await env.AI.run(MODEL, {
+    const result = await aiRunWithRetry(env, {
       messages,
       temperature: opts.temperature ?? 0,
       max_tokens: opts.maxTokens ?? 512,
       response_format: { type: "json_object" },
-    } as Parameters<Ai["run"]>[1]);
+    });
 
     const rawText = extractText(result);
     const tokensUsed = extractTokens(result);

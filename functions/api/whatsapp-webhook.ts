@@ -343,6 +343,11 @@ async function processIncomingMessage(
     return;
   }
 
+  // ID autoincremental de ESTE mensaje entrante — usado abajo para "última
+  // palabra gana": si mientras procesamos llega otro mensaje del mismo número,
+  // este webhook NO responde (lo hará el del mensaje más nuevo, con más contexto).
+  const currentMsgId = inserted.meta?.last_row_id ?? 0;
+
   // ── Contexto del bot: reserva activa + check-in info ────────────────────
   const today = todayHn();
   const reservation = await findActiveReservation(fromE164, env.DB, today);
@@ -416,6 +421,29 @@ async function processIncomingMessage(
       ruleName = null;
       escalate = true;
     }
+  }
+
+  // ── "Última palabra gana": evitar respuestas duplicadas en ráfagas ──────
+  // Si el cliente mandó otro mensaje mientras procesábamos este (mensajes
+  // rápidos seguidos), NO respondemos: el webhook del mensaje más nuevo
+  // responderá con el contexto completo. Esto elimina el doble "¡Hola!" y
+  // respuestas que se pisan cuando alguien escribe varias líneas seguidas.
+  try {
+    const newer = await env.DB.prepare(
+      `SELECT COUNT(*) AS c
+         FROM whatsapp_messages
+        WHERE from_phone = ? AND direction = 'in' AND id > ?`,
+    )
+      .bind(fromE164, currentMsgId)
+      .first<{ c: number }>();
+    if ((newer?.c ?? 0) > 0) {
+      console.log(
+        `Mensaje más nuevo de ${fromE164} detectado — omito respuesta a id ${currentMsgId} para evitar duplicado.`,
+      );
+      return;
+    }
+  } catch {
+    // Si el chequeo falla, seguimos y respondemos (mejor responder que callar)
   }
 
   // ── Enviar respuesta por WhatsApp ──────────────────────────────────────
