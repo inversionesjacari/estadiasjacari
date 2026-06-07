@@ -205,7 +205,7 @@ export const properties: Property[] = [
     capacity: 6,
     bedrooms: [
       { name: "Habitación principal", beds: "1 cama Queen" },
-      { name: "Habitación secundaria", beds: "1 cama Queen" },
+      { name: "Habitación secundaria", beds: "1 cama Queen + 1 cama adicional" },
     ],
     bathrooms: 2,
     amenities: [

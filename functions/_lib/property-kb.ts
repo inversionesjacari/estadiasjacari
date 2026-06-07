@@ -119,7 +119,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 - **Slug interno:** centro-morazan
 - **Ubicación:** Torre 1, Piso 20, Apto. 1-2004 — Bulevar Morazán, Tegucigalpa
 - **Capacidad:** hasta 6 huéspedes
-- **Habitaciones:** 2 + camas adicionales (3 camas en total) con aire acondicionado independiente
+- **Habitaciones:** 2 — Principal: 1 cama Queen · Secundaria: 1 cama Queen + 1 cama adicional (3 camas en total, hasta 6 personas). A/C independiente en cada habitación
 - **Baños:** 2
 - **Tarifa:** L.2,100 por noche + L.400 de limpieza (≈ USD 80/noche + USD 16 limpieza)
 - **Smart TV:** Sí — conectá tu cuenta de streaming
