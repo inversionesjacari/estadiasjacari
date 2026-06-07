@@ -62,7 +62,7 @@ export const PROPERTY_PRICING: Record<PropertySlug, PropertyPricing> = {
     slug: "centro-morazan",
     name: "Centro Morazán",
     city: "Tegucigalpa",
-    capacity: 4,
+    capacity: 6,
     pricePerNightHNL: 2100,
     cleaningFeeHNL: 400,
     pricePerNightUSD: 80,

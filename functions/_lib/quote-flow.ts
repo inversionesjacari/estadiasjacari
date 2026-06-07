@@ -20,6 +20,7 @@ import {
   clearState,
   emptyQuoteData,
   isQuoteDataComplete,
+  INITIAL_QUOTE_MESSAGE,
   type ConvState,
 } from "./quote-state";
 import { buildQuote, formatQuoteMessage } from "./quote-builder";
@@ -269,6 +270,25 @@ async function gatherQuoteData(
     paypalOrderId: previousData.paypalOrderId,
     depositUsd:    previousData.depositUsd,
   };
+
+  // ── Primer mensaje sin ningún dato (saludo genérico) → bienvenida fija ─────
+  // Usamos el mensaje determinístico (formato perfecto garantizado) en vez de
+  // depender de cómo el LLM formatee el saludo inicial.
+  const noDataYet =
+    !mergedData.checkIn &&
+    !mergedData.checkOut &&
+    !mergedData.guests &&
+    !mergedData.property &&
+    !mergedData.city;
+
+  if (isFirstMessage && noDataYet && botResult.intent !== "asking_question") {
+    return {
+      reply:           INITIAL_QUOTE_MESSAGE,
+      escalateToOwner: false,
+      ruleName:        "quote_welcome",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
 
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────
   if (isQuoteDataComplete(mergedData)) {

@@ -117,9 +117,9 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 
 ### Centro Morazán (Apartamento de lujo)
 - **Slug interno:** centro-morazan
-- **Ubicación:** Torre 1, Piso 20, Apto. 1-2004 — Centro Comercial Morazán, Tegucigalpa
-- **Capacidad:** hasta 4 huéspedes
-- **Habitaciones:** 2 (ambas con cama Queen y aire acondicionado independiente)
+- **Ubicación:** Torre 1, Piso 20, Apto. 1-2004 — Bulevar Morazán, Tegucigalpa
+- **Capacidad:** hasta 6 huéspedes
+- **Habitaciones:** 2 + camas adicionales (3 camas en total) con aire acondicionado independiente
 - **Baños:** 2
 - **Tarifa:** L.2,100 por noche + L.400 de limpieza (≈ USD 80/noche + USD 16 limpieza)
 - **Smart TV:** Sí — conectá tu cuenta de streaming
@@ -257,7 +257,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 → Casa Brisa y Casa Marea tienen generador eléctrico propio incluido (muy útil en la costa).
 
 **¿Cuántas personas caben?**
-→ Villa B11: 6 personas. Casa Brisa: 6 personas. Casa Marea: 6 personas. Las Gemelas (ambas juntas): 12 personas. Centro Morazán: 4 personas. Casa Lara: 4 personas. La Florida: 3 personas.
+→ Villa B11: 6 personas. Casa Brisa: 6 personas. Casa Marea: 6 personas. Las Gemelas (ambas juntas): 12 personas. Centro Morazán: 6 personas. Casa Lara: 4 personas. La Florida: 3 personas.
 
 **¿Se puede ir más gente de la capacidad máxima?**
 → No, la capacidad máxima es estricta. Si necesitan más espacio en Tela, podemos rentarles Las Gemelas (Casa Brisa + Casa Marea juntas) para hasta 12 personas.
@@ -278,7 +278,7 @@ Estadías Jacarí — 6 propiedades en Honduras:
 1. Villa B11 (La Ceiba, 6 pers, L.2,500+350/noche) — piscina + playa incluidas (brazaletes del hotel), Smart TV, estacionamiento
 2. Casa Brisa (Tela, 6 pers, L.2,500+350/noche) — cerca del mar, piscina opcional (L.250-350/pers), playa pública gratis, generador, WiFi dual, Smart TV
 3. Casa Marea (Tela, 6 pers, L.2,500+350/noche) — igual que Casa Brisa, juntas forman Las Gemelas (hasta 12 personas)
-4. Centro Morazán (Tegucigalpa, 4 pers, L.2,100+400/noche) — piso 20, vistas panorámicas, Smart TV, 1 estacionamiento incluido
+4. Centro Morazán (Tegucigalpa, 6 pers, L.2,100+400/noche) — piso 20, vistas panorámicas, Smart TV, 1 estacionamiento incluido
 5. Casa Lara Townhouse (Tegucigalpa, 4 pers, L.1,590+400/noche) — cada hab. con baño privado, zona exclusiva, Smart TV
 6. La Florida (Tegucigalpa, 3 pers, L.650+350/noche) — económica, lavadora, Smart TV, seguridad 24/7
 Check-in 3 PM · Check-out 11 AM · Mascotas OK (con responsabilidad) · Fiestas PROHIBIDAS · Cancelación gratis con 1 semana de anticipación

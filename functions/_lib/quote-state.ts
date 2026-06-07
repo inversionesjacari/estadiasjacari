@@ -209,13 +209,12 @@ export function buildAskForMissingMessage(data: QuoteData): string {
   return lines.join("\n");
 }
 
-/** Mensaje inicial de "gracias por escribirnos, dame estos datos". */
-export const INITIAL_QUOTE_MESSAGE = `¡Gracias por escribirnos! 🌴
+/** Mensaje inicial de "gracias por escribirnos, dame estos datos".
+ *  Cada pregunta en su propia fila (saltos de línea reales que WhatsApp respeta). */
+export const INITIAL_QUOTE_MESSAGE = `¡Hola! Gracias por escribir a Estadías Jacarí. Para colaborarte de la mejor manera, indicanos:
 
-Para colaborarte de la mejor manera, necesito que me indiques:
+📍 ¿A dónde estás buscando alojamiento? (La Ceiba, Tela o Tegucigalpa)
 
-📅 Las fechas en las que estás interesado (llegada y salida)
-👥 El número de huéspedes
-🏡 Qué propiedad o ciudad te interesa
+👥 ¿Cuántos huéspedes serían en total?
 
-Con eso verifico la disponibilidad y te doy una cotización al instante. ¡Estamos a la orden!`;
+📅 ¿En qué fechas te interesa quedarte? (llegada y salida)`;
