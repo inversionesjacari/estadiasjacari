@@ -30,6 +30,7 @@ import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
 import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
 import { verifyMetaSignature } from "../_lib/meta-signature";
+import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
 
 interface Env {
   DB: D1Database;
@@ -51,6 +52,28 @@ interface Env {
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   EMAIL_REPLY_TO?: string;
+  /**
+   * API key de Anthropic — usado por el quote flow para parsear fechas,
+   * huéspedes y propiedad con Claude Haiku. Sin esto, el quote flow se
+   * salta y el huésped cae a escalation manual (comportamiento previo).
+   */
+  /**
+   * DEPRECATED: antes se usaba Claude para extracción de fechas.
+   * Ahora el bot usa Cloudflare Workers AI (binding AI). Si esta var sigue
+   * configurada en Cloudflare, no hace daño, simplemente no se usa en este flow.
+   */
+  ANTHROPIC_API_KEY?: string;
+  /**
+   * Cloudflare Workers AI binding — usado por el bot conversacional (Llama 3.3).
+   * Configurar en Cloudflare Pages → Settings → Functions → AI Bindings
+   * con variable name = "AI".
+   */
+  AI?: Ai;
+  // PayPal (reusa env vars del webhook ya configuradas) — para crear órdenes
+  // de pago desde el quote flow cuando el huésped confirma con tarjeta.
+  PAYPAL_API_BASE?: string;
+  PAYPAL_CLIENT_ID?: string;
+  PAYPAL_CLIENT_SECRET?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -288,22 +311,54 @@ async function processIncomingMessage(
     }
   }
 
-  // ── Bot: matchear regla o escalar ──────────────────────────────────────
+  // ── Bot: quote flow (precio/cotización) tiene prioridad ────────────────
+  // Antes del matching normal, intentamos manejar el quote flow LLM-powered.
+  // Si el huésped pidió precio o ya estaba en medio de una cotización,
+  // este handler responde. Si no aplica, devuelve null y caemos al rule
+  // matching normal.
+  //
+  // El quote flow tiene preferencia sobre las reglas rule-based porque:
+  //   1. Si el huésped explícitamente pidió cotización, queremos cotizar.
+  //   2. Si está en medio del flow ("del 15 al 18"), los rule matches por
+  //      palabras random podrían confundir el contexto.
+  //   3. Si el huésped dice "humano" durante el flow, la regla escalar_humano
+  //      lo agarra después del flow (revisada abajo).
   const ctx = { reservation, info, todayHn: today };
-  const match = matchBotRule(bodyText, ctx);
 
   let replyText: string;
   let ruleName: string | null;
   let escalate: boolean;
 
-  if (match) {
-    replyText = match.reply.replace(/\n?__ESCALATE__\n?/g, "").trim();
-    ruleName = match.ruleName;
-    escalate = match.reply.includes("__ESCALATE__") || match.ruleName === "escalar_humano";
+  const quoteResult = await handleQuoteIncoming(fromE164, bodyText, today, {
+    DB:                   env.DB,
+    AI:                   env.AI,
+    PAYPAL_API_BASE:      env.PAYPAL_API_BASE,
+    PAYPAL_CLIENT_ID:     env.PAYPAL_CLIENT_ID,
+    PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
+  });
+
+  if (quoteResult) {
+    // Quote flow tomó este mensaje
+    replyText = quoteResult.reply;
+    ruleName = quoteResult.ruleName;
+    escalate = quoteResult.escalateToOwner;
   } else {
-    replyText = buildEscalationReply(ctx);
-    ruleName = null;
-    escalate = true;
+    // Sin quote flow activo — matching de reglas normal
+    const match = matchBotRule(bodyText, ctx);
+    if (match) {
+      replyText = match.reply.replace(/\n?__ESCALATE__\n?/g, "").trim();
+      ruleName = match.ruleName;
+      escalate = match.reply.includes("__ESCALATE__") || match.ruleName === "escalar_humano";
+      // Si el huésped pidió humano explícitamente, cancelamos cualquier quote
+      // flow zombie que pudiera estar abierto
+      if (escalate) {
+        await cancelQuoteFlow(fromE164, env.DB);
+      }
+    } else {
+      replyText = buildEscalationReply(ctx);
+      ruleName = null;
+      escalate = true;
+    }
   }
 
   // ── Enviar respuesta por WhatsApp ──────────────────────────────────────
@@ -336,11 +391,13 @@ async function processIncomingMessage(
         guestMessage: bodyText,
         guestPhone: fromE164,
         reservation,
-        reason: match
-          ? "El huésped pidió hablar con un humano"
-          : reservation
-            ? "Bot no pudo matchear ninguna regla"
-            : "Mensaje desde un número sin reserva activa",
+        reason: quoteResult?.escalateToOwner
+          ? `Quote flow: ${quoteResult.ruleName} — Cliente quiere reservar / mandar link de pago`
+          : ruleName === "escalar_humano"
+            ? "El huésped pidió hablar con un humano"
+            : reservation
+              ? "Bot no pudo matchear ninguna regla"
+              : "Mensaje desde un número sin reserva activa",
       },
       {
         RESEND_API_KEY: env.RESEND_API_KEY ?? "",
