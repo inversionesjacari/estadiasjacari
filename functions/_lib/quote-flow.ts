@@ -111,20 +111,26 @@ export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv {
 
 /**
  * Procesa un mensaje entrante en el contexto del quote flow.
- * Retorna null si el mensaje no inicia ni continúa un quote flow.
+ *
+ * @param hasActiveReservation  true si el huésped tiene una reserva activa en D1.
+ *   Cuando es true y NO hay un quote flow en progreso, retornamos null para que
+ *   el rule-based bot maneje al huésped existente (check-in, etc.).
+ *   Cuando es false (potencial nuevo huésped) respondemos a CUALQUIER mensaje.
  */
 export async function handleQuoteIncoming(
   phone: string,
   text: string,
   todayIso: string,
   env: QuoteFlowEnv,
+  hasActiveReservation = false,
 ): Promise<QuoteFlowResult | null> {
   const existing = await getState(phone, env.DB);
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
   if (!existing) {
-    if (!isPriceIntent(text)) return null;
-    // Iniciar el flow — crear estado vacío y correr el bot
+    // Huésped existente sin quote flow en curso → dejar que el rule-bot responda
+    if (hasActiveReservation) return null;
+    // Potencial nuevo huésped → siempre iniciar el funnel (cualquier mensaje)
     return gatherQuoteData(phone, text, emptyQuoteData(), todayIso, env, true);
   }
 

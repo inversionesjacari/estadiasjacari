@@ -311,18 +311,15 @@ async function processIncomingMessage(
     }
   }
 
-  // ── Bot: quote flow (precio/cotización) tiene prioridad ────────────────
-  // Antes del matching normal, intentamos manejar el quote flow LLM-powered.
-  // Si el huésped pidió precio o ya estaba en medio de una cotización,
-  // este handler responde. Si no aplica, devuelve null y caemos al rule
-  // matching normal.
+  // ── Bot: quote flow tiene prioridad sobre reglas rule-based ───────────
   //
-  // El quote flow tiene preferencia sobre las reglas rule-based porque:
-  //   1. Si el huésped explícitamente pidió cotización, queremos cotizar.
-  //   2. Si está en medio del flow ("del 15 al 18"), los rule matches por
-  //      palabras random podrían confundir el contexto.
-  //   3. Si el huésped dice "humano" durante el flow, la regla escalar_humano
-  //      lo agarra después del flow (revisada abajo).
+  // Lógica de routing:
+  //   - Huésped SIN reserva activa → siempre entra al quote flow.
+  //     El bot responde a cualquier mensaje (saludo, precio, pregunta).
+  //   - Huésped CON reserva activa → puede seguir en quote flow si ya
+  //     estaba en medio de uno (ej. quiere hacer una 2da reserva).
+  //     Si no tiene estado activo, lo maneja el rule-based bot (check-in, etc.)
+  //
   const ctx = { reservation, info, todayHn: today };
 
   let replyText: string;
@@ -335,7 +332,7 @@ async function processIncomingMessage(
     PAYPAL_API_BASE:      env.PAYPAL_API_BASE,
     PAYPAL_CLIENT_ID:     env.PAYPAL_CLIENT_ID,
     PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
-  });
+  }, /* hasActiveReservation: */ !!reservation);
 
   if (quoteResult) {
     // Quote flow tomó este mensaje
