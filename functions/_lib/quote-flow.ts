@@ -25,6 +25,7 @@ import {
 } from "./quote-state";
 import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
+import { checkRangeAvailable, type AvailabilityEnv } from "./availability";
 import type { PropertySlug } from "./quote-extractor";
 import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
 import {
@@ -107,7 +108,7 @@ export interface QuoteFlowResult {
   images?: string[];
 }
 
-export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv {
+export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv, AvailabilityEnv {
   DB: D1Database;
 }
 
@@ -368,6 +369,36 @@ async function gatherQuoteData(
       };
     }
 
+    // ── Verificación de disponibilidad real (Airbnb iCal + D1) ──────────────
+    // CRÍTICO: buildQuote solo mira D1. Acá verificamos también Airbnb para
+    // NO cotizar fechas ya reservadas en otra plataforma (doble reserva).
+    let availabilityNote = "";
+    let escalateUnverified = false;
+    if (quote.available) {
+      const avail = await checkRangeAvailable(
+        mergedData.property!,
+        mergedData.checkIn!,
+        mergedData.checkOut!,
+        env,
+      );
+      if (avail.verified && !avail.available) {
+        // Confirmado: las fechas están ocupadas en Airbnb → NO disponible
+        await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+        return {
+          reply: `Lamentablemente ${quote.propertyName} no está disponible en esas fechas 😔\n\n¿Querés que revise otras fechas u otra propiedad?`,
+          escalateToOwner: false,
+          ruleName: "quote_unavailable_airbnb",
+          tokensUsed: botResult.tokensUsed,
+        };
+      }
+      if (!avail.verified) {
+        // No pudimos consultar Airbnb → cotizar pero confirmar manualmente
+        availabilityNote =
+          "\n\n⚠️ Déjame confirmar que esas fechas sigan libres y te confirmo enseguida.";
+        escalateUnverified = true;
+      }
+    }
+
     const quoteMsg = formatQuoteMessage(quote, {
       property: mergedData.property!,
       checkIn:  mergedData.checkIn!,
@@ -377,17 +408,18 @@ async function gatherQuoteData(
 
     // Si el bot también respondió una pregunta, combinar ambas respuestas
     // (ej: "¿Hay piscina? Somos 4 del 15 al 20 en Villa B11")
-    const reply =
+    const baseReply =
       botResult.intent === "asking_question" && quote.available && !quote.exceedsCapacity
         ? `${botResult.reply}\n\n${quoteMsg}`
         : quoteMsg;
+    const reply = baseReply + availabilityNote;
 
     const nextState: ConvState = quote.available ? "quote_provided" : "awaiting_quote_data";
     await upsertState(phone, nextState, mergedData, env.DB);
 
     return {
       reply,
-      escalateToOwner: false,
+      escalateToOwner: escalateUnverified,
       ruleName:        quote.available ? "quote_provided" : "quote_unavailable",
       tokensUsed:      botResult.tokensUsed,
     };

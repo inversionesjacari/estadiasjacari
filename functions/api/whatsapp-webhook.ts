@@ -31,8 +31,9 @@ import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_l
 import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
 import { verifyMetaSignature } from "../_lib/meta-signature";
 import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
+import type { IcalEnv } from "../_lib/availability";
 
-interface Env {
+interface Env extends IcalEnv {
   DB: D1Database;
   // WhatsApp Cloud API
   WHATSAPP_ACCESS_TOKEN?: string;
@@ -326,13 +327,15 @@ async function processIncomingMessage(
   let ruleName: string | null;
   let escalate: boolean;
 
-  const quoteResult = await handleQuoteIncoming(fromE164, bodyText, today, {
-    DB:                   env.DB,
-    AI:                   env.AI,
-    PAYPAL_API_BASE:      env.PAYPAL_API_BASE,
-    PAYPAL_CLIENT_ID:     env.PAYPAL_CLIENT_ID,
-    PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
-  }, /* hasActiveReservation: */ !!reservation);
+  // Pasamos `env` completo: incluye DB, AI, PayPal y las AIRBNB_ICAL_* que el
+  // quote flow usa para verificar disponibilidad real antes de cotizar.
+  const quoteResult = await handleQuoteIncoming(
+    fromE164,
+    bodyText,
+    today,
+    env,
+    /* hasActiveReservation: */ !!reservation,
+  );
 
   if (quoteResult) {
     // Quote flow tomó este mensaje

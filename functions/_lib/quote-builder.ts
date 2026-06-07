@@ -258,7 +258,9 @@ export function formatQuoteMessage(
 ¿Te interesa cambiar las fechas o probar otra de nuestras propiedades?`;
   }
 
-  // Caso 2: disponible — cotización completa
+  // Caso 2: disponible — cotización completa.
+  // La palmera 🌴 solo para propiedades de playa (no Tegucigalpa).
+  const closingEmoji = q.city === "Tegucigalpa" ? "" : " 🌴";
   return `¡Disponible! ✅ ${q.propertyName} del ${fmtDateEs(input.checkIn)} al ${fmtDateEs(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).
 
 💰 *Cotización:*
@@ -270,5 +272,5 @@ Limpieza: ${fmtHnl(q.cleaningFeeHNL)}
 50% ahora: *${fmtHnl(q.depositHNL)}*
 50% el día de check-in: ${fmtHnl(q.balanceHNL)}
 
-¿Te interesa confirmar? Si me dices que sí, te paso el link de pago. 🌴`;
+¿Confirmás la reserva? El 50% lo podés pagar por *transferencia bancaria* o *tarjeta/PayPal*, lo que te quede más cómodo.${closingEmoji}`;
 }
