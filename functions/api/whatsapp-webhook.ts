@@ -303,7 +303,7 @@ async function processIncomingMessage(
   const bodyText = msg.text?.body?.trim();
   if (!bodyText) return;
 
-  const fromE164 = normalizePhone(msg.from).e164;
+  const fromE164 = normalizePhone(msg.from, { assumeAlreadyE164: true }).e164;
   if (!isValidE164(fromE164)) {
     console.error(`Teléfono inválido del entrante: ${msg.from}`);
     return;
@@ -557,7 +557,7 @@ async function handleNonTextMessage(
   env: Env,
 ): Promise<void> {
   if (!msg.id || !msg.from) return;
-  const fromE164 = normalizePhone(msg.from).e164;
+  const fromE164 = normalizePhone(msg.from, { assumeAlreadyE164: true }).e164;
   if (!isValidE164(fromE164)) return;
 
   // Idempotencia

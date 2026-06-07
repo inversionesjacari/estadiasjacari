@@ -53,7 +53,10 @@ export interface NormalizedPhone {
  *   "+1 (415) 555-1234"  → "14155551234"
  *   "  "                 → "" (vacío — no es número válido)
  */
-export function normalizePhone(raw: string | null | undefined): NormalizedPhone {
+export function normalizePhone(
+  raw: string | null | undefined,
+  opts: { assumeAlreadyE164?: boolean } = {},
+): NormalizedPhone {
   const original = (raw ?? "").trim();
   // 1. Quitar todo lo que no sea dígito.
   const digits = original.replace(/\D+/g, "");
@@ -61,22 +64,35 @@ export function normalizePhone(raw: string | null | undefined): NormalizedPhone 
     return { e164: "", hadCountryCode: false, original };
   }
 
-  // 2. Detectar si empieza con código de país conocido.
+  // 2. Caso ENTRANTE (msg.from de Meta): el número YA viene en E.164 completo
+  //    con su código de país. NUNCA anteponer nada — si lo hiciéramos,
+  //    corromperíamos números internacionales cuyo código no esté en la lista
+  //    (ej. +39 Italia se volvía 504+39... y los mensajes fallaban al entregar).
+  if (opts.assumeAlreadyE164) {
+    return { e164: digits, hadCountryCode: true, original };
+  }
+
+  // 3. Detectar si empieza con código de país conocido.
   const matchedCode = KNOWN_COUNTRY_CODES.find((code) =>
     digits.startsWith(code),
   );
-
   if (matchedCode) {
     // El número ya trae código (504, 1, 52, etc.) — respetar.
     return { e164: digits, hadCountryCode: true, original };
   }
 
-  // 3. Sin código → asumir Honduras (default).
-  return {
-    e164: `${DEFAULT_COUNTRY_CODE}${digits}`,
-    hadCountryCode: false,
-    original,
-  };
+  // 4. Sin código conocido:
+  //    - 8 dígitos exactos = número local hondureño → anteponer 504.
+  //    - Más largo = probablemente internacional con código no listado →
+  //      respetar tal cual (NO corromper anteponiendo 504).
+  if (digits.length === 8) {
+    return {
+      e164: `${DEFAULT_COUNTRY_CODE}${digits}`,
+      hadCountryCode: false,
+      original,
+    };
+  }
+  return { e164: digits, hadCountryCode: false, original };
 }
 
 /**
