@@ -68,6 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     resvCounts, resvByProperty, resvBySource, revenueWeek,
     lastIn, lastOut, lastResv, heartbeat,
     botCounts, trendRows, feedMsgs, feedResvs,
+    webToday, webNow, webTopPages, webReferrers,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -96,6 +97,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     // Feed: últimos mensajes + reservas
     db.prepare(`SELECT direction, body, from_phone, to_phone, escalated, matched_rule, created_at FROM whatsapp_messages ORDER BY created_at DESC, id DESC LIMIT 12`).all<FeedMsgRow>().catch(() => ({ results: [] })),
     db.prepare(`SELECT property_slug, guest_name, source, created_at FROM reservations ORDER BY created_at DESC LIMIT 5`).all<FeedResvRow>().catch(() => ({ results: [] })),
+    // Tráfico web (page_views) — fail-soft si la tabla no existe aún
+    db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ${HN_DAY_START}`).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
+    db.prepare(`SELECT COUNT(DISTINCT visitor) AS c FROM page_views WHERE created_at >= datetime('now','-5 minutes')`).first<{ c: number }>().catch(() => ({ c: 0 })),
+    db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE created_at >= ${HN_DAY_START} GROUP BY path ORDER BY c DESC LIMIT 5`).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') AND referrer IS NOT NULL AND referrer <> '' GROUP BY referrer ORDER BY c DESC LIMIT 5`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
@@ -184,5 +190,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     },
     trend: rowsOf<{ day: string; c: number }>(trendRows),
     feed: feed.slice(0, 15),
+    web: {
+      viewsToday: numOf(webToday, "views"),
+      uniqueToday: numOf(webToday, "uniques"),
+      now: numOf(webNow, "c"),
+      topPages: rowsOf<{ path: string; c: number }>(webTopPages),
+      topReferrers: rowsOf<{ referrer: string; c: number }>(webReferrers),
+    },
   });
 };

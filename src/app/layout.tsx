@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DM_Serif_Display, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import SiteChrome from "@/components/SiteChrome";
+import Analytics from "@/components/Analytics";
 
 // NOTE: brand font is "Le Mores" (Studio Sun, commercial license).
 // Using DM Serif Display as the closest free alternative until the
@@ -34,6 +35,7 @@ export default function RootLayout({
     <html lang="es" className={`${display.variable} ${body.variable}`}>
       <body>
         <SiteChrome>{children}</SiteChrome>
+        <Analytics />
       </body>
     </html>
   );

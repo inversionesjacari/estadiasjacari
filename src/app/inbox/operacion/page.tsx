@@ -68,7 +68,25 @@ interface Metrics {
   };
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
+  web?: {
+    viewsToday: number;
+    uniqueToday: number;
+    now: number;
+    topPages: { path: string; c: number }[];
+    topReferrers: { referrer: string; c: number }[];
+  };
 }
+
+const REFERRER_NAMES: Record<string, string> = {
+  "instagram.com": "Instagram",
+  "l.instagram.com": "Instagram",
+  "facebook.com": "Facebook",
+  "l.facebook.com": "Facebook",
+  "m.facebook.com": "Facebook",
+  "google.com": "Google",
+  "www.google.com": "Google",
+  "t.co": "X / Twitter",
+};
 
 /** "2026-06-08 01:00:00" (UTC de D1) → "hace 5 min". */
 function timeAgo(iso: string | null): string {
@@ -229,6 +247,58 @@ export default function OperacionPage() {
             detail="reservas pagadas + pendientes"
           />
         </section>
+
+        {/* Tráfico web */}
+        {m.web && (
+          <section className="bg-white rounded-2xl border border-gray-200 p-5">
+            <h2 className="font-display text-lg text-primary mb-3 flex items-center gap-2">
+              🌐 Tráfico web
+              {m.web.now > 0 && (
+                <span className="text-[11px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-sans font-medium">
+                  {m.web.now} {m.web.now === 1 ? "persona" : "personas"} ahora
+                </span>
+              )}
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              <MiniStat label="Visitas hoy" value={m.web.viewsToday} />
+              <MiniStat label="Visitantes únicos hoy" value={m.web.uniqueToday} />
+              <MiniStat label="Ahora en el sitio" value={m.web.now} />
+              <MiniStat label="Páginas vistas hoy" value={m.web.topPages.reduce((s, p) => s + p.c, 0)} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs text-muted mb-1.5 font-medium">Páginas más vistas (hoy)</p>
+                {m.web.topPages.length === 0 ? (
+                  <p className="text-muted text-sm">Sin visitas todavía hoy.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {m.web.topPages.map((p) => (
+                      <li key={p.path} className="flex justify-between text-sm">
+                        <span className="text-primary truncate mr-2">{p.path}</span>
+                        <span className="font-semibold text-primary">{p.c}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <p className="text-xs text-muted mb-1.5 font-medium">De dónde llegan (7 días)</p>
+                {m.web.topReferrers.length === 0 ? (
+                  <p className="text-muted text-sm">Tráfico directo o sin datos aún.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {m.web.topReferrers.map((r) => (
+                      <li key={r.referrer} className="flex justify-between text-sm">
+                        <span className="text-primary truncate mr-2">{REFERRER_NAMES[r.referrer] ?? r.referrer}</span>
+                        <span className="font-semibold text-primary">{r.c}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Diagrama de arquitectura en vivo */}
         <section className="bg-[#0b1220] rounded-2xl border border-gray-800 p-5 overflow-hidden">
@@ -516,6 +586,15 @@ function Node({
         <animate attributeName="opacity" values="1;0.35;1" dur="1.8s" repeatCount="indefinite" />
       </circle>
     </g>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bg-bg rounded-xl p-3">
+      <div className="text-xl font-bold text-primary leading-none">{value}</div>
+      <div className="text-[11px] text-muted mt-1">{label}</div>
+    </div>
   );
 }
 
