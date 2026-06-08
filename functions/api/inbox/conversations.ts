@@ -33,6 +33,8 @@ interface ConversationRow {
   reservation_id: number | null;
   check_in: string | null;
   check_out: string | null;
+  conv_state: string | null;
+  last_out_at: string | null;
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
@@ -62,15 +64,18 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               lm.matched_rule AS last_matched_rule,
               lm.escalated AS last_escalated,
               (SELECT COUNT(*) FROM whatsapp_messages m2 WHERE m2.from_phone = lm.phone OR m2.to_phone = lm.phone) AS message_count,
+              (SELECT MAX(m3.created_at) FROM whatsapp_messages m3 WHERE m3.to_phone = lm.phone AND m3.direction = 'out') AS last_out_at,
               c.profile_name AS contact_name,
               r.guest_name,
               r.property_slug,
               r.id AS reservation_id,
               r.check_in,
-              r.check_out
+              r.check_out,
+              st.state AS conv_state
          FROM last_msg lm
          LEFT JOIN reservations r ON r.id = lm.reservation_id
          LEFT JOIN whatsapp_contacts c ON c.phone = lm.phone
+         LEFT JOIN conversation_state st ON st.phone = lm.phone AND st.expires_at > datetime('now')
         WHERE lm.rn = 1
         ORDER BY lm.created_at DESC
         LIMIT 100`,
@@ -97,6 +102,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         lastMatchedRule: r.last_matched_rule,
         escalated: r.last_escalated === 1,
         botPaused: paused.has(r.phone),
+        state: r.conv_state,
+        lastOutAt: r.last_out_at,
         contactName: r.contact_name,
         reservation: r.reservation_id
           ? {

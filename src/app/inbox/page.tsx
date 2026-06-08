@@ -29,6 +29,8 @@ interface Conversation {
   lastMatchedRule: string | null;
   escalated: boolean;
   botPaused: boolean;
+  state: string | null;
+  lastOutAt: string | null;
   contactName: string | null;
   reservation: {
     id: number;
@@ -244,6 +246,124 @@ function MessageStatus({ status }: { status: string | null }) {
     return <span className="text-red-200" title="No se pudo entregar">⚠ falló</span>;
   }
   return null;
+}
+
+// ── Columna derecha: Pendientes / Seguimiento ─────────────────────────────────
+// Agrupa las conversaciones que requieren acción para que nada se cuelgue.
+// Prioridad (cada chat cae en UN solo grupo): pausa → escalada → pago → sin responder.
+const PAY_STATES = new Set([
+  "awaiting_transfer_proof",
+  "awaiting_paypal_capture",
+  "awaiting_payment_method",
+]);
+const PAY_LABEL: Record<string, string> = {
+  awaiting_transfer_proof: "Esperando comprobante",
+  awaiting_paypal_capture: "Esperando pago PayPal",
+  awaiting_payment_method: "Eligiendo forma de pago",
+};
+
+function minutesSince(iso: string): number {
+  try {
+    const d = new Date(iso.includes("Z") ? iso : iso + "Z");
+    return (Date.now() - d.getTime()) / 60000;
+  } catch {
+    return 0;
+  }
+}
+
+function PendienteGroup({ label, count, color, children }: { label: string; count: number; color: string; children: React.ReactNode }) {
+  return (
+    <div className="px-4 py-3 border-b border-gray-100">
+      <p className={`text-[10px] font-bold uppercase tracking-wide mb-2 ${color}`}>{label} ({count})</p>
+      {children}
+    </div>
+  );
+}
+
+function PendienteItem({
+  conv, subtitle, accent, onSelect, active,
+}: {
+  conv: Conversation; subtitle: string; accent: string; onSelect: (phone: string) => void; active: boolean;
+}) {
+  const name = conv.reservation?.guestName ?? conv.contactName ?? formatPhone(conv.phone);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(conv.phone)}
+      className={`w-full text-left rounded-lg border px-2.5 py-2 mb-1.5 last:mb-0 transition hover:brightness-95 ${accent} ${active ? "ring-2 ring-secondary/40" : ""}`}
+    >
+      <div className="flex justify-between items-baseline gap-2">
+        <span className="text-[12px] font-semibold text-primary truncate">{name}</span>
+        <span className="text-[10px] text-muted whitespace-nowrap">{formatTimeAgo(conv.lastAt)}</span>
+      </div>
+      <p className="text-[11px] text-muted truncate">{subtitle}</p>
+    </button>
+  );
+}
+
+function PendientesColumn({
+  conversations, onSelect, selectedPhone,
+}: {
+  conversations: Conversation[]; onSelect: (phone: string) => void; selectedPhone: string | null;
+}) {
+  const paused: Conversation[] = [];
+  const escalated: Conversation[] = [];
+  const awaitingPay: Conversation[] = [];
+  const unanswered: Conversation[] = [];
+  for (const c of conversations) {
+    if (c.botPaused) paused.push(c);
+    else if (c.escalated) escalated.push(c);
+    else if (c.state && PAY_STATES.has(c.state)) awaitingPay.push(c);
+    else if ((!c.lastOutAt || c.lastAt > c.lastOutAt) && minutesSince(c.lastAt) > 30) unanswered.push(c);
+  }
+  const total = paused.length + escalated.length + awaitingPay.length + unanswered.length;
+
+  return (
+    <aside className="hidden lg:flex flex-col w-72 border-l border-gray-200 bg-[#fbfcfc] overflow-y-auto shrink-0">
+      <div className="px-4 py-3 border-b border-gray-200 sticky top-0 bg-[#fbfcfc] z-10">
+        <h3 className="font-bold text-primary text-sm flex items-center gap-1.5">
+          📌 Pendientes
+          {total > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{total}</span>}
+        </h3>
+        <p className="text-[11px] text-muted">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
+      </div>
+
+      {paused.length > 0 && (
+        <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700">
+          {paused.map((c) => (
+            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 bg-amber-50" onSelect={onSelect} active={selectedPhone === c.phone} />
+          ))}
+        </PendienteGroup>
+      )}
+      {escalated.length > 0 && (
+        <PendienteGroup label="⚠ Escaladas" count={escalated.length} color="text-rose-700">
+          {escalated.map((c) => (
+            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 bg-rose-50" onSelect={onSelect} active={selectedPhone === c.phone} />
+          ))}
+        </PendienteGroup>
+      )}
+      {awaitingPay.length > 0 && (
+        <PendienteGroup label="💳 Esperando pago" count={awaitingPay.length} color="text-emerald-700">
+          {awaitingPay.map((c) => (
+            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+          ))}
+        </PendienteGroup>
+      )}
+      {unanswered.length > 0 && (
+        <PendienteGroup label="🕐 Sin responder >30 min" count={unanswered.length} color="text-sky-700">
+          {unanswered.map((c) => (
+            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+          ))}
+        </PendienteGroup>
+      )}
+
+      {total === 0 && (
+        <div className="flex-1 flex items-center justify-center px-6 text-center">
+          <p className="text-muted text-sm">No hay nada pendiente.<br />Todo bajo control. 🌴</p>
+        </div>
+      )}
+    </aside>
+  );
 }
 
 export default function InboxPage() {
@@ -662,63 +782,56 @@ export default function InboxPage() {
               {(() => {
                 const conv = conversations.find((c) => c.phone === selectedPhone);
                 const guestName = conv?.reservation?.guestName ?? conv?.contactName ?? null;
+                const paused = conv?.botPaused ?? false;
                 return (
-                  <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
-                    <Avatar name={guestName} phone={selectedPhone} size="lg" />
-                    <div className="min-w-0">
-                      <h2 className="font-semibold text-primary leading-tight">
-                        {guestName ?? formatPhone(selectedPhone)}
-                      </h2>
-                      {/* Solo mostrar el teléfono debajo si arriba estamos
-                          mostrando un nombre — sino sería un duplicado. */}
-                      {guestName && (
-                        <p className="text-xs text-muted">{formatPhone(selectedPhone)}</p>
-                      )}
-                      {conv?.reservation && (
-                        <p className="text-[11px] text-secondary mt-0.5">
-                          {PROPERTY_NAMES[conv.reservation.propertySlug ?? ""] ?? conv.reservation.propertySlug}
-                          {conv.reservation.checkIn && ` · ${conv.reservation.checkIn}`}
-                        </p>
-                      )}
+                  <>
+                    <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
+                      <Avatar name={guestName} phone={selectedPhone} size="lg" />
+                      <div className="min-w-0">
+                        <h2 className="font-semibold text-primary leading-tight">
+                          {guestName ?? formatPhone(selectedPhone)}
+                        </h2>
+                        {/* Solo mostrar el teléfono debajo si arriba estamos
+                            mostrando un nombre — sino sería un duplicado. */}
+                        {guestName && (
+                          <p className="text-xs text-muted">{formatPhone(selectedPhone)}</p>
+                        )}
+                        {conv?.reservation && (
+                          <p className="text-[11px] text-secondary mt-0.5">
+                            {PROPERTY_NAMES[conv.reservation.propertySlug ?? ""] ?? conv.reservation.propertySlug}
+                            {conv.reservation.checkIn && ` · ${conv.reservation.checkIn}`}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    <div className="ml-auto flex items-center gap-2 shrink-0">
-                      {conv?.botPaused ? (
-                        <>
-                          <span
-                            style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d" }}
-                            className="flex items-center gap-1.5 text-[12px] font-bold rounded-full px-3 py-1.5 whitespace-nowrap"
-                          >
-                            <span className="w-2 h-2 rounded-full" style={{ background: "#d97706" }} />
-                            ⏸ Bot en pausa · le respondés vos
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => { if (selectedPhone) handleResumeBot(selectedPhone); }}
-                            className="text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
-                          >
-                            Reactivar bot
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span
-                            style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac" }}
-                            className="flex items-center gap-1.5 text-[12px] font-bold rounded-full px-3 py-1.5 whitespace-nowrap"
-                          >
-                            <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#16a34a" }} />
-                            🤖 Bot activo · responde solo
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => { if (selectedPhone) handlePauseBot(selectedPhone); }}
-                            className="text-[12px] font-semibold text-muted border border-gray-300 hover:bg-gray-50 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
-                          >
-                            Pausar bot
-                          </button>
-                        </>
-                      )}
+                    {/* Barra de estado del bot — ancho completo (verde = activo / ámbar = en pausa) */}
+                    <div
+                      className="w-full flex items-center justify-between gap-3 px-6 py-2 border-b"
+                      style={paused
+                        ? { background: "#fef3c7", borderColor: "#fcd34d" }
+                        : { background: "#dcfce7", borderColor: "#86efac" }}
+                    >
+                      <span
+                        className="flex items-center gap-2 text-[13px] font-bold whitespace-nowrap"
+                        style={{ color: paused ? "#92400e" : "#166534" }}
+                      >
+                        <span
+                          className={`w-2.5 h-2.5 rounded-full ${paused ? "" : "animate-pulse"}`}
+                          style={{ background: paused ? "#d97706" : "#16a34a" }}
+                        />
+                        {paused ? "⏸ Bot en pausa · le respondés vos" : "🤖 Bot activo · responde solo"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => { if (selectedPhone) (paused ? handleResumeBot : handlePauseBot)(selectedPhone); }}
+                        className={paused
+                          ? "shrink-0 text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1 whitespace-nowrap transition"
+                          : "shrink-0 text-[12px] font-semibold text-green-900/70 bg-white/70 border border-green-300 hover:bg-white rounded-lg px-3 py-1 whitespace-nowrap transition"}
+                      >
+                        {paused ? "Reactivar bot" : "Pausar bot"}
+                      </button>
                     </div>
-                  </div>
+                  </>
                 );
               })()}
 
@@ -837,6 +950,13 @@ export default function InboxPage() {
             </>
           )}
         </main>
+
+        {/* Columna derecha: pendientes / seguimiento (solo en pantallas anchas) */}
+        <PendientesColumn
+          conversations={conversations}
+          onSelect={selectConversation}
+          selectedPhone={selectedPhone}
+        />
       </div>
     </div>
   );

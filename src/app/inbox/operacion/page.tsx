@@ -43,6 +43,7 @@ const CHANGELOG: { date: string; items: string[] }[] = [
     date: "8 jun 2026",
     items: [
       "Bot: cuando un humano toma la conversación (responde a mano o aprieta “Pausar bot”) el bot se pausa y queda en tu control; se reactiva a mano con “Reactivar bot”. Ahora con indicador BIEN visible del estado — verde “responde solo” / ámbar “en pausa, le respondés vos” — en la cabecera y en la lista de conversaciones, para saber de un vistazo si el bot está respondiendo o no.",
+      "Inbox: la barra de estado del bot ahora ocupa TODO el ancho de la conversación (verde activo / ámbar en pausa) — imposible de no ver. Y nueva columna “Pendientes / Seguimiento” a la derecha que agrupa los chats que requieren acción: en pausa (te esperan), escalados, esperando pago/comprobante y sin responder hace +30 min — clic para abrir el chat. Aprovecha el espacio y evita que se cuelgue alguien.",
       "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
       "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
       "Bot: ante un glitch técnico ya no manda un mensaje raro ni promete un humano — se queda callado y se recupera en el siguiente mensaje.",
