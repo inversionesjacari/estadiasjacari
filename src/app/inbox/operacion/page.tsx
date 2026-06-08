@@ -452,7 +452,7 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
   // Salud → SOLO el punto de cada nodo (separada del color de la línea).
   // Asumimos verde (activo) por defecto; solo se marca rojo si hay falla real.
   const h = {
-    ig: HEX.green, fb: HEX.green, google: HEX.green,
+    ig: HEX.green, fb: HEX.green, google: HEX.green, viajeros: HEX.green,
     airbnb: airbnbHex(health.airbnbStatus),
     wa: recencyHex(health.lastInAt),
     sitio: HEX.green,
@@ -469,23 +469,23 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
   const liveMoney = isLive(health.lastReservationAt, 60);
   const liveCron = isLive(health.cronLastAt, 15);
 
-  // Layout en zonas (izq→der): captación · canales · motor · dinero/salidas.
-  // Captación = solo fuentes de tráfico (IG/FB/Google). Airbnb es un CANAL de
-  // reserva (descubre + reserva + paga ahí, como el sitio), no captación.
-  // El motor es una columna vertical (bot → db → cron) para que el cron quede
-  // anclado a la base y no parezca "flotando".
+  // Layout en zonas (izq→der): ORIGEN · CANALES · MOTOR · DINERO/SALIDAS.
+  // ORIGEN = de dónde vienen los huéspedes (IG/FB/Google + "Viajeros" que buscan
+  // en Airbnb). CANALES = donde reservan/pagan (WhatsApp/Sitio/Airbnb). El motor
+  // es columna vertical (bot → db → cron); el cron baja alineado con Seguridad.
+  // Dinero arriba (PayPal/BAC), Agente al medio, equipo abajo. Google alineado
+  // con Sitio (línea recta).
   const P: Record<string, NodePos> = {
-    ig: { x: 14, y: 88, s: true }, fb: { x: 14, y: 142, s: true }, google: { x: 14, y: 224, s: true },
-    wa: { x: 196, y: 96 }, sitio: { x: 196, y: 188 }, airbnb: { x: 196, y: 280 },
-    bot: { x: 430, y: 124 }, db: { x: 430, y: 308 }, cron: { x: 430, y: 426 },
-    agente: { x: 690, y: 104, s: true },
-    paypal: { x: 690, y: 200 }, bac: { x: 690, y: 308 },
-    limpieza: { x: 690, y: 396, s: true }, seguridad: { x: 690, y: 450, s: true }, huesped: { x: 690, y: 504, s: true },
+    ig: { x: 14, y: 120, s: true }, fb: { x: 14, y: 180, s: true }, google: { x: 14, y: 293, s: true }, viajeros: { x: 14, y: 400, s: true },
+    wa: { x: 200, y: 152 }, sitio: { x: 200, y: 288 }, airbnb: { x: 200, y: 400 },
+    bot: { x: 440, y: 168 }, db: { x: 440, y: 314 }, cron: { x: 440, y: 469 },
+    paypal: { x: 700, y: 120 }, bac: { x: 700, y: 224 }, agente: { x: 700, y: 336, s: true },
+    limpieza: { x: 700, y: 420, s: true }, seguridad: { x: 700, y: 474, s: true }, huesped: { x: 700, y: 528, s: true },
   };
 
   return (
     <div>
-      <svg viewBox="0 0 880 568" className="w-full" style={{ maxHeight: 660 }}>
+      <svg viewBox="0 0 880 588" className="w-full" style={{ maxHeight: 680 }}>
         <defs>
           <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="2.5" result="b" />
@@ -499,16 +499,18 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         </defs>
 
         {/* Etiquetas de zona */}
-        <text x={80} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CAPTACIÓN</text>
-        <text x={276} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CANALES</text>
-        <text x={510} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">MOTOR</text>
-        <text x={760} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">DINERO · SALIDAS</text>
+        <text x={80} y={44} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">ORIGEN</text>
+        <text x={280} y={44} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CANALES</text>
+        <text x={520} y={44} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">MOTOR</text>
+        <text x={770} y={44} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">DINERO · SALIDAS</text>
 
         {/* Conexiones */}
-        {/* Captación → canales (datos) */}
+        {/* Origen → canales (datos) */}
         <Flow from={rc(P.ig)} to={lc(P.wa)} kind="data" live={liveMsg} />
         <Flow from={rc(P.fb)} to={lc(P.wa)} kind="data" live={liveMsg} />
         <Flow from={rc(P.google)} to={lc(P.sitio)} kind="data" live={false} />
+        {/* Los viajeros descubren la propiedad buscando en Airbnb */}
+        <Flow from={rc(P.viajeros)} to={lc(P.airbnb)} kind="data" live={false} />
         {/* Conversación (ida y vuelta = el bot responde) */}
         <Flow from={rc(P.wa)} to={lc(P.bot)} kind="msg" live={liveMsg} bidir />
         {/* Sitio web → WhatsApp (botón flotante + "Confirmar llegada por WhatsApp") */}
@@ -522,13 +524,10 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         {/* Disponibilidad (calendario compartido) */}
         <Flow from={rc(P.sitio)} to={lc(P.db)} kind="avail" live={false} bidir />
         <Flow from={rc(P.airbnb)} to={lc(P.db)} kind="avail" live={false} bidir />
-        {/* Dinero: reservas → PayPal → Banco */}
-        <Flow from={rc(P.airbnb)} to={lc(P.paypal)} kind="money" live={liveMoney} />
-        <Flow from={rc(P.sitio)} to={lc(P.paypal)} kind="money" live={liveMoney} />
+        {/* Dinero: el bot ofrece PayPal (tarjeta) y BAC (transferencia); PayPal liquida al banco */}
         <Flow from={rc(P.bot)} to={lc(P.paypal)} kind="money" live={liveMoney} />
+        <Flow from={rc(P.bot)} to={lc(P.bac)} kind="money" live={liveMoney} />
         <Flow from={bc(P.paypal)} to={tc(P.bac)} kind="money" live={liveMoney} />
-        {/* Transferencia directa desde WhatsApp al BAC — pasa por el hueco bot↔db */}
-        <Flow from={bc(P.wa)} to={lc(P.bac)} kind="money" live={liveMoney} />
         {/* Operaciones: cron → equipo */}
         <Flow from={rc(P.cron)} to={lc(P.limpieza)} kind="msg" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.seguridad)} kind="msg" live={liveCron} />
@@ -537,15 +536,16 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         {/* Nodos (logos de marca donde aplica; ícono para conceptos internos) */}
         <Node {...P.ig} icon="instagram" label="Instagram" sub="ads / perfil" health={h.ig} small />
         <Node {...P.fb} icon="facebook" label="Facebook" sub="ads / perfil" health={h.fb} small />
-        <Node {...P.google} icon="google" label="Google / directo" sub="(previsto)" health={h.google} small />
+        <Node {...P.google} icon="google" label="Google" sub="tráfico directo" health={h.google} small />
+        <Node {...P.viajeros} emoji="🔎" label="Viajeros" sub="buscan en Airbnb" health={h.viajeros} small />
         <Node {...P.wa} icon="whatsapp" label="WhatsApp" sub="cliente" health={h.wa} />
         <Node {...P.sitio} icon="jacari" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
-        <Node {...P.airbnb} icon="airbnb" label="Airbnb" sub="reservas + pago" health={h.airbnb} small />
+        <Node {...P.airbnb} icon="airbnb" label="Airbnb" sub="reservas + pago" health={h.airbnb} />
         <Node {...P.bot} icon="robot" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
         <Node {...P.agente} emoji="👤" label="Agente" sub="humano · escalación" health={h.agente} small />
         <Node {...P.db} emoji="🗄️" label="Base de datos" sub="reservas · KB · memoria" health={h.db} highlight />
         <Node {...P.cron} emoji="⏰" label="Cron" sub="tareas programadas" health={h.cron} />
-        <Node {...P.paypal} icon="paypal" label="PayPal" sub="cobros" health={h.paypal} />
+        <Node {...P.paypal} icon="paypal" label="PayPal" sub="cobros" health={h.paypal} highlight />
         <Node {...P.bac} icon="bac" label="BAC" sub="el dinero llega acá" health={h.bac} highlight />
         <Node {...P.limpieza} emoji="🧹" label="Limpieza" sub="aviso" health={h.team} small />
         <Node {...P.seguridad} emoji="🛡️" label="Seguridad" sub="aviso" health={h.team} small />
@@ -637,8 +637,8 @@ function NodeIcon({ icon, emoji, small }: { icon?: string; emoji?: string; small
 
   if (icon === "bac")
     return (<>{darkChip}<image href="/brands/bac.png" x={x0 + cs * 0.15} y={y0 + cs * 0.17} width={cs * 0.7} height={cs * 0.66} preserveAspectRatio="xMidYMid meet" /></>);
-  if (icon === "jacari")
-    return (<><rect x={x0} y={y0} width={cs} height={cs} rx={7} fill="#f3f6f7" />{scaled(<path d={JACARI_PATH} fill="#003f51" />, 548.14, 522.76, 0.66)}</>);
+  if (icon === "jacari") // isotipo Jacarí en blanco sobre chip oscuro (líneas blancas), con zoom
+    return (<>{darkChip}{scaled(<path d={JACARI_PATH} fill="#f1f6fd" />, 548.14, 522.76, 0.74)}</>);
   if (icon === "google")
     return (<>{darkChip}{scaled(<>{GOOGLE_G.map((g, i) => <path key={i} d={g.d} fill={g.fill} />)}</>, 48, 48, 0.66)}</>);
   if (icon === "robot")
