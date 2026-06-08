@@ -99,6 +99,33 @@ const AIRBNB_UI: Record<string, { color: string; label: string }> = {
   unknown: { color: "bg-gray-300", label: "Sin verificar" },
 };
 
+// Colores hex para el diagrama SVG (las clases bg-* de Tailwind no aplican a SVG fill)
+const HEX = { green: "#22c55e", amber: "#f59e0b", red: "#ef4444", gray: "#cbd5e1" };
+function parseUtc(iso: string | null): number {
+  if (!iso) return NaN;
+  return new Date(iso.replace(" ", "T") + "Z").getTime();
+}
+/** Verde si hubo actividad en las últimas N horas; gris si no (no es "error"). */
+function recencyHex(iso: string | null, hoursGreen = 24): string {
+  const t = parseUtc(iso);
+  if (Number.isNaN(t)) return HEX.gray;
+  return (Date.now() - t) / 3600000 <= hoursGreen ? HEX.green : HEX.gray;
+}
+function cronHex(iso: string | null): string {
+  const t = parseUtc(iso);
+  if (Number.isNaN(t)) return HEX.gray;
+  const min = (Date.now() - t) / 60000;
+  return min <= 15 ? HEX.green : min <= 30 ? HEX.amber : HEX.red;
+}
+function airbnbHex(status: string): string {
+  return status === "full" ? HEX.green : status === "partial" ? HEX.amber : status === "unavailable" ? HEX.red : HEX.gray;
+}
+/** ¿Hubo actividad muy reciente? → el flujo de la conexión va más rápido. */
+function isLive(iso: string | null, minutes = 10): boolean {
+  const t = parseUtc(iso);
+  return !Number.isNaN(t) && (Date.now() - t) / 60000 <= minutes;
+}
+
 export default function OperacionPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -201,6 +228,15 @@ export default function OperacionPage() {
             value={`$${m.reservations.revenueWeekUsd.toLocaleString("en-US")}`}
             detail="reservas pagadas + pendientes"
           />
+        </section>
+
+        {/* Diagrama de arquitectura en vivo */}
+        <section className="bg-[#0b1220] rounded-2xl border border-gray-800 p-5 overflow-hidden">
+          <h2 className="font-display text-lg text-white mb-1">🛰️ Operación en vivo</h2>
+          <p className="text-xs text-gray-400 mb-3">
+            Mapa de todos los sistemas. Las líneas fluyen cuando hay tráfico; cada nodo muestra su salud.
+          </p>
+          <ArchitectureDiagram health={m.health} />
         </section>
 
         {/* Embudo de ventas */}
@@ -338,6 +374,148 @@ function Kpi({
       <div className="text-sm font-medium text-primary mt-1">{label}</div>
       <div className="text-[11px] text-muted mt-0.5">{detail}</div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diagrama de arquitectura animado (SVG)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
+  // Salud de cada nodo (color hex)
+  const c = {
+    clienteWA: recencyHex(health.lastInAt),
+    webhook: recencyHex(health.lastInAt),
+    botIA: recencyHex(health.lastOutAt),
+    d1: HEX.green, // si el dashboard carga, D1 responde
+    sitio: HEX.green,
+    paypal: recencyHex(health.lastReservationAt, 24 * 30),
+    airbnb: airbnbHex(health.airbnbStatus),
+    sync: airbnbHex(health.airbnbStatus),
+    cron: cronHex(health.cronLastAt),
+  };
+  // Flujos "vivos" (animación rápida) según actividad reciente
+  const liveWA = isLive(health.lastInAt);
+  const liveResv = isLive(health.lastReservationAt, 60);
+  const liveCron = isLive(health.cronLastAt, 15);
+
+  // Posiciones (esquina sup-izq de cada nodo 150×52)
+  const N = {
+    clienteWA: { x: 15, y: 30 },
+    sitio: { x: 15, y: 150 },
+    airbnb: { x: 15, y: 270 },
+    webhook: { x: 285, y: 30 },
+    paypal: { x: 285, y: 150 },
+    sync: { x: 285, y: 270 },
+    cron: { x: 285, y: 375 },
+    botIA: { x: 555, y: 70 },
+    d1: { x: 555, y: 230 },
+  };
+  const W = 150, H = 52;
+  const rc = (n: { x: number; y: number }) => ({ x: n.x + W, y: n.y + H / 2 }); // borde derecho
+  const lc = (n: { x: number; y: number }) => ({ x: n.x, y: n.y + H / 2 }); // borde izq
+  const bc = (n: { x: number; y: number }) => ({ x: n.x + W / 2, y: n.y + H }); // borde inf
+  const tc = (n: { x: number; y: number }) => ({ x: n.x + W / 2, y: n.y }); // borde sup
+
+  return (
+    <svg viewBox="0 0 720 450" className="w-full" style={{ maxHeight: 460 }}>
+      {/* Conexiones (debajo de los nodos) */}
+      <Flow from={rc(N.clienteWA)} to={lc(N.webhook)} color={c.webhook} live={liveWA} />
+      <Flow from={rc(N.webhook)} to={lc(N.botIA)} color={c.botIA} live={liveWA} />
+      <Flow from={bc(N.botIA)} to={tc(N.d1)} color={c.d1} live={liveWA} />
+      <Flow from={rc(N.sitio)} to={lc(N.paypal)} color={c.paypal} live={liveResv} />
+      <Flow from={rc(N.paypal)} to={lc(N.d1)} color={c.d1} live={liveResv} />
+      <Flow from={rc(N.airbnb)} to={lc(N.sync)} color={c.airbnb} live={false} dashed />
+      <Flow from={rc(N.sync)} to={lc(N.d1)} color={c.d1} live={false} />
+      <Flow from={tc(N.cron)} to={bc(N.botIA)} color={c.cron} live={liveCron} />
+
+      {/* Nodos */}
+      <Node {...N.clienteWA} emoji="📱" label="Cliente" sub="WhatsApp" color={c.clienteWA} />
+      <Node {...N.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" color={c.sitio} />
+      <Node {...N.airbnb} emoji="🏠" label="Airbnb" sub="calendarios" color={c.airbnb} />
+      <Node {...N.webhook} emoji="🔗" label="Webhook" sub="recibe mensajes" color={c.webhook} />
+      <Node {...N.paypal} emoji="💳" label="PayPal" sub="pagos" color={c.paypal} />
+      <Node {...N.sync} emoji="📅" label="Sync iCal" sub="disponibilidad" color={c.sync} />
+      <Node {...N.cron} emoji="⏰" label="Cron" sub="seguimientos" color={c.cron} />
+      <Node {...N.botIA} emoji="🧠" label="Bot IA" sub="Workers AI" color={c.botIA} highlight />
+      <Node {...N.d1} emoji="🗄️" label="Base de datos" sub="Cloudflare D1" color={c.d1} highlight />
+    </svg>
+  );
+}
+
+function Flow({
+  from,
+  to,
+  color,
+  live,
+  dashed,
+}: {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  color: string;
+  live: boolean;
+  dashed?: boolean;
+}) {
+  return (
+    <g>
+      <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#1e293b" strokeWidth={2} />
+      <line
+        x1={from.x}
+        y1={from.y}
+        x2={to.x}
+        y2={to.y}
+        stroke={color}
+        strokeWidth={2}
+        strokeDasharray={dashed ? "2 8" : "6 10"}
+        opacity={0.9}
+      >
+        <animate
+          attributeName="stroke-dashoffset"
+          from={16}
+          to={0}
+          dur={live ? "0.6s" : "2.2s"}
+          repeatCount="indefinite"
+        />
+      </line>
+    </g>
+  );
+}
+
+function Node({
+  x,
+  y,
+  emoji,
+  label,
+  sub,
+  color,
+  highlight,
+}: {
+  x: number;
+  y: number;
+  emoji: string;
+  label: string;
+  sub: string;
+  color: string;
+  highlight?: boolean;
+}) {
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <rect
+        width={150}
+        height={52}
+        rx={12}
+        fill={highlight ? "#13233d" : "#0f1a2e"}
+        stroke={color}
+        strokeWidth={highlight ? 2 : 1.2}
+        opacity={0.98}
+      />
+      <text x={16} y={33} fontSize={20}>{emoji}</text>
+      <text x={46} y={24} fontSize={12} fontWeight={700} fill="#e5edf7">{label}</text>
+      <text x={46} y={39} fontSize={9.5} fill="#7c8db0">{sub}</text>
+      <circle cx={136} cy={14} r={4.5} fill={color}>
+        <animate attributeName="opacity" values="1;0.35;1" dur="1.8s" repeatCount="indefinite" />
+      </circle>
+    </g>
   );
 }
 
