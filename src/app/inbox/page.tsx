@@ -333,6 +333,22 @@ export default function InboxPage() {
     }
   }, [fetchConversations]);
 
+  // Pausar el bot a mano: el humano toma el control de la conversación.
+  // (Responder un mensaje NO pausa el bot — eso es una decisión explícita.)
+  const handlePauseBot = useCallback(async (phone: string): Promise<void> => {
+    try {
+      await fetch("/api/inbox/bot-pause", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      fetchConversations();
+    } catch (err) {
+      console.error("handlePauseBot error", err);
+    }
+  }, [fetchConversations]);
+
   useEffect(() => {
     fetchConversations();
   }, [fetchConversations]);
@@ -572,10 +588,14 @@ export default function InboxPage() {
               <li
                 key={c.phone}
                 onClick={() => selectConversation(c.phone)}
-                className={`px-4 py-3 border-b border-gray-100 cursor-pointer transition flex gap-3 ${
+                className={`px-4 py-3 border-b border-gray-100 border-l-4 cursor-pointer transition flex gap-3 ${
+                  c.botPaused ? "border-l-amber-400" : "border-l-transparent"
+                } ${
                   selectedPhone === c.phone
                     ? "bg-secondary/10"
-                    : "hover:bg-gray-50"
+                    : c.botPaused
+                      ? "bg-amber-50 hover:bg-amber-100/70"
+                      : "hover:bg-gray-50"
                 }`}
               >
                 <Avatar
@@ -603,6 +623,11 @@ export default function InboxPage() {
                     {c.lastMessage}
                   </p>
                   <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    {c.botPaused && (
+                      <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                        ⏸ Bot en pausa
+                      </span>
+                    )}
                     {c.escalated && (
                       <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
                         ⚠ escalado
@@ -656,23 +681,43 @@ export default function InboxPage() {
                         </p>
                       )}
                     </div>
-                    {conv?.botPaused && (
-                      <div className="ml-auto flex items-center gap-2 shrink-0">
-                        <span
-                          style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}
-                          className="text-[11px] font-medium rounded-full px-2.5 py-1 whitespace-nowrap"
-                        >
-                          🤖 Bot en pausa
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => { if (selectedPhone) handleResumeBot(selectedPhone); }}
-                          className="text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
-                        >
-                          Reactivar bot
-                        </button>
-                      </div>
-                    )}
+                    <div className="ml-auto flex items-center gap-2 shrink-0">
+                      {conv?.botPaused ? (
+                        <>
+                          <span
+                            style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d" }}
+                            className="flex items-center gap-1.5 text-[12px] font-bold rounded-full px-3 py-1.5 whitespace-nowrap"
+                          >
+                            <span className="w-2 h-2 rounded-full" style={{ background: "#d97706" }} />
+                            ⏸ Bot en pausa · le respondés vos
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => { if (selectedPhone) handleResumeBot(selectedPhone); }}
+                            className="text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
+                          >
+                            Reactivar bot
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            style={{ background: "#dcfce7", color: "#166534", border: "1px solid #86efac" }}
+                            className="flex items-center gap-1.5 text-[12px] font-bold rounded-full px-3 py-1.5 whitespace-nowrap"
+                          >
+                            <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#16a34a" }} />
+                            🤖 Bot activo · responde solo
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => { if (selectedPhone) handlePauseBot(selectedPhone); }}
+                            className="text-[12px] font-semibold text-muted border border-gray-300 hover:bg-gray-50 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
+                          >
+                            Pausar bot
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })()}

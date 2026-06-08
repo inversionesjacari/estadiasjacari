@@ -98,8 +98,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     console.error("Error guardando mensaje saliente manual:", (logErr as Error).message);
   }
 
-  // El humano tomó la conversación → pausar el bot para este número.
-  // Se reactiva a mano con el botón "Reactivar bot" del inbox.
+  // El humano tomó la conversación al responder a mano → se pausa el bot para
+  // ese número (decisión de César: cuando un humano interactúa, el bot calla y
+  // queda en control del humano). Se reactiva a mano con "Reactivar bot". El
+  // estado (activo / en pausa) se muestra BIEN VISIBLE en el inbox — en la lista
+  // y en la cabecera — para no dejar a nadie colgado. Las escalaciones reales
+  // también auto-pausan vía HANDOFF_RULES en el webhook.
   if (sendResult.ok) {
     await pauseBot(phone, "manual_inbox", env.DB);
   }

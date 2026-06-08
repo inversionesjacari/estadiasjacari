@@ -15,7 +15,7 @@
 export const BANK_HNL = {
   bank: "BAC",
   currency: "HNL",
-  accountName: "INMOBILIARIA JACARI S DE RL",
+  accountName: "INVERSIONES JACARI S DE RL", // tal cual aparece en el banco (verificado por Eduardo)
   accountNumber: "745467931",
   accountType: "Ahorro",
 } as const;

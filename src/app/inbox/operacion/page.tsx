@@ -42,12 +42,13 @@ const CHANGELOG: { date: string; items: string[] }[] = [
   {
     date: "8 jun 2026",
     items: [
-      "Bot: se apaga automáticamente al escalar (handoff a humano) y se reactiva con el botón “Reactivar bot” del inbox.",
+      "Bot: cuando un humano toma la conversación (responde a mano o aprieta “Pausar bot”) el bot se pausa y queda en tu control; se reactiva a mano con “Reactivar bot”. Ahora con indicador BIEN visible del estado — verde “responde solo” / ámbar “en pausa, le respondés vos” — en la cabecera y en la lista de conversaciones, para saber de un vistazo si el bot está respondiendo o no.",
       "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
       "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
       "Bot: ante un glitch técnico ya no manda un mensaje raro ni promete un humano — se queda callado y se recupera en el siguiente mensaje.",
       "QA del bot: panel que analiza las conversaciones con IA, detecta fallos (inventos, frustración, ventas perdidas…) y sugiere el fix. Botón “Analizar ahora”, revisión diaria, botón “Resuelto” por hallazgo (incremental: lo resuelto no reaparece) y el tiempo de cada caso.",
       "Bot: blindado contra inventar datos bancarios — cuando piden la cuenta para transferir, manda los datos EXACTOS del sistema (antes había alucinado un número de cuenta falso).",
+      "Transferencias: corregido el titular de la cuenta BAC en Lempiras → “Inversiones Jacarí S. de R.L.” (tal cual aparece en el banco).",
       "Seguimiento: el bot ahora también hace nudge si quedó pendiente la transferencia o el pago con el link de PayPal (antes solo seguía las cotizaciones a medias).",
       "Bot: el redirect fuera de alcance ahora sale en el idioma del cliente y de forma fija (antes le respondió en español a un cliente que escribía en inglés).",
       "Bot: arreglado un bug de estado — al hacer una pregunta después de la cotización, ya no “olvida” que ya cotizó (mantiene el estado), así el seguimiento automático sale correcto.",
