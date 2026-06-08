@@ -49,6 +49,8 @@ const CHANGELOG: { date: string; items: string[] }[] = [
       "QA del bot: panel que analiza las conversaciones con IA, detecta fallos (inventos, frustración, ventas perdidas…) y sugiere el fix. Botón “Analizar ahora”, revisión diaria, botón “Resuelto” por hallazgo (incremental: lo resuelto no reaparece) y el tiempo de cada caso.",
       "Bot: blindado contra inventar datos bancarios — cuando piden la cuenta para transferir, manda los datos EXACTOS del sistema (antes había alucinado un número de cuenta falso).",
       "Seguimiento: el bot ahora también hace nudge si quedó pendiente la transferencia o el pago con el link de PayPal (antes solo seguía las cotizaciones a medias).",
+      "Bot: el redirect fuera de alcance ahora sale en el idioma del cliente y de forma fija (antes le respondió en español a un cliente que escribía en inglés).",
+      "Bot: arreglado un bug de estado — al hacer una pregunta después de la cotización, ya no “olvida” que ya cotizó (mantiene el estado), así el seguimiento automático sale correcto.",
       "Ingresos: captura del ingreso de Airbnb en vivo vía PayPal (Transaction Search), separado del directo.",
       "Diagrama: rediseño — zona “ORIGEN”, logos de marca (Google a 4 colores, Jacarí, BAC), Airbnb como canal con “Viajeros”, dinero consolidado y líneas más nítidas.",
       "KPIs: cada tarjeta muestra Hoy / 7 días / 30 días.",

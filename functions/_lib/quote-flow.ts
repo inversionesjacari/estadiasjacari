@@ -358,12 +358,15 @@ async function gatherQuoteData(
   // escalateToOwner=true dispara el email + la etiqueta "escalado" en el inbox.
   // NO cancelamos el flow: si tenía una cotización en curso, puede retomarla.
   if (botResult.intent === "out_of_scope") {
-    const fallback =
+    // Mensaje DETERMINÍSTICO en el idioma del cliente (no usamos el reply del
+    // LLM, que a veces sale en el idioma equivocado — ej. español a un cliente
+    // que escribe en inglés).
+    const msg =
       lang === "en"
-        ? "For that, please message our team directly at +504 9764-9035 → https://wa.me/50497649035 🌴"
-        : "Para eso, escribile directo a nuestro equipo al +504 9764-9035 → https://wa.me/50497649035 🌴";
+        ? "For now we only manage properties in La Ceiba, Tela and Tegucigalpa 🙏. For anything outside that, it's best to message our team directly at +504 9764-9035 → https://wa.me/50497649035. If you'd like, I'm happy to help you with one of our properties. 🌴"
+        : "Por ahora solo manejamos propiedades en La Ceiba, Tela y Tegucigalpa 🙏. Para algo fuera de eso, lo mejor es escribirle directo a nuestro equipo al +504 9764-9035 → https://wa.me/50497649035. Si querés, con gusto te ayudo con alguna de nuestras propiedades. 🌴";
     return {
-      reply:           botResult.reply && botResult.reply.trim().length > 0 ? botResult.reply : fallback,
+      reply:           msg,
       escalateToOwner: true,
       ruleName:        "out_of_scope_redirect",
       tokensUsed:      botResult.tokensUsed,
@@ -521,9 +524,13 @@ async function gatherQuoteData(
     };
   }
 
-  // ── Datos incompletos — usar la respuesta natural del bot ─────────────────
-  // El bot ya sabe qué preguntar + puede haber contestado preguntas en el mismo reply
-  await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+  // ── Datos incompletos / pregunta suelta — respuesta natural del bot ───────
+  // Si los datos YA estaban completos (el cliente solo hizo una pregunta tras la
+  // cotización), MANTENEMOS "quote_provided" — no retrocedemos a
+  // awaiting_quote_data. Así el seguimiento sabe que ya hay cotización y no
+  // vuelve a pedir las fechas, y el flujo no "se olvida" del quote.
+  const keepState: ConvState = isQuoteDataComplete(mergedData) ? "quote_provided" : "awaiting_quote_data";
+  await upsertState(phone, keepState, mergedData, env.DB);
   return {
     reply:           botResult.reply,
     escalateToOwner: false,
