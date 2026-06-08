@@ -86,6 +86,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return json({ ok: false, error: "Faltan credenciales de WhatsApp" }, 500);
   }
 
+  // Latido: registrar que el cron corrió (para el Centro de Control).
+  try {
+    await env.DB.prepare(
+      `INSERT INTO system_heartbeat (key, last_at) VALUES ('cron_followups', datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
+    ).run();
+  } catch {
+    // best-effort (la tabla puede no existir aún)
+  }
+
   const url = new URL(request.url);
   const dryRun = url.searchParams.get("dryRun") === "1";
 

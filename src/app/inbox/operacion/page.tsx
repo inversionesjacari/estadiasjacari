@@ -51,7 +51,53 @@ interface Metrics {
     bySource: { source: string; c: number }[];
     revenueWeekUsd: number;
   };
+  health: {
+    lastInAt: string | null;
+    lastOutAt: string | null;
+    lastReservationAt: string | null;
+    cronLastAt: string | null;
+    airbnbStatus: "full" | "partial" | "unavailable" | "unknown";
+  };
+  botHealth: {
+    inbound: number;
+    botReplies: number;
+    manualReplies: number;
+    escalations: number;
+    fails: number;
+    escalationPct: number;
+  };
+  trend: { day: string; c: number }[];
+  feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
 }
+
+/** "2026-06-08 01:00:00" (UTC de D1) → "hace 5 min". */
+function timeAgo(iso: string | null): string {
+  if (!iso) return "sin datos";
+  const then = new Date(iso.replace(" ", "T") + "Z").getTime();
+  if (Number.isNaN(then)) return "—";
+  const min = Math.round((Date.now() - then) / 60000);
+  if (min < 1) return "ahora";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.round(h / 24)} d`;
+}
+
+/** Color del semáforo del cron según cuánto hace que corrió (espera ~10 min). */
+function cronColor(iso: string | null): string {
+  if (!iso) return "bg-gray-300";
+  const min = (Date.now() - new Date(iso.replace(" ", "T") + "Z").getTime()) / 60000;
+  if (min <= 15) return "bg-green-500";
+  if (min <= 30) return "bg-amber-500";
+  return "bg-red-500";
+}
+
+const AIRBNB_UI: Record<string, { color: string; label: string }> = {
+  full: { color: "bg-green-500", label: "Sincronizado" },
+  partial: { color: "bg-amber-500", label: "Parcial" },
+  unavailable: { color: "bg-red-500", label: "No responde" },
+  unknown: { color: "bg-gray-300", label: "Sin verificar" },
+};
 
 export default function OperacionPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -177,6 +223,61 @@ export default function OperacionPage() {
           )}
         </section>
 
+        {/* Salud de sistemas */}
+        <section className="bg-white rounded-2xl border border-gray-200 p-5">
+          <h2 className="font-display text-lg text-primary mb-3">🩺 Salud de los sistemas</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <HealthItem dot="bg-green-500" label="WhatsApp" detail={`últ. ${timeAgo(m.health.lastInAt)}`} />
+            <HealthItem dot="bg-green-500" label="Bot IA" detail={`últ. ${timeAgo(m.health.lastOutAt)}`} />
+            <HealthItem dot={AIRBNB_UI[m.health.airbnbStatus].color} label="Airbnb" detail={AIRBNB_UI[m.health.airbnbStatus].label} />
+            <HealthItem dot={cronColor(m.health.cronLastAt)} label="Seguimientos (cron)" detail={`últ. ${timeAgo(m.health.cronLastAt)}`} />
+            <HealthItem dot="bg-green-500" label="Reservas / PayPal" detail={`últ. ${timeAgo(m.health.lastReservationAt)}`} />
+          </div>
+        </section>
+
+        {/* Salud del bot + Tendencia */}
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
+            <h2 className="font-display text-lg text-primary mb-3">🤖 Salud del bot <span className="text-xs text-muted font-sans">(7 días)</span></h2>
+            <div className="space-y-1.5 text-sm">
+              <Row label="Consultas recibidas" value={m.botHealth.inbound} />
+              <Row label="Respondidas por el bot" value={m.botHealth.botReplies} accent="text-green-600" />
+              <Row label="Respondidas manualmente" value={m.botHealth.manualReplies} />
+              <Row label="Escaladas a humano" value={m.botHealth.escalations} accent="text-amber-600" />
+              <Row label="Fallos técnicos" value={m.botHealth.fails} accent={m.botHealth.fails > 0 ? "text-red-600" : undefined} />
+              <div className="pt-2 mt-1 border-t border-gray-100 flex justify-between">
+                <span className="text-muted">Tasa de escalación</span>
+                <span className="font-bold text-primary">{m.botHealth.escalationPct}%</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
+            <h2 className="font-display text-lg text-primary mb-3">📊 Mensajes por día <span className="text-xs text-muted font-sans">(7 días)</span></h2>
+            <TrendChart data={m.trend} />
+          </div>
+        </section>
+
+        {/* Feed de actividad */}
+        <section className="bg-white rounded-2xl border border-gray-200 p-5">
+          <h2 className="font-display text-lg text-primary mb-3">📋 Actividad reciente</h2>
+          {m.feed.length === 0 ? (
+            <p className="text-muted text-sm">Sin actividad reciente.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {m.feed.map((f, i) => (
+                <li key={i} className="flex items-start gap-2 text-sm border-b border-gray-50 pb-1.5 last:border-0">
+                  <span className="text-[10px] text-muted whitespace-nowrap pt-0.5 w-16 shrink-0">{timeAgo(f.at)}</span>
+                  <span className="text-primary flex-1 truncate">{f.text}</span>
+                  {f.tag && (
+                    <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded whitespace-nowrap">{f.tag}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         {/* Reservas por propiedad + fuente */}
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="bg-white rounded-2xl border border-gray-200 p-5">
@@ -236,6 +337,49 @@ function Kpi({
       <div className="text-2xl font-bold text-primary leading-none">{value}</div>
       <div className="text-sm font-medium text-primary mt-1">{label}</div>
       <div className="text-[11px] text-muted mt-0.5">{detail}</div>
+    </div>
+  );
+}
+
+function HealthItem({ dot, label, detail }: { dot: string; label: string; detail: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`inline-block w-2.5 h-2.5 rounded-full ${dot} shrink-0`} />
+      <div className="min-w-0">
+        <div className="text-primary font-medium truncate">{label}</div>
+        <div className="text-[11px] text-muted truncate">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, accent }: { label: string; value: number; accent?: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-muted">{label}</span>
+      <span className={`font-semibold ${accent ?? "text-primary"}`}>{value}</span>
+    </div>
+  );
+}
+
+function TrendChart({ data }: { data: { day: string; c: number }[] }) {
+  if (data.length === 0) {
+    return <p className="text-muted text-sm">Sin mensajes en los últimos 7 días.</p>;
+  }
+  const max = Math.max(...data.map((d) => d.c), 1);
+  return (
+    <div className="flex items-end gap-2 h-28">
+      {data.map((d) => {
+        const pct = Math.round((d.c / max) * 100);
+        const label = d.day.slice(8, 10) + "/" + d.day.slice(5, 7); // DD/MM
+        return (
+          <div key={d.day} className="flex-1 flex flex-col items-center justify-end h-full">
+            <span className="text-[10px] text-muted mb-0.5">{d.c}</span>
+            <div className="w-full bg-secondary/70 rounded-t" style={{ height: `${Math.max(pct, 4)}%` }} />
+            <span className="text-[9px] text-muted mt-1">{label}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
