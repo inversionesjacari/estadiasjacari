@@ -64,21 +64,25 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const db = env.DB;
 
   const [
-    msgsToday, msgsWeek, uniqueToday, uniqueWeek, funnelRows,
-    resvCounts, resvByProperty, resvBySource, revenueWeek,
+    msgsToday, msgsWeek, msgRanges, convRanges, funnelRows,
+    resvCounts, resvByProperty, resvBySource, revRanges,
     lastIn, lastOut, lastResv, heartbeat,
     botCounts, trendRows, feedMsgs, feedResvs,
     webToday, webNow, webTopPages, webReferrers,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
-    db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= ${HN_DAY_START}`).first<{ c: number }>().catch(() => ({ c: 0 })),
-    db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= datetime('now','-7 days')`).first<{ c: number }>().catch(() => ({ c: 0 })),
+    // Totales de mensajes por rango (hoy / 7d / 30d)
+    db.prepare(`SELECT SUM(CASE WHEN created_at >= ${HN_DAY_START} THEN 1 ELSE 0 END) AS today, SUM(CASE WHEN created_at >= datetime('now','-7 days') THEN 1 ELSE 0 END) AS week, SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS month FROM whatsapp_messages`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
+    // Conversaciones únicas (teléfonos distintos que escribieron) por rango
+    db.prepare(`SELECT COUNT(DISTINCT CASE WHEN created_at >= ${HN_DAY_START} THEN from_phone END) AS today, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-7 days') THEN from_phone END) AS week, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-30 days') THEN from_phone END) AS month FROM whatsapp_messages WHERE direction='in'`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     db.prepare(`SELECT state, COUNT(*) AS c FROM conversation_state WHERE expires_at > datetime('now') GROUP BY state`).all<{ state: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT SUM(CASE WHEN created_at >= ${HN_DAY_START} THEN 1 ELSE 0 END) AS today, SUM(CASE WHEN created_at >= datetime('now','-7 days') THEN 1 ELSE 0 END) AS week, SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS month FROM reservations WHERE status IN ('pending','confirmed')`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     db.prepare(`SELECT property_slug AS slug, COUNT(*) AS c FROM reservations WHERE status IN ('pending','confirmed') AND created_at >= datetime('now','-30 days') GROUP BY property_slug ORDER BY c DESC`).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT source, COUNT(*) AS c FROM reservations WHERE status IN ('pending','confirmed') AND created_at >= datetime('now','-30 days') GROUP BY source ORDER BY c DESC`).all<{ source: string; c: number }>().catch(() => ({ results: [] })),
-    db.prepare(`SELECT COALESCE(SUM(amount_usd),0) AS rev FROM reservations WHERE status IN ('pending','confirmed') AND created_at >= datetime('now','-7 days')`).first<{ rev: number }>().catch(() => ({ rev: 0 })),
+    // Ingresos directos (reservas pagadas/pendientes en D1) por rango. Airbnb se
+    // sumará aparte vía PayPal Transaction Search cuando se active.
+    db.prepare(`SELECT COALESCE(SUM(CASE WHEN created_at >= ${HN_DAY_START} THEN amount_usd ELSE 0 END),0) AS today, COALESCE(SUM(CASE WHEN created_at >= datetime('now','-7 days') THEN amount_usd ELSE 0 END),0) AS week, COALESCE(SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN amount_usd ELSE 0 END),0) AS month FROM reservations WHERE status IN ('pending','confirmed')`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     // Salud — última actividad por sistema
     db.prepare(`SELECT MAX(created_at) AS t FROM whatsapp_messages WHERE direction='in'`).first<{ t: string }>().catch(() => ({ t: null })),
     db.prepare(`SELECT MAX(created_at) AS t FROM whatsapp_messages WHERE direction='out'`).first<{ t: string }>().catch(() => ({ t: null })),
@@ -154,8 +158,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       todayOut: dir(msgsToday, "out"),
       weekIn: dir(msgsWeek, "in"),
       weekOut: dir(msgsWeek, "out"),
-      uniqueToday: numOf(uniqueToday, "c"),
-      uniqueWeek: numOf(uniqueWeek, "c"),
+      today: numOf(msgRanges, "today"),
+      week: numOf(msgRanges, "week"),
+      month: numOf(msgRanges, "month"),
+    },
+    conversations: {
+      today: numOf(convRanges, "today"),
+      week: numOf(convRanges, "week"),
+      month: numOf(convRanges, "month"),
     },
     funnel: {
       awaitingData: fc("awaiting_quote_data"),
@@ -171,7 +181,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       month: numOf(resvCounts, "month"),
       byProperty: rowsOf<{ slug: string; c: number }>(resvByProperty),
       bySource: rowsOf<{ source: string; c: number }>(resvBySource),
-      revenueWeekUsd: Math.round(numOf(revenueWeek, "rev")),
+    },
+    revenue: {
+      // Ingreso directo (reservas en D1: sitio + bot, pagadas/pendientes).
+      direct: {
+        today: Math.round(numOf(revRanges, "today")),
+        week: Math.round(numOf(revRanges, "week")),
+        month: Math.round(numOf(revRanges, "month")),
+      },
+      // Ingreso Airbnb (vía PayPal Transaction Search) — null hasta activarlo.
+      airbnb: { today: null as number | null, week: null as number | null, month: null as number | null },
     },
     health: {
       lastInAt: strOf(lastIn, "t"),

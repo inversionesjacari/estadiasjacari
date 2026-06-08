@@ -6,6 +6,7 @@
 //
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { BRAND_PATHS, BRAND_FILL, GOOGLE_G, JACARI_PATH, ROBOT_PATH } from "./brand-logos";
 
 const PROPERTY_NAMES: Record<string, string> = {
   "villa-b11-palma-real": "Villa B11",
@@ -37,9 +38,11 @@ const REFERRER_NAMES: Record<string, string> = {
 
 interface Metrics {
   generatedAt: string;
-  messages: { todayIn: number; todayOut: number; weekIn: number; weekOut: number; uniqueToday: number; uniqueWeek: number };
+  messages: { todayIn: number; todayOut: number; weekIn: number; weekOut: number; today: number; week: number; month: number };
+  conversations: { today: number; week: number; month: number };
   funnel: { awaitingData: number; quoteProvided: number; awaitingPaymentMethod: number; awaitingPaypal: number; awaitingTransfer: number; total: number };
-  reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[]; revenueWeekUsd: number };
+  reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
+  revenue: { direct: { today: number; week: number; month: number }; airbnb: { today: number | null; week: number | null; month: number | null } };
   health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown" };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
@@ -174,12 +177,12 @@ export default function OperacionPage() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5 space-y-5">
-        {/* KPIs */}
+        {/* KPIs — cada card con hoy / 7 días / 30 días */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Kpi icon="📨" label="Mensajes hoy" value={m.messages.todayIn + m.messages.todayOut} detail={`${m.messages.todayIn} in · ${m.messages.todayOut} out`} glow={HEX.cyan} />
-          <Kpi icon="💬" label="Conversaciones hoy" value={m.messages.uniqueToday} detail={`${m.messages.uniqueWeek} esta semana`} glow="#a78bfa" />
-          <Kpi icon="🏠" label="Reservas (semana)" value={m.reservations.week} detail={`hoy ${m.reservations.today} · mes ${m.reservations.month}`} glow={HEX.green} />
-          <Kpi icon="💰" label="Ingresos (7d)" value={m.reservations.revenueWeekUsd} prefix="$" detail="pagadas + pendientes" glow={HEX.amber} />
+          <Kpi icon="📨" label="Mensajes" hoy={m.messages.today} week={m.messages.week} month={m.messages.month} glow={HEX.cyan} />
+          <Kpi icon="💬" label="Conversaciones" hoy={m.conversations.today} week={m.conversations.week} month={m.conversations.month} glow="#a78bfa" />
+          <Kpi icon="🏠" label="Reservas" hoy={m.reservations.today} week={m.reservations.week} month={m.reservations.month} glow={HEX.green} />
+          <Kpi icon="💰" label="Ingresos" hoy={m.revenue.direct.today} week={m.revenue.direct.week} month={m.revenue.direct.month} prefix="$" glow={HEX.amber} footer="directo · Airbnb al activar PayPal" />
         </section>
 
         {/* Diagrama protagonista */}
@@ -301,17 +304,32 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
   );
 }
 
-function Kpi({ icon, label, value, detail, glow, prefix }: { icon: string; label: string; value: number; detail: string; glow: string; prefix?: string }) {
-  const animated = useCountUp(value);
+function Kpi({ icon, label, hoy, week, month, glow, prefix, footer }: { icon: string; label: string; hoy: number | null; week: number | null; month: number | null; glow: string; prefix?: string; footer?: string }) {
   return (
     <div className="relative rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur p-4 overflow-hidden">
       <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-20 blur-2xl" style={{ background: glow }} />
-      <div className="text-xl mb-1.5">{icon}</div>
-      <div className="font-mono text-3xl font-bold leading-none" style={{ color: glow, textShadow: `0 0 18px ${glow}55` }}>
-        {prefix}{animated.toLocaleString("en-US")}
+      <div className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-200 mb-2.5">
+        <span className="text-[15px]">{icon}</span>{label}
       </div>
-      <div className="text-[13px] font-medium text-slate-200 mt-1.5">{label}</div>
-      <div className="text-[11px] text-slate-500 mt-0.5">{detail}</div>
+      <div className="grid grid-cols-3 gap-1.5 text-center">
+        <RangeCell label="Hoy" value={hoy} glow={glow} prefix={prefix} primary />
+        <RangeCell label="7 días" value={week} prefix={prefix} />
+        <RangeCell label="30 días" value={month} prefix={prefix} />
+      </div>
+      {footer && <div className="text-[10px] text-slate-500 mt-2 text-center">{footer}</div>}
+    </div>
+  );
+}
+
+function RangeCell({ label, value, glow, prefix, primary }: { label: string; value: number | null; glow?: string; prefix?: string; primary?: boolean }) {
+  const animated = useCountUp(typeof value === "number" ? value : 0);
+  const display = value === null ? "—" : `${prefix ?? ""}${animated.toLocaleString("en-US")}`;
+  return (
+    <div className={`rounded-lg py-2 ${primary ? "bg-white/[0.05] border border-white/5" : ""}`}>
+      <div className={`font-mono font-bold leading-none ${primary ? "text-2xl" : "text-base text-slate-300"}`} style={primary ? { color: glow, textShadow: `0 0 14px ${glow}55` } : undefined}>
+        {display}
+      </div>
+      <div className="text-[10px] text-slate-500 mt-1.5">{label}</div>
     </div>
   );
 }
@@ -442,33 +460,39 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
   const liveCron = isLive(health.cronLastAt, 15);
 
   // Layout en zonas (izq→der): captación · canales · motor · dinero/salidas.
+  // Captación = solo fuentes de tráfico (IG/FB/Google). Airbnb es un CANAL de
+  // reserva (descubre + reserva + paga ahí, como el sitio), no captación.
   // El motor es una columna vertical (bot → db → cron) para que el cron quede
   // anclado a la base y no parezca "flotando".
   const P: Record<string, NodePos> = {
-    ig: { x: 14, y: 86, s: true }, fb: { x: 14, y: 140, s: true }, google: { x: 14, y: 194, s: true },
-    airbnb: { x: 14, y: 310, s: true },
-    wa: { x: 196, y: 104 }, sitio: { x: 196, y: 238 },
-    bot: { x: 430, y: 120 }, db: { x: 430, y: 296 }, cron: { x: 430, y: 472 },
+    ig: { x: 14, y: 88, s: true }, fb: { x: 14, y: 142, s: true }, google: { x: 14, y: 224, s: true },
+    wa: { x: 196, y: 96 }, sitio: { x: 196, y: 188 }, airbnb: { x: 196, y: 280 },
+    bot: { x: 430, y: 124 }, db: { x: 430, y: 308 }, cron: { x: 430, y: 426 },
     agente: { x: 690, y: 104, s: true },
-    paypal: { x: 690, y: 192 }, bac: { x: 690, y: 300 },
-    limpieza: { x: 690, y: 440, s: true }, seguridad: { x: 690, y: 494, s: true }, huesped: { x: 690, y: 548, s: true },
+    paypal: { x: 690, y: 200 }, bac: { x: 690, y: 308 },
+    limpieza: { x: 690, y: 396, s: true }, seguridad: { x: 690, y: 450, s: true }, huesped: { x: 690, y: 504, s: true },
   };
 
   return (
     <div>
-      <svg viewBox="0 0 880 616" className="w-full" style={{ maxHeight: 660 }}>
+      <svg viewBox="0 0 880 568" className="w-full" style={{ maxHeight: 660 }}>
         <defs>
           <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="2.5" result="b" />
             <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
+          {/* Degradado oficial de Instagram para su logo */}
+          <linearGradient id="ig-grad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stopColor="#FED576" /><stop offset="0.26" stopColor="#F47133" />
+            <stop offset="0.61" stopColor="#BC3081" /><stop offset="1" stopColor="#4C63D2" />
+          </linearGradient>
         </defs>
 
         {/* Etiquetas de zona */}
         <text x={80} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CAPTACIÓN</text>
-        <text x={280} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CANALES</text>
-        <text x={500} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">MOTOR</text>
-        <text x={752} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">DINERO · SALIDAS</text>
+        <text x={276} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CANALES</text>
+        <text x={510} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">MOTOR</text>
+        <text x={760} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">DINERO · SALIDAS</text>
 
         {/* Conexiones */}
         {/* Captación → canales (datos) */}
@@ -500,19 +524,19 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Flow from={rc(P.cron)} to={lc(P.seguridad)} kind="msg" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.huesped)} kind="msg" live={liveCron} />
 
-        {/* Nodos */}
-        <Node {...P.ig} emoji="📷" label="Instagram" sub="ads / perfil" health={h.ig} small />
-        <Node {...P.fb} emoji="👍" label="Facebook" sub="ads / perfil" health={h.fb} small />
-        <Node {...P.google} emoji="🔍" label="Google / directo" sub="(previsto)" health={h.google} small />
-        <Node {...P.airbnb} emoji="🏠" label="Airbnb" sub="reservas" health={h.airbnb} small />
-        <Node {...P.wa} emoji="💬" label="WhatsApp" sub="cliente" health={h.wa} />
-        <Node {...P.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
-        <Node {...P.bot} emoji="🧠" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
+        {/* Nodos (logos de marca donde aplica; ícono para conceptos internos) */}
+        <Node {...P.ig} icon="instagram" label="Instagram" sub="ads / perfil" health={h.ig} small />
+        <Node {...P.fb} icon="facebook" label="Facebook" sub="ads / perfil" health={h.fb} small />
+        <Node {...P.google} icon="google" label="Google / directo" sub="(previsto)" health={h.google} small />
+        <Node {...P.wa} icon="whatsapp" label="WhatsApp" sub="cliente" health={h.wa} />
+        <Node {...P.sitio} icon="jacari" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
+        <Node {...P.airbnb} icon="airbnb" label="Airbnb" sub="reservas + pago" health={h.airbnb} small />
+        <Node {...P.bot} icon="robot" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
         <Node {...P.agente} emoji="👤" label="Agente" sub="humano · escalación" health={h.agente} small />
         <Node {...P.db} emoji="🗄️" label="Base de datos" sub="reservas · KB · memoria" health={h.db} highlight />
         <Node {...P.cron} emoji="⏰" label="Cron" sub="tareas programadas" health={h.cron} />
-        <Node {...P.paypal} emoji="💳" label="PayPal" sub="cobros" health={h.paypal} />
-        <Node {...P.bac} emoji="🏦" label="Banco BAC" sub="el dinero llega acá" health={h.bac} highlight />
+        <Node {...P.paypal} icon="paypal" label="PayPal" sub="cobros" health={h.paypal} />
+        <Node {...P.bac} icon="bac" label="BAC" sub="el dinero llega acá" health={h.bac} highlight />
         <Node {...P.limpieza} emoji="🧹" label="Limpieza" sub="aviso" health={h.team} small />
         <Node {...P.seguridad} emoji="🛡️" label="Seguridad" sub="aviso" health={h.team} small />
         <Node {...P.huesped} emoji="🧳" label="Huésped" sub="check-in" health={h.team} small />
@@ -567,16 +591,15 @@ function Flow({ from, to, kind, live, bidir }: { from: Pt; to: Pt; kind: FlowKin
   );
 }
 
-function Node({ x, y, emoji, label, sub, health, small, highlight }: { x: number; y: number; emoji: string; label: string; sub: string; health: string; small?: boolean; highlight?: boolean }) {
+function Node({ x, y, icon, emoji, label, sub, health, small, highlight }: { x: number; y: number; icon?: string; emoji?: string; label: string; sub: string; health: string; small?: boolean; highlight?: boolean }) {
   const w = small ? 132 : 160;
   const ht = small ? 46 : 56;
   return (
     <g transform={`translate(${x},${y})`}>
       <rect width={w} height={ht} rx={12} fill="#0c1626" />
       <rect width={w} height={ht} rx={12} fill={highlight ? "#11223e" : "#0e1a2e"} stroke={highlight ? "#3a5578" : "#2b3a55"} strokeWidth={1.5} />
-      {/* ícono en chip */}
-      <rect x={small ? 9 : 12} y={small ? 10 : 13} width={small ? 26 : 30} height={small ? 26 : 30} rx={7} fill="#0a1322" stroke="#243349" strokeWidth={1} />
-      <text x={small ? 22 : 27} y={small ? 28 : 34} fontSize={small ? 14 : 17} textAnchor="middle">{emoji}</text>
+      {/* ícono: logo de marca o emoji */}
+      <NodeIcon icon={icon} emoji={emoji} small={small} />
       {/* textos */}
       <text x={small ? 42 : 50} y={small ? 22 : 25} fontSize={small ? 11 : 13} fontWeight={700} fill="#f1f6fd">{label}</text>
       <text x={small ? 42 : 50} y={small ? 34 : 41} fontSize={small ? 8.5 : 10} fill="#94a6c4">{sub}</text>
@@ -586,4 +609,31 @@ function Node({ x, y, emoji, label, sub, health, small, highlight }: { x: number
       </circle>
     </g>
   );
+}
+
+/** Dibuja el ícono dentro del chip: logo de marca (SVG/imagen) o emoji. */
+function NodeIcon({ icon, emoji, small }: { icon?: string; emoji?: string; small?: boolean }) {
+  const cs = small ? 26 : 30;
+  const x0 = small ? 9 : 12;
+  const y0 = small ? 10 : 13;
+  const darkChip = <rect x={x0} y={y0} width={cs} height={cs} rx={7} fill="#0a1322" stroke="#243349" strokeWidth={1} />;
+  // Escala un ícono de su viewBox (vbw×vbh) al chip, centrado, ocupando `frac`.
+  const scaled = (inner: React.ReactNode, vbw: number, vbh: number, frac: number) => {
+    const s = (cs * frac) / Math.max(vbw, vbh);
+    const tx = x0 + (cs - vbw * s) / 2;
+    const ty = y0 + (cs - vbh * s) / 2;
+    return <g transform={`translate(${tx.toFixed(2)},${ty.toFixed(2)}) scale(${s.toFixed(4)})`}>{inner}</g>;
+  };
+
+  if (icon === "bac")
+    return (<>{darkChip}<image href="/brands/bac.png" x={x0 + cs * 0.15} y={y0 + cs * 0.17} width={cs * 0.7} height={cs * 0.66} preserveAspectRatio="xMidYMid meet" /></>);
+  if (icon === "jacari")
+    return (<><rect x={x0} y={y0} width={cs} height={cs} rx={7} fill="#f3f6f7" />{scaled(<path d={JACARI_PATH} fill="#003f51" />, 548.14, 522.76, 0.66)}</>);
+  if (icon === "google")
+    return (<>{darkChip}{scaled(<>{GOOGLE_G.map((g, i) => <path key={i} d={g.d} fill={g.fill} />)}</>, 48, 48, 0.66)}</>);
+  if (icon === "robot")
+    return (<>{darkChip}{scaled(<path d={ROBOT_PATH} fill="#34d3ee" />, 24, 24, 0.62)}</>);
+  if (icon && BRAND_PATHS[icon])
+    return (<>{darkChip}{scaled(<path d={BRAND_PATHS[icon]} fill={BRAND_FILL[icon]} />, 24, 24, 0.6)}</>);
+  return (<>{darkChip}<text x={small ? 22 : 27} y={small ? 28 : 34} fontSize={small ? 14 : 17} textAnchor="middle">{emoji}</text></>);
 }
