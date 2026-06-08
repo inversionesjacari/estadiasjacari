@@ -408,114 +408,166 @@ function TrendChart({ data }: { data: { day: string; c: number }[] }) {
 // Diagrama de arquitectura animado (SVG con glow)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const W = 168, H = 60;
-const rc = (n: { x: number; y: number }) => ({ x: n.x + W, y: n.y + H / 2 });
-const lc = (n: { x: number; y: number }) => ({ x: n.x, y: n.y + H / 2 });
-const bc = (n: { x: number; y: number }) => ({ x: n.x + W / 2, y: n.y + H });
-const tc = (n: { x: number; y: number }) => ({ x: n.x + W / 2, y: n.y });
+// Colores por TIPO de flujo (no por salud)
+const FLOW = { msg: "#22d3ee", money: "#34d399", avail: "#fbbf24", data: "#a78bfa" };
+type FlowKind = keyof typeof FLOW;
+
+type Pt = { x: number; y: number };
+type NodePos = { x: number; y: number; s?: boolean };
+const dimOf = (n: NodePos) => (n.s ? { w: 132, h: 46 } : { w: 160, h: 56 });
+const rc = (n: NodePos) => ({ x: n.x + dimOf(n).w, y: n.y + dimOf(n).h / 2 });
+const lc = (n: NodePos) => ({ x: n.x, y: n.y + dimOf(n).h / 2 });
+const bc = (n: NodePos) => ({ x: n.x + dimOf(n).w / 2, y: n.y + dimOf(n).h });
+const tc = (n: NodePos) => ({ x: n.x + dimOf(n).w / 2, y: n.y });
 
 function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
-  const c = {
-    clienteWA: recencyHex(health.lastInAt),
-    webhook: recencyHex(health.lastInAt),
-    botIA: recencyHex(health.lastOutAt),
-    d1: HEX.green,
-    sitio: HEX.green,
-    paypal: recencyHex(health.lastReservationAt, 24 * 30),
+  // Salud → SOLO el punto de cada nodo (separada del color de la línea)
+  const h = {
+    ig: HEX.green, fb: HEX.green, google: HEX.gray,
     airbnb: airbnbHex(health.airbnbStatus),
-    sync: airbnbHex(health.airbnbStatus),
+    wa: recencyHex(health.lastInAt),
+    sitio: HEX.green,
+    bot: recencyHex(health.lastOutAt),
+    db: HEX.green,
     cron: cronHex(health.cronLastAt),
+    paypal: recencyHex(health.lastReservationAt, 24 * 30),
+    bac: recencyHex(health.lastReservationAt, 24 * 30),
+    team: cronHex(health.cronLastAt),
   };
-  const liveWA = isLive(health.lastInAt);
-  const liveResv = isLive(health.lastReservationAt, 60);
+  const liveMsg = isLive(health.lastInAt);
+  const liveMoney = isLive(health.lastReservationAt, 60);
   const liveCron = isLive(health.cronLastAt, 15);
 
-  // 3 carriles horizontales (entradas → proceso → núcleo)
-  const COL = { in: 30, mid: 300, core: 600 };
-  const N = {
-    clienteWA: { x: COL.in, y: 60 }, sitio: { x: COL.in, y: 210 }, airbnb: { x: COL.in, y: 360 },
-    webhook: { x: COL.mid, y: 60 }, paypal: { x: COL.mid, y: 210 }, sync: { x: COL.mid, y: 360 },
-    cron: { x: COL.mid, y: 470 },
-    botIA: { x: COL.core, y: 120 }, d1: { x: COL.core, y: 300 },
+  const P: Record<string, NodePos> = {
+    ig: { x: 14, y: 78, s: true }, fb: { x: 14, y: 132, s: true }, google: { x: 14, y: 186, s: true },
+    airbnb: { x: 14, y: 330, s: true },
+    wa: { x: 196, y: 90 }, sitio: { x: 196, y: 220 },
+    bot: { x: 430, y: 150 }, db: { x: 430, y: 330 }, cron: { x: 430, y: 474 },
+    paypal: { x: 690, y: 228 }, bac: { x: 690, y: 356 },
+    limpieza: { x: 690, y: 466, s: true }, seguridad: { x: 690, y: 520, s: true }, huesped: { x: 690, y: 574, s: true },
   };
 
   return (
-    <svg viewBox="0 0 800 560" className="w-full" style={{ maxHeight: 560 }}>
-      <defs>
-        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="2.5" result="b" />
-          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
+    <div>
+      <svg viewBox="0 0 880 656" className="w-full" style={{ maxHeight: 660 }}>
+        <defs>
+          <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="2.5" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
 
-      {/* Etiquetas de carril */}
-      <text x={COL.in + W / 2} y={32} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="2">ENTRADAS</text>
-      <text x={COL.mid + W / 2} y={32} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="2">PROCESO</text>
-      <text x={COL.core + W / 2} y={32} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="2">NÚCLEO</text>
+        {/* Etiquetas de zona */}
+        <text x={80} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CAPTACIÓN</text>
+        <text x={280} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">CANALES</text>
+        <text x={500} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">MOTOR</text>
+        <text x={752} y={40} fontSize={11} fontWeight={700} fill="#3f5170" textAnchor="middle" letterSpacing="1.5">DINERO · SALIDAS</text>
 
-      {/* Conexiones (curvas) */}
-      <Flow from={rc(N.clienteWA)} to={lc(N.webhook)} color={c.webhook} live={liveWA} />
-      <Flow from={rc(N.webhook)} to={lc(N.botIA)} color={c.botIA} live={liveWA} />
-      <Flow from={rc(N.sitio)} to={lc(N.paypal)} color={c.paypal} live={liveResv} />
-      <Flow from={rc(N.airbnb)} to={lc(N.sync)} color={c.airbnb} live={false} dashed />
-      <Flow from={rc(N.paypal)} to={lc(N.d1)} color={c.paypal} live={liveResv} />
-      <Flow from={rc(N.sync)} to={lc(N.d1)} color={c.sync} live={false} />
-      <Flow from={bc(N.botIA)} to={tc(N.d1)} color={c.botIA} live={liveWA} />
-      <Flow from={rc(N.cron)} to={lc(N.d1)} color={c.cron} live={liveCron} />
+        {/* Conexiones */}
+        {/* Captación → canales (datos) */}
+        <Flow from={rc(P.ig)} to={lc(P.wa)} kind="data" live={liveMsg} />
+        <Flow from={rc(P.fb)} to={lc(P.wa)} kind="data" live={liveMsg} />
+        <Flow from={rc(P.google)} to={lc(P.sitio)} kind="data" live={false} />
+        {/* Conversación (ida y vuelta = el bot responde) */}
+        <Flow from={rc(P.wa)} to={lc(P.bot)} kind="msg" live={liveMsg} bidir />
+        {/* Datos internos */}
+        <Flow from={bc(P.bot)} to={tc(P.db)} kind="data" live={liveMsg} bidir />
+        {/* Disponibilidad (calendario compartido) */}
+        <Flow from={rc(P.sitio)} to={lc(P.db)} kind="avail" live={false} bidir />
+        <Flow from={rc(P.airbnb)} to={lc(P.db)} kind="avail" live={false} bidir />
+        {/* Dinero: reservas → PayPal → Banco */}
+        <Flow from={rc(P.airbnb)} to={lc(P.paypal)} kind="money" live={liveMoney} />
+        <Flow from={rc(P.sitio)} to={lc(P.paypal)} kind="money" live={liveMoney} />
+        <Flow from={rc(P.bot)} to={lc(P.paypal)} kind="money" live={liveMoney} />
+        <Flow from={bc(P.paypal)} to={tc(P.bac)} kind="money" live={liveMoney} />
+        {/* Operaciones: cron → equipo */}
+        <Flow from={tc(P.cron)} to={bc(P.db)} kind="data" live={liveCron} />
+        <Flow from={rc(P.cron)} to={lc(P.limpieza)} kind="msg" live={liveCron} />
+        <Flow from={rc(P.cron)} to={lc(P.seguridad)} kind="msg" live={liveCron} />
+        <Flow from={rc(P.cron)} to={lc(P.huesped)} kind="msg" live={liveCron} />
 
-      {/* Nodos */}
-      <Node {...N.clienteWA} emoji="📱" label="Cliente" sub="WhatsApp" color={c.clienteWA} />
-      <Node {...N.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" color={c.sitio} />
-      <Node {...N.airbnb} emoji="🏠" label="Airbnb" sub="calendarios" color={c.airbnb} />
-      <Node {...N.webhook} emoji="🔗" label="Webhook" sub="recibe mensajes" color={c.webhook} />
-      <Node {...N.paypal} emoji="💳" label="PayPal" sub="pagos" color={c.paypal} />
-      <Node {...N.sync} emoji="📅" label="Sync iCal" sub="disponibilidad" color={c.sync} />
-      <Node {...N.cron} emoji="⏰" label="Cron" sub="seguimientos" color={c.cron} />
-      <Node {...N.botIA} emoji="🧠" label="Bot IA" sub="Workers AI" color={c.botIA} highlight />
-      <Node {...N.d1} emoji="🗄️" label="Base de datos" sub="Cloudflare D1" color={c.d1} highlight />
-    </svg>
+        {/* Nodos */}
+        <Node {...P.ig} emoji="📷" label="Instagram" sub="ads / perfil" health={h.ig} small />
+        <Node {...P.fb} emoji="👍" label="Facebook" sub="ads / perfil" health={h.fb} small />
+        <Node {...P.google} emoji="🔍" label="Google / directo" sub="(previsto)" health={h.google} small />
+        <Node {...P.airbnb} emoji="🏠" label="Airbnb" sub="reservas" health={h.airbnb} small />
+        <Node {...P.wa} emoji="💬" label="WhatsApp" sub="cliente" health={h.wa} />
+        <Node {...P.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
+        <Node {...P.bot} emoji="🧠" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
+        <Node {...P.db} emoji="🗄️" label="Base de datos" sub="calendario · reservas" health={h.db} highlight />
+        <Node {...P.cron} emoji="⏰" label="Cron" sub="automatizaciones" health={h.cron} />
+        <Node {...P.paypal} emoji="💳" label="PayPal" sub="cobros" health={h.paypal} />
+        <Node {...P.bac} emoji="🏦" label="Banco BAC" sub="el dinero llega acá" health={h.bac} highlight />
+        <Node {...P.limpieza} emoji="🧹" label="Limpieza" sub="aviso" health={h.team} small />
+        <Node {...P.seguridad} emoji="🛡️" label="Seguridad" sub="aviso" health={h.team} small />
+        <Node {...P.huesped} emoji="🧳" label="Huésped" sub="check-in" health={h.team} small />
+      </svg>
+
+      {/* Leyenda de tipos de flujo */}
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-3 px-1 text-[11px] text-slate-400">
+        <LegendDot color={FLOW.msg} label="Conversación / avisos" />
+        <LegendDot color={FLOW.money} label="Dinero" />
+        <LegendDot color={FLOW.avail} label="Disponibilidad" />
+        <LegendDot color={FLOW.data} label="Datos / captación" />
+      </div>
+    </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="inline-block w-4 h-[3px] rounded-full" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
+      {label}
+    </span>
   );
 }
 
 /** Curva bezier horizontal suave entre dos puntos. */
-function curvePath(a: { x: number; y: number }, b: { x: number; y: number }): string {
+function curvePath(a: Pt, b: Pt): string {
   const mx = (a.x + b.x) / 2;
   return `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
 }
 
-function Flow({ from, to, color, live, dashed }: { from: { x: number; y: number }; to: { x: number; y: number }; color: string; live: boolean; dashed?: boolean }) {
+function Flow({ from, to, kind, live, bidir }: { from: Pt; to: Pt; kind: FlowKind; live: boolean; bidir?: boolean }) {
   const d = curvePath(from, to);
+  const color = FLOW[kind];
   return (
     <g>
-      {/* riel base sutil (más delgado que el flujo) */}
+      {/* riel base sutil */}
       <path d={d} fill="none" stroke="#172339" strokeWidth={1.5} />
-      {/* halo de color tenue para que "ilumine" el camino */}
-      <path d={d} fill="none" stroke={color} strokeWidth={5} opacity={0.18} filter="url(#glow)" />
-      {/* flujo animado de color (denso y brillante) */}
-      <path d={d} fill="none" stroke={color} strokeWidth={3} strokeLinecap="round" strokeDasharray={dashed ? "2 7" : "5 7"} opacity={1} filter="url(#glow)">
-        <animate attributeName="stroke-dashoffset" from={12} to={0} dur={live ? "0.5s" : "2s"} repeatCount="indefinite" />
+      {/* halo de color (ilumina el camino) */}
+      <path d={d} fill="none" stroke={color} strokeWidth={5} opacity={0.16} filter="url(#glow)" />
+      {/* flujo animado (siempre corre; live solo lo acelera) */}
+      <path d={d} fill="none" stroke={color} strokeWidth={2.8} strokeLinecap="round" strokeDasharray="5 8" opacity={1} filter="url(#glow)">
+        <animate attributeName="stroke-dashoffset" from={13} to={0} dur={live ? "0.5s" : "2.1s"} repeatCount="indefinite" />
       </path>
+      {/* corriente de retorno (bidireccional) */}
+      {bidir && (
+        <path d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeDasharray="2 11" opacity={0.7} filter="url(#glow)">
+          <animate attributeName="stroke-dashoffset" from={0} to={13} dur={live ? "0.6s" : "2.5s"} repeatCount="indefinite" />
+        </path>
+      )}
     </g>
   );
 }
 
-function Node({ x, y, emoji, label, sub, color, highlight }: { x: number; y: number; emoji: string; label: string; sub: string; color: string; highlight?: boolean }) {
+function Node({ x, y, emoji, label, sub, health, small, highlight }: { x: number; y: number; emoji: string; label: string; sub: string; health: string; small?: boolean; highlight?: boolean }) {
+  const w = small ? 132 : 160;
+  const ht = small ? 46 : 56;
   return (
     <g transform={`translate(${x},${y})`}>
-      {/* sombra/halo */}
-      <rect width={W} height={H} rx={14} fill="#0c1626" />
-      {/* borde base siempre legible + acento del color de salud */}
-      <rect width={W} height={H} rx={14} fill={highlight ? "#10203a" : "#0e1a2e"} stroke="#2b3a55" strokeWidth={1.5} />
-      <rect width={W} height={H} rx={14} fill="none" stroke={color} strokeWidth={highlight ? 2 : 1.5} opacity={0.85} />
+      <rect width={w} height={ht} rx={12} fill="#0c1626" />
+      <rect width={w} height={ht} rx={12} fill={highlight ? "#11223e" : "#0e1a2e"} stroke={highlight ? "#3a5578" : "#2b3a55"} strokeWidth={1.5} />
       {/* ícono en chip */}
-      <rect x={12} y={14} width={32} height={32} rx={8} fill="#0a1322" stroke="#243349" strokeWidth={1} />
-      <text x={28} y={36} fontSize={18} textAnchor="middle">{emoji}</text>
+      <rect x={small ? 9 : 12} y={small ? 10 : 13} width={small ? 26 : 30} height={small ? 26 : 30} rx={7} fill="#0a1322" stroke="#243349" strokeWidth={1} />
+      <text x={small ? 22 : 27} y={small ? 28 : 34} fontSize={small ? 14 : 17} textAnchor="middle">{emoji}</text>
       {/* textos */}
-      <text x={54} y={27} fontSize={13} fontWeight={700} fill="#f1f6fd">{label}</text>
-      <text x={54} y={43} fontSize={10} fill="#94a6c4">{sub}</text>
-      {/* punto de estado con halo */}
-      <circle cx={W - 16} cy={16} r={5} fill={color} filter="url(#glow)">
-        <animate attributeName="opacity" values="1;0.35;1" dur="2s" repeatCount="indefinite" />
+      <text x={small ? 42 : 50} y={small ? 22 : 25} fontSize={small ? 11 : 13} fontWeight={700} fill="#f1f6fd">{label}</text>
+      <text x={small ? 42 : 50} y={small ? 34 : 41} fontSize={small ? 8.5 : 10} fill="#94a6c4">{sub}</text>
+      {/* punto de estado */}
+      <circle cx={w - 13} cy={13} r={4} fill={health} filter="url(#glow)">
+        <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />
       </circle>
     </g>
   );
