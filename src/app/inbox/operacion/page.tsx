@@ -476,7 +476,7 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
   // Dinero arriba (PayPal/BAC), Agente al medio, equipo abajo. Google alineado
   // con Sitio (línea recta).
   const P: Record<string, NodePos> = {
-    ig: { x: 14, y: 120, s: true }, fb: { x: 14, y: 180, s: true }, google: { x: 14, y: 293, s: true }, viajeros: { x: 14, y: 400, s: true },
+    ig: { x: 14, y: 120, s: true }, fb: { x: 14, y: 180, s: true }, google: { x: 14, y: 293, s: true }, viajeros: { x: 14, y: 405, s: true },
     wa: { x: 200, y: 152 }, sitio: { x: 200, y: 288 }, airbnb: { x: 200, y: 400 },
     bot: { x: 440, y: 168 }, db: { x: 440, y: 314 }, cron: { x: 440, y: 469 },
     paypal: { x: 700, y: 120 }, bac: { x: 700, y: 224 }, agente: { x: 700, y: 336, s: true },
@@ -585,15 +585,15 @@ function Flow({ from, to, kind, live, bidir }: { from: Pt; to: Pt; kind: FlowKin
     <g>
       {/* riel base sutil */}
       <path d={d} fill="none" stroke="#172339" strokeWidth={1.5} />
-      {/* halo de color (ilumina el camino) */}
-      <path d={d} fill="none" stroke={color} strokeWidth={5} opacity={0.16} filter="url(#glow)" />
+      {/* halo de color (ilumina el camino) — sin blur para que quede nítido/encendido */}
+      <path d={d} fill="none" stroke={color} strokeWidth={5} opacity={0.18} />
       {/* flujo animado (siempre corre; live solo lo acelera) */}
-      <path d={d} fill="none" stroke={color} strokeWidth={2.8} strokeLinecap="round" strokeDasharray="5 8" opacity={1} filter="url(#glow)">
+      <path d={d} fill="none" stroke={color} strokeWidth={2.8} strokeLinecap="round" strokeDasharray="5 8" opacity={1}>
         <animate attributeName="stroke-dashoffset" from={13} to={0} dur={live ? "0.5s" : "2.1s"} repeatCount="indefinite" />
       </path>
       {/* corriente de retorno (bidireccional) */}
       {bidir && (
-        <path d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeDasharray="2 11" opacity={0.7} filter="url(#glow)">
+        <path d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeDasharray="2 11" opacity={0.7}>
           <animate attributeName="stroke-dashoffset" from={0} to={13} dur={live ? "0.6s" : "2.5s"} repeatCount="indefinite" />
         </path>
       )}
