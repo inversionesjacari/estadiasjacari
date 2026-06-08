@@ -46,7 +46,7 @@ const CHANGELOG: { date: string; items: string[] }[] = [
       "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
       "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
       "Bot: ante un glitch técnico ya no manda un mensaje raro ni promete un humano — se queda callado y se recupera en el siguiente mensaje.",
-      "QA del bot: panel nuevo que analiza las conversaciones con IA, detecta fallos (inventos, frustración, ventas perdidas…) y sugiere el fix — con botón “Analizar ahora” y revisión diaria automática.",
+      "QA del bot: panel que analiza las conversaciones con IA, detecta fallos (inventos, frustración, ventas perdidas…) y sugiere el fix. Botón “Analizar ahora”, revisión diaria, botón “Resuelto” por hallazgo (incremental: lo resuelto no reaparece) y el tiempo de cada caso.",
       "Ingresos: captura del ingreso de Airbnb en vivo vía PayPal (Transaction Search), separado del directo.",
       "Diagrama: rediseño — zona “ORIGEN”, logos de marca (Google a 4 colores, Jacarí, BAC), Airbnb como canal con “Viajeros”, dinero consolidado y líneas más nítidas.",
       "KPIs: cada tarjeta muestra Hoy / 7 días / 30 días.",
@@ -77,7 +77,7 @@ interface Metrics {
   web?: { viewsToday: number; uniqueToday: number; now: number; topPages: { path: string; c: number }[]; topReferrers: { referrer: string; c: number }[] };
   qa?: {
     lastRun: { ranAt: string | null; analyzed: number; found: number; trigger: string | null } | null;
-    findings: { phone: string; issue: string; severity: string; detail: string; suggestion: string }[];
+    findings: { id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string | null }[];
   };
 }
 
@@ -172,6 +172,20 @@ export default function OperacionPage() {
     } catch { /* ignore */ } finally {
       setRunningQa(false);
     }
+  }, [load]);
+
+  // Marca un hallazgo de QA como resuelto (lo borra) y recarga. Como el análisis
+  // es incremental, no reaparece salvo que el cliente vuelva a escribir.
+  const resolveFinding = useCallback(async (id: number) => {
+    try {
+      await fetch("/api/inbox/bot-qa-resolve", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      await load();
+    } catch { /* ignore */ }
   }, [load]);
 
   useEffect(() => {
@@ -357,17 +371,27 @@ export default function OperacionPage() {
             </div>
             {m.qa.findings.length > 0 && (
               <ul className="space-y-2.5">
-                {m.qa.findings.map((f, i) => {
+                {m.qa.findings.map((f) => {
                   const sev = f.severity === "alta" ? { bg: "#7f1d1d", fg: "#fecaca" } : f.severity === "media" ? { bg: "#78350f", fg: "#fde68a" } : { bg: "#1e293b", fg: "#cbd5e1" };
                   return (
-                    <li key={i} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                    <li key={f.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
                       <div className="flex items-center gap-2 mb-1">
                         <span style={{ background: sev.bg, color: sev.fg }} className="text-[9px] font-bold uppercase tracking-wide rounded px-1.5 py-0.5">{f.severity}</span>
                         <span className="text-[13px] font-semibold text-slate-100">{f.issue}</span>
-                        <span className="text-[10px] text-slate-500 ml-auto font-mono">{f.phone}</span>
+                        <button
+                          onClick={() => resolveFinding(f.id)}
+                          className="ml-auto shrink-0 text-[10px] font-semibold text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 hover:border-emerald-400/50 rounded px-2 py-0.5 transition"
+                        >
+                          ✓ Resuelto
+                        </button>
                       </div>
                       <p className="text-[12px] text-slate-300 leading-snug">{f.detail}</p>
                       {f.suggestion && <p className="text-[12px] text-cyan-300/90 mt-1 leading-snug"><span className="text-slate-500">Fix sugerido: </span>{f.suggestion}</p>}
+                      <div className="flex items-center gap-2 mt-1.5 text-[10px] text-slate-500 font-mono">
+                        <span>🕐 {f.conv_at ? timeAgo(f.conv_at) : "—"}</span>
+                        <span>·</span>
+                        <span>{f.phone}</span>
+                      </div>
                     </li>
                   );
                 })}
