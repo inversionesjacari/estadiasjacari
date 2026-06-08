@@ -69,6 +69,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     lastIn, lastOut, lastResv, heartbeat,
     botCounts, trendRows, feedMsgs, feedResvs,
     webToday, webNow, webTopPages, webReferrers, airbnbIncome,
+    qaFindings, qaLastRun,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -108,6 +109,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') AND referrer IS NOT NULL AND referrer <> '' GROUP BY referrer ORDER BY c DESC LIMIT 5`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
     // Ingreso Airbnb cacheado (cron paypal-income). Fail-soft si la tabla no existe.
     db.prepare(`SELECT period, amount_usd FROM airbnb_income`).all<{ period: string; amount_usd: number }>().catch(() => ({ results: [] })),
+    // QA del bot: hallazgos + última corrida. Fail-soft si las tablas no existen.
+    db.prepare(`SELECT phone, issue, severity, detail, suggestion FROM bot_qa_findings ORDER BY CASE severity WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, id`).all<{ phone: string; issue: string; severity: string; detail: string; suggestion: string }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
   ]);
 
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
@@ -229,6 +233,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       now: numOf(webNow, "c"),
       topPages: rowsOf<{ path: string; c: number }>(webTopPages),
       topReferrers: rowsOf<{ referrer: string; c: number }>(webReferrers),
+    },
+    qa: {
+      lastRun: qaLastRun
+        ? { ranAt: strOf(qaLastRun, "ran_at"), analyzed: numOf(qaLastRun, "analyzed"), found: numOf(qaLastRun, "found"), trigger: strOf(qaLastRun, "trigger") }
+        : null,
+      findings: rowsOf<{ phone: string; issue: string; severity: string; detail: string; suggestion: string }>(qaFindings),
     },
   });
 };

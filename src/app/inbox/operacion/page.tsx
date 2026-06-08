@@ -46,6 +46,7 @@ const CHANGELOG: { date: string; items: string[] }[] = [
       "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
       "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
       "Bot: ante un glitch técnico ya no manda un mensaje raro ni promete un humano — se queda callado y se recupera en el siguiente mensaje.",
+      "QA del bot: panel nuevo que analiza las conversaciones con IA, detecta fallos (inventos, frustración, ventas perdidas…) y sugiere el fix — con botón “Analizar ahora” y revisión diaria automática.",
       "Ingresos: captura del ingreso de Airbnb en vivo vía PayPal (Transaction Search), separado del directo.",
       "Diagrama: rediseño — zona “ORIGEN”, logos de marca (Google a 4 colores, Jacarí, BAC), Airbnb como canal con “Viajeros”, dinero consolidado y líneas más nítidas.",
       "KPIs: cada tarjeta muestra Hoy / 7 días / 30 días.",
@@ -74,6 +75,10 @@ interface Metrics {
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
   web?: { viewsToday: number; uniqueToday: number; now: number; topPages: { path: string; c: number }[]; topReferrers: { referrer: string; c: number }[] };
+  qa?: {
+    lastRun: { ranAt: string | null; analyzed: number; found: number; trigger: string | null } | null;
+    findings: { phone: string; issue: string; severity: string; detail: string; suggestion: string }[];
+  };
 }
 
 // ── Helpers de tiempo / salud ────────────────────────────────────────────────
@@ -142,6 +147,7 @@ export default function OperacionPage() {
   const [pulse, setPulse] = useState(false);
   const [clock, setClock] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [runningQa, setRunningQa] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -156,6 +162,17 @@ export default function OperacionPage() {
       }
     } catch { /* keep previous */ }
   }, []);
+
+  // Dispara el análisis de QA del bot (botón "Analizar ahora") y recarga.
+  const runQa = useCallback(async () => {
+    setRunningQa(true);
+    try {
+      await fetch("/api/inbox/bot-qa-run", { method: "POST", credentials: "include" });
+      await load();
+    } catch { /* ignore */ } finally {
+      setRunningQa(false);
+    }
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -317,6 +334,47 @@ export default function OperacionPage() {
             </ul>
           )}
         </Panel>
+
+        {/* QA del bot — analizador de conversaciones */}
+        {m.qa && (
+          <Panel
+            title="🔍 QA del bot"
+            subtitle={m.qa.lastRun ? `última revisión ${timeAgo(m.qa.lastRun.ranAt)} · ${m.qa.lastRun.analyzed} conversaciones` : "sin revisar todavía"}
+          >
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <p className="text-[12px] text-slate-400">
+                {m.qa.findings.length === 0
+                  ? (m.qa.lastRun ? "Sin problemas en la última revisión. 🌴" : "Corré una revisión para detectar fallos del bot.")
+                  : `${m.qa.findings.length} ${m.qa.findings.length === 1 ? "hallazgo" : "hallazgos"} para revisar`}
+              </p>
+              <button
+                onClick={runQa}
+                disabled={runningQa}
+                className="shrink-0 text-[12px] font-semibold text-slate-900 bg-cyan-400 hover:bg-cyan-300 rounded-lg px-3 py-1.5 disabled:opacity-50 transition"
+              >
+                {runningQa ? "Analizando…" : "🔄 Analizar ahora"}
+              </button>
+            </div>
+            {m.qa.findings.length > 0 && (
+              <ul className="space-y-2.5">
+                {m.qa.findings.map((f, i) => {
+                  const sev = f.severity === "alta" ? { bg: "#7f1d1d", fg: "#fecaca" } : f.severity === "media" ? { bg: "#78350f", fg: "#fde68a" } : { bg: "#1e293b", fg: "#cbd5e1" };
+                  return (
+                    <li key={i} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span style={{ background: sev.bg, color: sev.fg }} className="text-[9px] font-bold uppercase tracking-wide rounded px-1.5 py-0.5">{f.severity}</span>
+                        <span className="text-[13px] font-semibold text-slate-100">{f.issue}</span>
+                        <span className="text-[10px] text-slate-500 ml-auto font-mono">{f.phone}</span>
+                      </div>
+                      <p className="text-[12px] text-slate-300 leading-snug">{f.detail}</p>
+                      {f.suggestion && <p className="text-[12px] text-cyan-300/90 mt-1 leading-snug"><span className="text-slate-500">Fix sugerido: </span>{f.suggestion}</p>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Panel>
+        )}
 
         {/* Registro de cambios / debugging — bitácora visible del sistema */}
         <Panel title="🛠️ Registro de cambios" subtitle="mejoras y arreglos del sistema">
