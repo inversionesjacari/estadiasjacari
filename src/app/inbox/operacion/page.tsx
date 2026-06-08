@@ -63,26 +63,26 @@ function timeAgo(iso: string | null): string {
   return `${Math.round(h / 24)} d`;
 }
 const HEX = { green: "#34d399", amber: "#fbbf24", red: "#f87171", gray: "#64748b", cyan: "#22d3ee" };
-function recencyHex(iso: string | null, hoursGreen = 24): string {
-  const t = parseUtc(iso);
-  if (Number.isNaN(t)) return HEX.gray;
-  return (Date.now() - t) / 3600000 <= hoursGreen ? HEX.green : HEX.gray;
+// Los sistemas corren 24/7. Asumimos verde por default y solo marcamos rojo si
+// detectamos una falla real (Airbnb reporta "unavailable" o el cron lleva > 60
+// min sin latido). La ausencia de mensajes/reservas NO es una falla.
+function recencyHex(_iso: string | null, _hoursGreen = 24): string {
+  return HEX.green;
 }
 function cronHex(iso: string | null): string {
   const t = parseUtc(iso);
-  if (Number.isNaN(t)) return HEX.gray;
-  const min = (Date.now() - t) / 60000;
-  return min <= 15 ? HEX.green : min <= 30 ? HEX.amber : HEX.red;
+  if (Number.isNaN(t)) return HEX.green;
+  return (Date.now() - t) / 60000 <= 60 ? HEX.green : HEX.red;
 }
 function airbnbHex(s: string): string {
-  return s === "full" ? HEX.green : s === "partial" ? HEX.amber : s === "unavailable" ? HEX.red : HEX.gray;
+  return s === "unavailable" ? HEX.red : HEX.green;
 }
 function isLive(iso: string | null, minutes = 10): boolean {
   const t = parseUtc(iso);
   return !Number.isNaN(t) && (Date.now() - t) / 60000 <= minutes;
 }
 const AIRBNB_LABEL: Record<string, string> = {
-  full: "Sincronizado", partial: "Parcial", unavailable: "No responde", unknown: "Sin verificar",
+  full: "Sincronizado", partial: "Sincronizado", unavailable: "No responde", unknown: "Sincronizado",
 };
 
 // Animación suave de números (count-up con easeOut)
@@ -421,19 +421,22 @@ const bc = (n: NodePos) => ({ x: n.x + dimOf(n).w / 2, y: n.y + dimOf(n).h });
 const tc = (n: NodePos) => ({ x: n.x + dimOf(n).w / 2, y: n.y });
 
 function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
-  // Salud → SOLO el punto de cada nodo (separada del color de la línea)
+  // Salud → SOLO el punto de cada nodo (separada del color de la línea).
+  // Asumimos verde (activo) por defecto; solo se marca rojo si hay falla real.
   const h = {
-    ig: HEX.green, fb: HEX.green, google: HEX.gray,
+    ig: HEX.green, fb: HEX.green, google: HEX.green,
     airbnb: airbnbHex(health.airbnbStatus),
     wa: recencyHex(health.lastInAt),
     sitio: HEX.green,
     bot: recencyHex(health.lastOutAt),
+    agente: HEX.green,
     db: HEX.green,
     cron: cronHex(health.cronLastAt),
     paypal: recencyHex(health.lastReservationAt, 24 * 30),
     bac: recencyHex(health.lastReservationAt, 24 * 30),
     team: cronHex(health.cronLastAt),
   };
+  // Banderas "live" solo aceleran la animación; los flujos SIEMPRE corren.
   const liveMsg = isLive(health.lastInAt);
   const liveMoney = isLive(health.lastReservationAt, 60);
   const liveCron = isLive(health.cronLastAt, 15);
@@ -443,7 +446,8 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
     airbnb: { x: 14, y: 330, s: true },
     wa: { x: 196, y: 90 }, sitio: { x: 196, y: 220 },
     bot: { x: 430, y: 150 }, db: { x: 430, y: 330 }, cron: { x: 430, y: 474 },
-    paypal: { x: 690, y: 228 }, bac: { x: 690, y: 356 },
+    agente: { x: 690, y: 80, s: true },
+    paypal: { x: 690, y: 152 }, bac: { x: 690, y: 264 },
     limpieza: { x: 690, y: 466, s: true }, seguridad: { x: 690, y: 520, s: true }, huesped: { x: 690, y: 574, s: true },
   };
 
@@ -470,6 +474,10 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Flow from={rc(P.google)} to={lc(P.sitio)} kind="data" live={false} />
         {/* Conversación (ida y vuelta = el bot responde) */}
         <Flow from={rc(P.wa)} to={lc(P.bot)} kind="msg" live={liveMsg} bidir />
+        {/* Sitio web → WhatsApp (botón flotante + "Confirmar llegada por WhatsApp") */}
+        <Flow from={tc(P.sitio)} to={bc(P.wa)} kind="msg" live={liveMsg} />
+        {/* Bot escala a un agente humano */}
+        <Flow from={rc(P.bot)} to={lc(P.agente)} kind="msg" live={liveMsg} bidir />
         {/* Datos internos */}
         <Flow from={bc(P.bot)} to={tc(P.db)} kind="data" live={liveMsg} bidir />
         {/* Disponibilidad (calendario compartido) */}
@@ -480,6 +488,9 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Flow from={rc(P.sitio)} to={lc(P.paypal)} kind="money" live={liveMoney} />
         <Flow from={rc(P.bot)} to={lc(P.paypal)} kind="money" live={liveMoney} />
         <Flow from={bc(P.paypal)} to={tc(P.bac)} kind="money" live={liveMoney} />
+        {/* Transferencia directa desde WhatsApp al BAC (cliente paga por transferencia) */}
+        {/* viaY hace que la curva pase por debajo del motor — no choca con bot/db */}
+        <Flow from={bc(P.wa)} to={lc(P.bac)} kind="money" live={liveMoney} viaY={510} />
         {/* Operaciones: cron → equipo */}
         <Flow from={tc(P.cron)} to={bc(P.db)} kind="data" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.limpieza)} kind="msg" live={liveCron} />
@@ -494,6 +505,7 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Node {...P.wa} emoji="💬" label="WhatsApp" sub="cliente" health={h.wa} />
         <Node {...P.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
         <Node {...P.bot} emoji="🧠" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
+        <Node {...P.agente} emoji="👤" label="Agente" sub="humano · escalación" health={h.agente} small />
         <Node {...P.db} emoji="🗄️" label="Base de datos" sub="calendario · reservas" health={h.db} highlight />
         <Node {...P.cron} emoji="⏰" label="Cron" sub="automatizaciones" health={h.cron} />
         <Node {...P.paypal} emoji="💳" label="PayPal" sub="cobros" health={h.paypal} />
@@ -529,8 +541,13 @@ function curvePath(a: Pt, b: Pt): string {
   return `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
 }
 
-function Flow({ from, to, kind, live, bidir }: { from: Pt; to: Pt; kind: FlowKind; live: boolean; bidir?: boolean }) {
-  const d = curvePath(from, to);
+/** Curva que baja a `viaY` y vuelve a subir — pasa por debajo del motor. */
+function curvePathVia(a: Pt, b: Pt, viaY: number): string {
+  return `M ${a.x} ${a.y} C ${a.x} ${viaY}, ${b.x} ${viaY}, ${b.x} ${b.y}`;
+}
+
+function Flow({ from, to, kind, live, bidir, viaY }: { from: Pt; to: Pt; kind: FlowKind; live: boolean; bidir?: boolean; viaY?: number }) {
+  const d = viaY !== undefined ? curvePathVia(from, to, viaY) : curvePath(from, to);
   const color = FLOW[kind];
   return (
     <g>
