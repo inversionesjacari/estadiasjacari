@@ -161,14 +161,14 @@ export default function OperacionPage() {
       {/* Header */}
       <header className="border-b border-white/10 px-5 py-3 flex items-center justify-between sticky top-0 z-10 bg-[#070b16]/80 backdrop-blur">
         <div>
-          <h1 className="font-display text-xl text-white flex items-center gap-2 tracking-wide">
-            🛰️ CENTRO DE CONTROL
-            <span className="flex items-center gap-1 text-[10px] font-mono font-semibold text-green-400 border border-green-500/40 rounded px-1.5 py-0.5">
+          <h1 className="text-xl font-bold text-white flex items-center gap-2.5 tracking-tight">
+            🛰️ Centro de control
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-green-400 border border-green-500/40 rounded-full px-2 py-0.5">
               <span className={`w-1.5 h-1.5 rounded-full bg-green-400 ${pulse ? "opacity-100" : "opacity-50"}`} />
               EN VIVO
             </span>
           </h1>
-          <p className="text-[11px] text-slate-500 font-mono">Estadías Jacarí · {clock}</p>
+          <p className="text-[12px] text-slate-400">Estadías Jacarí · {clock}</p>
         </div>
         <a href="/inbox" className="px-3 py-1.5 border border-white/15 rounded-lg hover:bg-white/5 text-slate-300 text-sm">← Inbox</a>
       </header>
@@ -185,15 +185,15 @@ export default function OperacionPage() {
         {/* Diagrama protagonista */}
         <section className="rounded-2xl border border-cyan-500/20 bg-[#0a1120] p-5 shadow-[0_0_40px_rgba(34,211,238,0.06)]">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display text-lg text-white tracking-wide">OPERACIÓN EN VIVO</h2>
-            <span className="text-[10px] text-slate-500 font-mono">flujo de datos en tiempo real</span>
+            <h2 className="text-lg font-bold text-white tracking-tight">Operación en vivo</h2>
+            <span className="text-[11px] text-slate-400">flujo de datos en tiempo real</span>
           </div>
           <ArchitectureDiagram health={m.health} />
         </section>
 
         {/* Salud + Embudo */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <Panel title="🩺 SALUD DE SISTEMAS">
+          <Panel title="🩺 Salud de sistemas">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <HealthItem hex={recencyHex(m.health.lastInAt)} label="WhatsApp" detail={`últ. ${timeAgo(m.health.lastInAt)}`} />
               <HealthItem hex={recencyHex(m.health.lastOutAt)} label="Bot IA" detail={`últ. ${timeAgo(m.health.lastOutAt)}`} />
@@ -204,7 +204,7 @@ export default function OperacionPage() {
             </div>
           </Panel>
 
-          <Panel title="🪙 EMBUDO DE VENTAS" subtitle={`${m.funnel.total} activas ahora`}>
+          <Panel title="🪙 Embudo de ventas" subtitle={`${m.funnel.total} activas ahora`}>
             <div className="space-y-2.5">
               <FunnelStep label="Esperando datos" value={m.funnel.awaitingData} total={m.funnel.total} hex={HEX.cyan} />
               <FunnelStep label="Cotización enviada" value={m.funnel.quoteProvided} total={m.funnel.total} hex={HEX.amber} />
@@ -218,7 +218,7 @@ export default function OperacionPage() {
 
         {/* Tráfico web */}
         {m.web && (
-          <Panel title="🌐 TRÁFICO WEB" subtitle={m.web.now > 0 ? `🟢 ${m.web.now} ${m.web.now === 1 ? "persona" : "personas"} ahora` : undefined}>
+          <Panel title="🌐 Tráfico web" subtitle={m.web.now > 0 ? `🟢 ${m.web.now} ${m.web.now === 1 ? "persona" : "personas"} ahora` : undefined}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
               <MiniStat label="Visitas hoy" value={m.web.viewsToday} />
               <MiniStat label="Únicos hoy" value={m.web.uniqueToday} />
@@ -234,7 +234,7 @@ export default function OperacionPage() {
 
         {/* Bot + tendencia */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <Panel title="🤖 SALUD DEL BOT" subtitle="últimos 7 días">
+          <Panel title="🤖 Salud del bot" subtitle="últimos 7 días">
             <div className="space-y-1.5 text-sm">
               <Row label="Consultas recibidas" value={m.botHealth.inbound} />
               <Row label="Resueltas por el bot" value={m.botHealth.botReplies} hex={HEX.green} />
@@ -247,23 +247,23 @@ export default function OperacionPage() {
               </div>
             </div>
           </Panel>
-          <Panel title="📊 MENSAJES POR DÍA" subtitle="7 días">
+          <Panel title="📊 Mensajes por día" subtitle="7 días">
             <TrendChart data={m.trend} />
           </Panel>
         </section>
 
         {/* Reservas */}
         <section className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <Panel title="🏡 RESERVAS POR PROPIEDAD" subtitle="30 días">
+          <Panel title="🏡 Reservas por propiedad" subtitle="30 días">
             <MiniList rows={m.reservations.byProperty.map((r) => ({ label: PROPERTY_NAMES[r.slug] ?? r.slug, value: r.c }))} empty="Sin reservas en 30 días." />
           </Panel>
-          <Panel title="🔗 RESERVAS POR CANAL" subtitle="30 días">
+          <Panel title="🔗 Reservas por canal" subtitle="30 días">
             <MiniList rows={m.reservations.bySource.map((r) => ({ label: SOURCE_NAMES[r.source] ?? r.source, value: r.c }))} empty="Sin reservas en 30 días." />
           </Panel>
         </section>
 
         {/* Feed estilo terminal */}
-        <Panel title="📋 ACTIVIDAD RECIENTE">
+        <Panel title="📋 Actividad reciente">
           {m.feed.length === 0 ? (
             <p className="text-slate-500 text-sm">Sin actividad reciente.</p>
           ) : (
@@ -293,8 +293,8 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur p-5">
       <div className="flex items-baseline justify-between mb-3">
-        <h2 className="font-display text-sm text-slate-200 tracking-widest">{title}</h2>
-        {subtitle && <span className="text-[11px] text-slate-500 font-mono">{subtitle}</span>}
+        <h2 className="text-[15px] font-semibold text-slate-100">{title}</h2>
+        {subtitle && <span className="text-[11px] text-slate-400">{subtitle}</span>}
       </div>
       {children}
     </div>
@@ -487,11 +487,13 @@ function Flow({ from, to, color, live, dashed }: { from: { x: number; y: number 
   const d = curvePath(from, to);
   return (
     <g>
-      {/* riel base (siempre visible) */}
-      <path d={d} fill="none" stroke="#1c2740" strokeWidth={3} />
-      {/* flujo animado de color */}
-      <path d={d} fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeDasharray={dashed ? "2 9" : "6 12"} opacity={0.95} filter="url(#glow)">
-        <animate attributeName="stroke-dashoffset" from={18} to={0} dur={live ? "0.5s" : "2.6s"} repeatCount="indefinite" />
+      {/* riel base sutil (más delgado que el flujo) */}
+      <path d={d} fill="none" stroke="#172339" strokeWidth={1.5} />
+      {/* halo de color tenue para que "ilumine" el camino */}
+      <path d={d} fill="none" stroke={color} strokeWidth={5} opacity={0.18} filter="url(#glow)" />
+      {/* flujo animado de color (denso y brillante) */}
+      <path d={d} fill="none" stroke={color} strokeWidth={3} strokeLinecap="round" strokeDasharray={dashed ? "2 7" : "5 7"} opacity={1} filter="url(#glow)">
+        <animate attributeName="stroke-dashoffset" from={12} to={0} dur={live ? "0.5s" : "2s"} repeatCount="indefinite" />
       </path>
     </g>
   );
