@@ -461,6 +461,14 @@ async function processIncomingMessage(
     }
   }
 
+  // ── Glitch técnico del bot → no respondemos NADA ───────────────────────────
+  // El mensaje entrante ya quedó guardado (aparece en el inbox). Le damos tiempo
+  // al bot a recuperarse: responderá normal en el próximo mensaje del cliente.
+  if (quoteResult?.silent) {
+    console.log(`Glitch del bot para ${fromE164} (id ${currentMsgId}) — sin respuesta, se recupera solo`);
+    return;
+  }
+
   // ── "Última palabra gana": evitar respuestas duplicadas en ráfagas ──────
   // Si el cliente mandó otro mensaje mientras procesábamos este (mensajes
   // rápidos seguidos), NO respondemos: el webhook del mensaje más nuevo

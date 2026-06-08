@@ -119,6 +119,9 @@ export interface QuoteFlowResult {
   tokensUsed: number;
   /** URLs de imágenes a enviar (fotos de la propiedad). El webhook las manda. */
   images?: string[];
+  /** Si true: el webhook NO responde nada (glitch técnico → dejar que el bot se
+   *  recupere solo en el próximo mensaje, sin mensaje raro ni escalación). */
+  silent?: boolean;
 }
 
 export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv, AvailabilityEnv {
@@ -281,11 +284,15 @@ async function gatherQuoteData(
   const botResult = await runConversationalBot(text, previousData, todayIso, env, kbText, history);
 
   if (!botResult.ok) {
-    console.error("conversational-bot failed:", botResult.error);
+    // Glitch técnico de Workers AI: NO respondemos nada (decisión de César).
+    // Mejor el silencio que un mensaje raro o una falsa promesa de "un humano
+    // te responde". El bot se recupera solo en el próximo mensaje del cliente.
+    console.error("conversational-bot glitch (silencioso):", botResult.error);
     return {
-      reply: T.techError(asLang(previousData.language)),
-      escalateToOwner: true,
-      ruleName:        "bot_failed",
+      reply: "",
+      silent: true,
+      escalateToOwner: false,
+      ruleName:        "bot_glitch_silent",
       tokensUsed:      botResult.tokensUsed,
     };
   }

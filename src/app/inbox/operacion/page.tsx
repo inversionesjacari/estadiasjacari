@@ -45,6 +45,7 @@ const CHANGELOG: { date: string; items: string[] }[] = [
       "Bot: se apaga automáticamente al escalar (handoff a humano) y se reactiva con el botón “Reactivar bot” del inbox.",
       "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
       "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
+      "Bot: ante un glitch técnico ya no manda un mensaje raro ni promete un humano — se queda callado y se recupera en el siguiente mensaje.",
       "Ingresos: captura del ingreso de Airbnb en vivo vía PayPal (Transaction Search), separado del directo.",
       "Diagrama: rediseño — zona “ORIGEN”, logos de marca (Google a 4 colores, Jacarí, BAC), Airbnb como canal con “Viajeros”, dinero consolidado y líneas más nítidas.",
       "KPIs: cada tarjeta muestra Hoy / 7 días / 30 días.",
