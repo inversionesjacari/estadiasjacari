@@ -441,19 +441,22 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
   const liveMoney = isLive(health.lastReservationAt, 60);
   const liveCron = isLive(health.cronLastAt, 15);
 
+  // Layout en zonas (izq→der): captación · canales · motor · dinero/salidas.
+  // El motor es una columna vertical (bot → db → cron) para que el cron quede
+  // anclado a la base y no parezca "flotando".
   const P: Record<string, NodePos> = {
-    ig: { x: 14, y: 78, s: true }, fb: { x: 14, y: 132, s: true }, google: { x: 14, y: 186, s: true },
-    airbnb: { x: 14, y: 330, s: true },
-    wa: { x: 196, y: 90 }, sitio: { x: 196, y: 220 },
-    bot: { x: 430, y: 150 }, db: { x: 430, y: 330 }, cron: { x: 430, y: 474 },
-    agente: { x: 690, y: 80, s: true },
-    paypal: { x: 690, y: 152 }, bac: { x: 690, y: 264 },
-    limpieza: { x: 690, y: 466, s: true }, seguridad: { x: 690, y: 520, s: true }, huesped: { x: 690, y: 574, s: true },
+    ig: { x: 14, y: 86, s: true }, fb: { x: 14, y: 140, s: true }, google: { x: 14, y: 194, s: true },
+    airbnb: { x: 14, y: 310, s: true },
+    wa: { x: 196, y: 104 }, sitio: { x: 196, y: 238 },
+    bot: { x: 430, y: 120 }, db: { x: 430, y: 296 }, cron: { x: 430, y: 472 },
+    agente: { x: 690, y: 104, s: true },
+    paypal: { x: 690, y: 192 }, bac: { x: 690, y: 300 },
+    limpieza: { x: 690, y: 440, s: true }, seguridad: { x: 690, y: 494, s: true }, huesped: { x: 690, y: 548, s: true },
   };
 
   return (
     <div>
-      <svg viewBox="0 0 880 656" className="w-full" style={{ maxHeight: 660 }}>
+      <svg viewBox="0 0 880 616" className="w-full" style={{ maxHeight: 660 }}>
         <defs>
           <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="2.5" result="b" />
@@ -478,8 +481,10 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Flow from={tc(P.sitio)} to={bc(P.wa)} kind="msg" live={liveMsg} />
         {/* Bot escala a un agente humano */}
         <Flow from={rc(P.bot)} to={lc(P.agente)} kind="msg" live={liveMsg} bidir />
-        {/* Datos internos */}
+        {/* Datos internos: el bot lee/escribe en la base (memoria + KB) */}
         <Flow from={bc(P.bot)} to={tc(P.db)} kind="data" live={liveMsg} bidir />
+        {/* El cron lee de la base (qué seguimientos/avisos tocan) */}
+        <Flow from={bc(P.db)} to={tc(P.cron)} kind="data" live={liveCron} />
         {/* Disponibilidad (calendario compartido) */}
         <Flow from={rc(P.sitio)} to={lc(P.db)} kind="avail" live={false} bidir />
         <Flow from={rc(P.airbnb)} to={lc(P.db)} kind="avail" live={false} bidir />
@@ -488,11 +493,9 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Flow from={rc(P.sitio)} to={lc(P.paypal)} kind="money" live={liveMoney} />
         <Flow from={rc(P.bot)} to={lc(P.paypal)} kind="money" live={liveMoney} />
         <Flow from={bc(P.paypal)} to={tc(P.bac)} kind="money" live={liveMoney} />
-        {/* Transferencia directa desde WhatsApp al BAC (cliente paga por transferencia) */}
-        {/* viaY hace que la curva pase por debajo del motor — no choca con bot/db */}
-        <Flow from={bc(P.wa)} to={lc(P.bac)} kind="money" live={liveMoney} viaY={510} />
+        {/* Transferencia directa desde WhatsApp al BAC — pasa por el hueco bot↔db */}
+        <Flow from={bc(P.wa)} to={lc(P.bac)} kind="money" live={liveMoney} />
         {/* Operaciones: cron → equipo */}
-        <Flow from={tc(P.cron)} to={bc(P.db)} kind="data" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.limpieza)} kind="msg" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.seguridad)} kind="msg" live={liveCron} />
         <Flow from={rc(P.cron)} to={lc(P.huesped)} kind="msg" live={liveCron} />
@@ -506,8 +509,8 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
         <Node {...P.sitio} emoji="🌐" label="Sitio web" sub="estadiasjacari.com" health={h.sitio} />
         <Node {...P.bot} emoji="🧠" label="Bot IA" sub="Workers AI · responde" health={h.bot} highlight />
         <Node {...P.agente} emoji="👤" label="Agente" sub="humano · escalación" health={h.agente} small />
-        <Node {...P.db} emoji="🗄️" label="Base de datos" sub="calendario · reservas" health={h.db} highlight />
-        <Node {...P.cron} emoji="⏰" label="Cron" sub="automatizaciones" health={h.cron} />
+        <Node {...P.db} emoji="🗄️" label="Base de datos" sub="reservas · KB · memoria" health={h.db} highlight />
+        <Node {...P.cron} emoji="⏰" label="Cron" sub="tareas programadas" health={h.cron} />
         <Node {...P.paypal} emoji="💳" label="PayPal" sub="cobros" health={h.paypal} />
         <Node {...P.bac} emoji="🏦" label="Banco BAC" sub="el dinero llega acá" health={h.bac} highlight />
         <Node {...P.limpieza} emoji="🧹" label="Limpieza" sub="aviso" health={h.team} small />
@@ -541,13 +544,8 @@ function curvePath(a: Pt, b: Pt): string {
   return `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
 }
 
-/** Curva que baja a `viaY` y vuelve a subir — pasa por debajo del motor. */
-function curvePathVia(a: Pt, b: Pt, viaY: number): string {
-  return `M ${a.x} ${a.y} C ${a.x} ${viaY}, ${b.x} ${viaY}, ${b.x} ${b.y}`;
-}
-
-function Flow({ from, to, kind, live, bidir, viaY }: { from: Pt; to: Pt; kind: FlowKind; live: boolean; bidir?: boolean; viaY?: number }) {
-  const d = viaY !== undefined ? curvePathVia(from, to, viaY) : curvePath(from, to);
+function Flow({ from, to, kind, live, bidir }: { from: Pt; to: Pt; kind: FlowKind; live: boolean; bidir?: boolean }) {
+  const d = curvePath(from, to);
   const color = FLOW[kind];
   return (
     <g>
