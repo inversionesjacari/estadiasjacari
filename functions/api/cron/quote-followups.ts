@@ -49,7 +49,23 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
     ? PROPERTY_PRICING[slug as keyof typeof PROPERTY_PRICING].name
     : null;
   const city = typeof data.city === "string" ? data.city : null;
-  const ref = propName ? ` con ${propName}` : city ? ` en ${city}` : "";
+  const en = data.language === "en";
+  const ref = propName
+    ? en ? ` for ${propName}` : ` con ${propName}`
+    : city
+      ? en ? ` in ${city}` : ` en ${city}`
+      : "";
+
+  if (en) {
+    switch (state) {
+      case "quote_provided":
+        return `Hi again! 👋 Did you get a chance to see the quote${ref}? If you'd like to book or have any questions, I'm here. 🙏`;
+      case "awaiting_payment_method":
+        return `Hi! Shall we continue with your booking${ref}? Let me know if you prefer *bank transfer* or *card/PayPal* and I'll send the details. 🙏`;
+      default:
+        return `Hi! 👋 We're still here to help${ref}. Want me to check availability or a quote? Send me the dates and let's take a look. 🌴`;
+    }
+  }
 
   switch (state) {
     case "quote_provided":

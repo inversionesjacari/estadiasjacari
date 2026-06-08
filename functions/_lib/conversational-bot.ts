@@ -107,6 +107,7 @@ interface LlamaOutput {
   property: string | null;
   city: string | null;
   intent: string;
+  language: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,6 +215,8 @@ export async function runConversationalBot(
     ? (d.intent as BotIntent)
     : "unknown";
 
+  const language: "es" | "en" = d.language === "en" ? "en" : "es";
+
   // Reply con fallback por si el modelo devolvió string vacío
   const reply =
     typeof d.reply === "string" && d.reply.trim().length > 0
@@ -223,7 +226,7 @@ export async function runConversationalBot(
   return {
     ok:            true,
     reply,
-    extractedData: { checkIn, checkOut, guests, property, city },
+    extractedData: { checkIn, checkOut, guests, property, city, language },
     intent,
     tokensUsed:    result.tokensUsed,
   };
@@ -259,7 +262,7 @@ ${knownData}
 ## TUS REGLAS
 
 ### Cómo responder
-1. Responde en *español informal pero respetuoso*, el mismo tono del cliente.
+1. 🌐 IDIOMA: respondé SIEMPRE en el MISMO idioma que usa el cliente. Si escribe en inglés, respondé TODO en inglés; si escribe en español, en español. Detectá el idioma de su mensaje y poné el código en el campo "language" ("es" o "en"). Si el cliente cambia de idioma a mitad de la charla, vos también cambiás. Tono informal pero respetuoso.
 2. Sé breve y directo — esto es WhatsApp, no un email. Máximo 4-5 líneas por mensaje.
 3. Usa emojis con moderación (1-2 por mensaje).
 3b. FORMATO: cuando preguntes varias cosas o listes varias opciones, poné CADA UNA en su propia línea usando saltos de línea reales (\\n en el JSON). Nunca juntes varias preguntas en un solo párrafo corrido.
@@ -350,13 +353,14 @@ Clasifica el mensaje en uno de estos:
 Responde ÚNICAMENTE con este JSON exacto, sin texto adicional antes ni después, sin markdown:
 
 {
-  "reply": "Tu respuesta en español para el cliente",
+  "reply": "Tu respuesta para el cliente, EN SU MISMO IDIOMA",
   "checkIn": "YYYY-MM-DD o null",
   "checkOut": "YYYY-MM-DD o null",
   "guests": número_entero_o_null,
   "property": "slug-exacto o null",
   "city": "La Ceiba" | "Tela" | "Tegucigalpa" | null,
-  "intent": "providing_data" | "asking_question" | "confirming" | "rejecting" | "unknown"
+  "intent": "providing_data" | "asking_question" | "requesting_photos" | "confirming" | "rejecting" | "existing_guest" | "unknown",
+  "language": "es" | "en"
 }`;
 }
 

@@ -28,9 +28,23 @@ export const BANK_USD = {
   accountType: "Ahorro",
 } as const;
 
+import type { Lang } from "./i18n";
+
 /** Mensaje con datos bancarios HNL para que el huésped transfiera. */
-export function buildTransferMessageHNL(amountHnl: number): string {
+export function buildTransferMessageHNL(amountHnl: number, lang: Lang = "es"): string {
   const fmt = `HNL ${amountHnl.toLocaleString("es-HN")}`;
+  if (lang === "en") {
+    return `Perfect, here are the bank details for the transfer.
+
+🏦 *${BANK_HNL.bank} — Lempira account*
+Holder: *${BANK_HNL.accountName}*
+Account: *${BANK_HNL.accountNumber}* (Savings)
+Amount: *${fmt}*
+
+Once you've made the transfer, *send me a photo of the receipt in this chat* and an agent will confirm your booking. 🙏
+
+If you need a US dollar account (international transfer), let me know.`;
+  }
   return `Perfecto, te paso los datos bancarios para la transferencia.
 
 🏦 *${BANK_HNL.bank} — Cuenta en Lempiras*
@@ -44,8 +58,18 @@ Si necesitás cuenta en dólares (transferencia internacional), avísame.`;
 }
 
 /** Mensaje con datos bancarios USD (solo si el huésped pide explícitamente). */
-export function buildTransferMessageUSD(amountUsd: number): string {
+export function buildTransferMessageUSD(amountUsd: number, lang: Lang = "es"): string {
   const fmt = `USD ${amountUsd.toFixed(2)}`;
+  if (lang === "en") {
+    return `Here are the details for a US dollar transfer.
+
+🏦 *${BANK_USD.bank} — US Dollar account*
+Holder: *${BANK_USD.accountName}*
+Account: *${BANK_USD.accountNumber}* (Savings)
+Amount: *${fmt}*
+
+Send us a photo of the receipt once it's done. 🙏`;
+  }
   return `Te paso también los datos para transferencia en dólares.
 
 🏦 *${BANK_USD.bank} — Cuenta en Dólares*

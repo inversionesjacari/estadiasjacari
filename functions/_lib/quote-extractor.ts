@@ -42,6 +42,8 @@ export interface QuoteData {
   paypalOrderId?: string | null;
   /** Monto del 50% que se pidió (USD). Para reconstruir al recibir webhook. */
   depositUsd?: number | null;
+  /** Idioma del cliente ("es" | "en"). Para responder en su idioma. */
+  language?: "es" | "en" | null;
 }
 
 export interface ExtractionResult {

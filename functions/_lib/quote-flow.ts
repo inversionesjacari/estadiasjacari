@@ -24,7 +24,6 @@ import {
   clearState,
   emptyQuoteData,
   isQuoteDataComplete,
-  INITIAL_QUOTE_MESSAGE,
   type ConvState,
 } from "./quote-state";
 import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
@@ -38,6 +37,7 @@ import {
   isUsdRequest,
 } from "./bank-transfer";
 import { getPropertyPhotos, getGalleryUrl } from "./property-photos";
+import { T, asLang } from "./i18n";
 import type { QuoteData } from "./quote-extractor";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,6 +150,9 @@ export async function handleQuoteIncoming(
   // Se construye una vez por mensaje y se pasa a todos los sub-handlers.
   const pricingMap = await buildPricingMap(env.DB);
 
+  // Idioma del cliente persistido en el estado (para responder en su idioma).
+  const lang = asLang(existing?.data.language);
+
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
   if (!existing) {
     // Huésped existente sin quote flow en curso → dejar que el rule-bot responda
@@ -174,14 +177,9 @@ export async function handleQuoteIncoming(
       );
       const depositLine = quote
         ? `*HNL ${quote.depositHNL.toLocaleString("es-HN")}* (≈ USD ${quote.depositUSD.toFixed(2)})`
-        : "el 50% de la cotización";
+        : lang === "en" ? "the 50% deposit" : "el 50% de la cotización";
       return {
-        reply: `¡Excelente! 🎉 ¿Cómo preferís pagar el depósito de ${depositLine}?
-
-💳 *Tarjeta o PayPal* — link inmediato, confirmás al instante
-🏦 *Transferencia bancaria* — BAC, te paso los datos
-
-Decime cuál preferís.`,
+        reply:           T.askPaymentMethod(lang, depositLine),
         escalateToOwner: false,
         ruleName:        "quote_confirmed_ask_method",
         tokensUsed:      0,
@@ -201,14 +199,14 @@ Decime cuál preferís.`,
     if (isUsdRequest(text)) {
       await cancelQuoteFlow(phone, env.DB);
       return {
-        reply:           "Te conecto con un agente que te da la cuenta en USD. 🙏",
+        reply:           T.paypalUsdRequested(lang),
         escalateToOwner: true,
         ruleName:        "paypal_usd_requested",
         tokensUsed:      0,
       };
     }
     return {
-      reply: "Estoy esperando la confirmación del pago desde PayPal. Una vez procesado, recibís la confirmación automáticamente. Si preferís cambiar a transferencia, decime *transferencia*.",
+      reply:           T.paypalPendingReminder(lang),
       escalateToOwner: false,
       ruleName:        "paypal_pending_reminder",
       tokensUsed:      0,
@@ -229,7 +227,7 @@ Decime cuál preferís.`,
         pricingMap,
       );
       return {
-        reply:           buildTransferMessageUSD(quote?.depositUSD ?? 0),
+        reply:           buildTransferMessageUSD(quote?.depositUSD ?? 0, lang),
         escalateToOwner: false,
         ruleName:        "transfer_usd_requested",
         tokensUsed:      0,
@@ -238,7 +236,7 @@ Decime cuál preferís.`,
     // Cualquier cosa (incluyendo foto/imagen) → escalar al humano para verificar
     await cancelQuoteFlow(phone, env.DB);
     return {
-      reply:           "Recibí tu comprobante. Un agente lo revisa y confirma tu reserva en breve. 🙏",
+      reply:           T.transferProofReceived(lang),
       escalateToOwner: true,
       ruleName:        "transfer_proof_received",
       tokensUsed:      0,
@@ -285,18 +283,20 @@ async function gatherQuoteData(
   if (!botResult.ok) {
     console.error("conversational-bot failed:", botResult.error);
     return {
-      reply: "Disculpa, tuve un problema técnico procesando tu mensaje. Un agente humano te responde en breve. 🙏",
+      reply: T.techError(asLang(previousData.language)),
       escalateToOwner: true,
       ruleName:        "bot_failed",
       tokensUsed:      botResult.tokensUsed,
     };
   }
 
+  // Idioma detectado por el bot (o el guardado previamente). Default "es".
+  const lang = asLang(botResult.extractedData.language ?? previousData.language);
+
   // ── Cliente reporta que ya pagó → escalar a humano para verificar el pago ──
   if (isPaymentReported(text)) {
     return {
-      reply:
-        "¡Perfecto! 🙏 Déjame verificar el pago con el equipo y te confirmamos la reserva enseguida.",
+      reply:           T.paymentReported(lang),
       escalateToOwner: true,
       ruleName:        "payment_reported",
       tokensUsed:      botResult.tokensUsed,
@@ -309,9 +309,7 @@ async function gatherQuoteData(
   if (botResult.intent === "existing_guest") {
     await cancelQuoteFlow(phone, env.DB);
     return {
-      reply:
-        botResult.reply ||
-        "¡Con gusto! Te conecto con alguien del equipo que tiene acceso a tu reserva para ayudarte enseguida. 🙏",
+      reply:           botResult.reply || T.existingGuest(lang),
       escalateToOwner: true,
       ruleName:        "existing_guest_escalation",
       tokensUsed:      botResult.tokensUsed,
@@ -327,6 +325,7 @@ async function gatherQuoteData(
     city:         botResult.extractedData.city         ?? previousData.city,
     paypalOrderId: previousData.paypalOrderId,
     depositUsd:    previousData.depositUsd,
+    language:      lang,
   };
 
   // ── Primer mensaje sin ningún dato (saludo genérico) → bienvenida fija ─────
@@ -345,8 +344,10 @@ async function gatherQuoteData(
     botResult.intent !== "asking_question" &&
     botResult.intent !== "requesting_photos"
   ) {
+    // Persistir el idioma detectado para los siguientes mensajes.
+    await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
     return {
-      reply:           INITIAL_QUOTE_MESSAGE,
+      reply:           T.welcome(lang),
       escalateToOwner: false,
       ruleName:        "quote_welcome",
       tokensUsed:      botResult.tokensUsed,
@@ -363,9 +364,9 @@ async function gatherQuoteData(
       const intro =
         botResult.reply && botResult.reply.trim().length > 0
           ? botResult.reply.trim()
-          : "¡Claro! Te mando algunas fotos 📸";
+          : T.photosIntro(lang);
       return {
-        reply: `${intro}\n\nMirá todas las fotos acá 👇\n${galleryUrl}`,
+        reply: `${intro}${T.photosGallery(lang, galleryUrl)}`,
         images: photos,
         escalateToOwner: false,
         ruleName: "photos_sent",
@@ -400,7 +401,7 @@ async function gatherQuoteData(
 
     if (!quote) {
       return {
-        reply: "Disculpa, hubo un problema generando tu cotización. Un agente te responde en breve. 🙏",
+        reply: T.quoteBuildError(lang),
         escalateToOwner: true,
         ruleName:        "quote_build_failed",
         tokensUsed:      botResult.tokensUsed,
@@ -423,7 +424,7 @@ async function gatherQuoteData(
         // Confirmado: las fechas están ocupadas en Airbnb → NO disponible
         await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
         return {
-          reply: `Lamentablemente ${quote.propertyName} no está disponible en esas fechas 😔\n\n¿Querés que revise otras fechas u otra propiedad?`,
+          reply: T.unavailable(lang, quote.propertyName),
           escalateToOwner: false,
           ruleName: "quote_unavailable_airbnb",
           tokensUsed: botResult.tokensUsed,
@@ -431,18 +432,21 @@ async function gatherQuoteData(
       }
       if (!avail.verified) {
         // No pudimos consultar Airbnb → cotizar pero confirmar manualmente
-        availabilityNote =
-          "\n\n⚠️ Déjame confirmar que esas fechas sigan libres y te confirmo enseguida.";
+        availabilityNote = T.availabilityNote(lang);
         escalateUnverified = true;
       }
     }
 
-    const quoteMsg = formatQuoteMessage(quote, {
-      property: mergedData.property!,
-      checkIn:  mergedData.checkIn!,
-      checkOut: mergedData.checkOut!,
-      guests:   mergedData.guests!,
-    });
+    const quoteMsg = formatQuoteMessage(
+      quote,
+      {
+        property: mergedData.property!,
+        checkIn:  mergedData.checkIn!,
+        checkOut: mergedData.checkOut!,
+        guests:   mergedData.guests!,
+      },
+      lang,
+    );
 
     // Si el bot también respondió una pregunta, combinar ambas respuestas
     // (ej: "¿Hay piscina? Somos 4 del 15 al 20 en Villa B11")
@@ -484,12 +488,13 @@ async function handlePaymentMethodChoice(
   env: QuoteFlowEnv,
   pricingMap: Record<PropertySlug, PropertyPricing>,
 ): Promise<QuoteFlowResult> {
+  const lang = asLang(data.language);
   const cardChoice     = isCardChoice(text);
   const transferChoice = isTransferChoice(text);
 
   if (!cardChoice && !transferChoice) {
     return {
-      reply: "Disculpá, ¿podés elegir una opción?\n\n💳 *Tarjeta* (PayPal, link inmediato)\n🏦 *Transferencia* (BAC, te paso los datos)",
+      reply:           T.paymentMethodClarify(lang),
       escalateToOwner: false,
       ruleName:        "ask_payment_method_clarify",
       tokensUsed:      0,
@@ -510,7 +515,7 @@ async function handlePaymentMethodChoice(
   if (!quote || !quote.available) {
     await cancelQuoteFlow(phone, env.DB);
     return {
-      reply:           "Ups, hubo un problema procesando tu reserva. Un agente te asiste en breve. 🙏",
+      reply:           T.reservationError(lang),
       escalateToOwner: true,
       ruleName:        "payment_method_quote_fail",
       tokensUsed:      0,
@@ -537,8 +542,7 @@ async function handlePaymentMethodChoice(
       // Fallback automático a transferencia
       await upsertState(phone, "awaiting_transfer_proof", { ...data, depositUsd: quote.depositUSD }, env.DB);
       return {
-        reply: "Hubo un problema generando el link de PayPal. Te paso los datos de transferencia:\n\n" +
-               buildTransferMessageHNL(quote.depositHNL),
+        reply: T.paypalFallbackToTransfer(lang) + buildTransferMessageHNL(quote.depositHNL, lang),
         escalateToOwner: true,
         ruleName:        "paypal_fallback_to_transfer",
         tokensUsed:      0,
@@ -553,15 +557,13 @@ async function handlePaymentMethodChoice(
     );
 
     return {
-      reply: `¡Listo! El 50% de depósito es HNL ${quote.depositHNL.toLocaleString("es-HN")} (≈ USD ${quote.depositUSD.toFixed(2)}). Pagás acá:
-
-👉 ${orderResult.approvalUrl}
-
-Al confirmar el pago recibís automáticamente:
-✅ Confirmación de reserva por correo
-📋 Instrucciones de check-in
-
-El saldo (HNL ${quote.balanceHNL.toLocaleString("es-HN")}) se paga el día de llegada. 🌴`,
+      reply: T.paypalLink(
+        lang,
+        quote.depositHNL.toLocaleString("es-HN"),
+        quote.depositUSD.toFixed(2),
+        orderResult.approvalUrl,
+        quote.balanceHNL.toLocaleString("es-HN"),
+      ),
       escalateToOwner: false,
       ruleName:        "paypal_link_sent",
       tokensUsed:      0,
@@ -571,7 +573,7 @@ El saldo (HNL ${quote.balanceHNL.toLocaleString("es-HN")}) se paga el día de ll
   // ── Sub-flow B: Transferencia bancaria ────────────────────────────────────
   await upsertState(phone, "awaiting_transfer_proof", { ...data, depositUsd: quote.depositUSD }, env.DB);
   return {
-    reply:           buildTransferMessageHNL(quote.depositHNL),
+    reply:           buildTransferMessageHNL(quote.depositHNL, lang),
     escalateToOwner: true,
     ruleName:        "transfer_details_sent",
     tokensUsed:      0,

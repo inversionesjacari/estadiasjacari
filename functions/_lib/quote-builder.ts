@@ -14,6 +14,7 @@
 //
 
 import type { PropertySlug, City } from "./quote-extractor";
+import type { Lang } from "./i18n";
 
 /** Precios + capacidad por propiedad — single source of truth para el bot. */
 export interface PropertyPricing {
@@ -228,14 +229,22 @@ function fmtHnl(n: number): string {
   return `HNL ${n.toLocaleString("es-HN")}`;
 }
 
-/** Formato fecha es-HN abreviado: "15 jun" */
-function fmtDateEs(iso: string): string {
+/** Formato fecha abreviado por idioma: es "15 jun" · en "Jun 15" */
+function fmtDate(iso: string, lang: Lang = "es"): string {
   const d = new Date(iso + "T00:00:00Z");
+  const day = d.getUTCDate();
+  if (lang === "en") {
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    return `${months[d.getUTCMonth()]} ${day}`;
+  }
   const months = [
     "ene", "feb", "mar", "abr", "may", "jun",
     "jul", "ago", "sep", "oct", "nov", "dic",
   ];
-  return `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
+  return `${day} ${months[d.getUTCMonth()]}`;
 }
 
 /**
@@ -245,23 +254,49 @@ function fmtDateEs(iso: string): string {
 export function formatQuoteMessage(
   q: QuoteOutput,
   input: QuoteInput,
+  lang: Lang = "es",
 ): string {
-  // Caso 1: no disponible
+  const closingEmoji = q.city === "Tegucigalpa" ? "" : " 🌴";
+
+  // ── Inglés ────────────────────────────────────────────────────────────────
+  if (lang === "en") {
+    if (!q.available) {
+      if (q.exceedsCapacity) {
+        return `Unfortunately, ${q.propertyName} holds up to ${q.capacity} guests and you're ${input.guests}. 😔
+
+Would you like another property with more capacity? We have options for up to 6 guests, or for larger groups we can rent Casa Brisa + Casa Marea together (up to 12).`;
+      }
+      return `Unfortunately, ${q.propertyName} isn't available from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")}. 😔
+
+Would you like to try other dates or another property?`;
+    }
+    return `Available! ✅ ${q.propertyName} from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")} (${q.nights} night${q.nights > 1 ? "s" : ""}).
+
+💰 *Quote:*
+${q.nights} night${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
+Cleaning: ${fmtHnl(q.cleaningFeeHNL)}
+*Total: ${fmtHnl(q.totalHNL)}*
+
+🪙 *To book:*
+50% now: *${fmtHnl(q.depositHNL)}*
+50% at check-in: ${fmtHnl(q.balanceHNL)}
+
+Shall we confirm? You can pay the 50% by *bank transfer* or *card/PayPal*, whichever works best.${closingEmoji}`;
+  }
+
+  // ── Español ─────────────────────────────────────────────────────────────────
   if (!q.available) {
     if (q.exceedsCapacity) {
       return `Lamentablemente, ${q.propertyName} tiene capacidad para ${q.capacity} huéspedes y son ${input.guests}. 😔
 
 ¿Te interesa otra de nuestras propiedades con mayor capacidad? Tenemos opciones para hasta 6 huéspedes, o si son más, podemos rentarte Casa Brisa + Casa Marea juntas (hasta 12).`;
     }
-    return `Lamentablemente, ${q.propertyName} no está disponible del ${fmtDateEs(input.checkIn)} al ${fmtDateEs(input.checkOut)}. 😔
+    return `Lamentablemente, ${q.propertyName} no está disponible del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)}. 😔
 
 ¿Te interesa cambiar las fechas o probar otra de nuestras propiedades?`;
   }
 
-  // Caso 2: disponible — cotización completa.
-  // La palmera 🌴 solo para propiedades de playa (no Tegucigalpa).
-  const closingEmoji = q.city === "Tegucigalpa" ? "" : " 🌴";
-  return `¡Disponible! ✅ ${q.propertyName} del ${fmtDateEs(input.checkIn)} al ${fmtDateEs(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).
+  return `¡Disponible! ✅ ${q.propertyName} del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).
 
 💰 *Cotización:*
 ${q.nights} noche${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
