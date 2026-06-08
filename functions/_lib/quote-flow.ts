@@ -94,6 +94,15 @@ export function isTransferChoice(text: string): boolean {
   return /\b(transferencia|transferir|banco|cuenta|dep[oó]sito|deposito|bac|ach)\b/.test(t);
 }
 
+/** Detecta si el huésped pide los DATOS de cuenta para transferir. */
+export function isBankAccountRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /\b(transferencia|transferir|dep[oó]sito|deposito)\b/.test(t) ||
+    /(a qu[eé] cuenta|n[uú]mero de cuenta|datos de la? cuenta|datos bancarios|cuenta del banco|cuenta bac|d[oó]nde (transfiero|deposito|dep[oó]sito|pago))/.test(t)
+  );
+}
+
 /** Detecta si el huésped reporta que ya hizo el pago (escalar para verificar). */
 export function isPaymentReported(text: string): boolean {
   const t = text
@@ -272,6 +281,27 @@ async function gatherQuoteData(
   // Si es primer mensaje, crear el estado vacío antes de llamar al bot
   if (isFirstMessage) {
     await upsertState(phone, "awaiting_quote_data", emptyQuoteData(), env.DB);
+  }
+
+  // ── El cliente pide la cuenta para transferir + ya hay cotización completa ──
+  // → mandamos los datos EXACTOS del banco (bank-transfer.ts), SIN pasar por el
+  // LLM. El bot estaba alucinando números de cuenta; esto lo blinda.
+  if (isBankAccountRequest(text) && isQuoteDataComplete(previousData)) {
+    const tq = await buildQuote(
+      { property: previousData.property!, checkIn: previousData.checkIn!, checkOut: previousData.checkOut!, guests: previousData.guests! },
+      env.DB,
+      pricingMap,
+    );
+    if (tq && tq.available) {
+      const lng = asLang(previousData.language);
+      await upsertState(phone, "awaiting_transfer_proof", previousData, env.DB);
+      return {
+        reply: isUsdRequest(text) ? buildTransferMessageUSD(tq.depositUSD, lng) : buildTransferMessageHNL(tq.depositHNL, lng),
+        escalateToOwner: false,
+        ruleName: "transfer_details_sent",
+        tokensUsed: 0,
+      };
+    }
   }
 
   // ── Base de conocimiento desde D1 (editable). Fallback al hardcoded. ───────

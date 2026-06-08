@@ -65,6 +65,10 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
         return `Hi again! 👋 Did you get a chance to see the quote${ref}? If you'd like to book or have any questions, I'm here. 🙏`;
       case "awaiting_payment_method":
         return `Hi! Shall we continue with your booking${ref}? Let me know if you prefer *bank transfer* or *card/PayPal* and I'll send the details. 🙏`;
+      case "awaiting_transfer_proof":
+        return `Hi! 👋 Were you able to make the transfer${ref}? When you do, *send me a photo of the receipt here* and we'll confirm your booking. 🙏`;
+      case "awaiting_paypal_capture":
+        return `Hi! 👋 Were you able to complete the payment with the link${ref}? Let me know if you ran into any trouble. 🙏`;
       default:
         return `Hi! 👋 We're still here to help${ref}. Want me to check availability or a quote? Send me the dates and let's take a look. 🌴`;
     }
@@ -75,6 +79,10 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
       return `¡Hola de nuevo! 👋 ¿Pudiste ver la cotización${ref}? Si querés reservar o tenés alguna duda, estoy a la orden. 🙏`;
     case "awaiting_payment_method":
       return `¡Hola! ¿Seguimos con tu reserva${ref}? Decime si preferís *transferencia bancaria* o *tarjeta/PayPal* y te paso los datos enseguida. 🙏`;
+    case "awaiting_transfer_proof":
+      return `¡Hola! 👋 ¿Pudiste hacer la transferencia${ref}? Cuando la hagas, *mandame foto del comprobante por acá* y te confirmamos la reserva. 🙏`;
+    case "awaiting_paypal_capture":
+      return `¡Hola! 👋 ¿Pudiste completar el pago con el link${ref}? Si tuviste algún problema, avisame. 🙏`;
     case "awaiting_quote_data":
     default:
       return `¡Hola! 👋 Seguimos a tu disposición${ref}. ¿Querés que te ayude a ver disponibilidad o una cotización? Contame las fechas y lo vemos. 🌴`;
@@ -107,7 +115,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const res = await env.DB.prepare(
       `SELECT phone, state, data
          FROM conversation_state
-        WHERE state IN ('awaiting_quote_data', 'quote_provided', 'awaiting_payment_method')
+        WHERE state IN ('awaiting_quote_data', 'quote_provided', 'awaiting_payment_method', 'awaiting_transfer_proof', 'awaiting_paypal_capture')
           AND followup_sent_at IS NULL
           AND followup_attempts < 2
           AND updated_at <= datetime('now', '-10 minutes')
