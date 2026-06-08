@@ -55,6 +55,7 @@ const CRON_DISPATCH = {
   '0 15 * * *':   BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
   '30 17 * * *':  BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',
   '*/10 * * * *': BASE + '/api/cron/quote-followups',  // cada 10 min — seguimiento de cotizaciones a medias
+  '0 * * * *':    BASE + '/api/cron/paypal-income',    // cada hora — ingreso Airbnb vía PayPal Transaction Search
 };
 
 // Mapeo manual ?hito= → URL (usado por el handler `fetch` para test).
@@ -64,6 +65,8 @@ const MANUAL_DISPATCH = {
   guests:    BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
   cleaning:  BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',
   followups: BASE + '/api/cron/quote-followups',
+  income:        BASE + '/api/cron/paypal-income',          // corre de verdad y cachea
+  'income-debug': BASE + '/api/cron/paypal-income?debug=1', // muestra las txns de Airbnb que matchea, SIN escribir
 };
 
 export default {

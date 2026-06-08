@@ -68,7 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     resvCounts, resvByProperty, resvBySource, revRanges,
     lastIn, lastOut, lastResv, heartbeat,
     botCounts, trendRows, feedMsgs, feedResvs,
-    webToday, webNow, webTopPages, webReferrers,
+    webToday, webNow, webTopPages, webReferrers, airbnbIncome,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -106,6 +106,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT COUNT(DISTINCT visitor) AS c FROM page_views WHERE created_at >= datetime('now','-5 minutes')`).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE created_at >= ${HN_DAY_START} GROUP BY path ORDER BY c DESC LIMIT 5`).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') AND referrer IS NOT NULL AND referrer <> '' GROUP BY referrer ORDER BY c DESC LIMIT 5`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
+    // Ingreso Airbnb cacheado (cron paypal-income). Fail-soft si la tabla no existe.
+    db.prepare(`SELECT period, amount_usd FROM airbnb_income`).all<{ period: string; amount_usd: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
@@ -150,6 +152,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const bc = botCounts as { inbound: number; manual: number; fails: number; escalations: number; botReplies: number };
   const escalationPct = bc.inbound > 0 ? Math.round((bc.escalations / bc.inbound) * 100) : 0;
 
+  // Ingreso Airbnb cacheado → número por período, o null si no hay fila aún.
+  const aiRows = rowsOf<{ period: string; amount_usd: number }>(airbnbIncome);
+  const aiIncome = (p: string): number | null => {
+    const r = aiRows.find((x) => x.period === p);
+    return r ? Math.round(r.amount_usd) : null;
+  };
+
   return json({
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -189,8 +198,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         week: Math.round(numOf(revRanges, "week")),
         month: Math.round(numOf(revRanges, "month")),
       },
-      // Ingreso Airbnb (vía PayPal Transaction Search) — null hasta activarlo.
-      airbnb: { today: null as number | null, week: null as number | null, month: null as number | null },
+      // Ingreso Airbnb (payouts vía PayPal Transaction Search, cacheado por cron).
+      // null cuando aún no hay datos (cron no configurado / sin correr todavía).
+      airbnb: {
+        today: aiIncome("today"),
+        week: aiIncome("week"),
+        month: aiIncome("month"),
+      },
     },
     health: {
       lastInAt: strOf(lastIn, "t"),

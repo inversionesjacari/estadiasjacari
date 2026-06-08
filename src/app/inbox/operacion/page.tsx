@@ -159,6 +159,16 @@ export default function OperacionPage() {
 
   const m = metrics;
 
+  // Ingresos: si ya hay datos de Airbnb (cron corrió), mostramos el TOTAL
+  // (directo + Airbnb) y el desglose en el footer; si no, solo lo directo.
+  const rev = m.revenue;
+  const hasAirbnb = rev.airbnb.month !== null;
+  const sumRev = (d: number, a: number | null) => d + (a ?? 0);
+  const fmt$ = (n: number) => `$${n.toLocaleString("en-US")}`;
+  const incomeFooter = hasAirbnb
+    ? `30d: directo ${fmt$(rev.direct.month)} · Airbnb ${fmt$(rev.airbnb.month ?? 0)}`
+    : "directo · Airbnb al activar PayPal";
+
   return (
     <div className="min-h-screen bg-[#070b16] text-slate-200" style={{ backgroundImage: "radial-gradient(circle at 20% 0%, rgba(34,211,238,0.06), transparent 40%), radial-gradient(circle at 90% 10%, rgba(45,212,191,0.05), transparent 35%)" }}>
       {/* Header */}
@@ -182,7 +192,7 @@ export default function OperacionPage() {
           <Kpi icon="📨" label="Mensajes" hoy={m.messages.today} week={m.messages.week} month={m.messages.month} glow={HEX.cyan} />
           <Kpi icon="💬" label="Conversaciones" hoy={m.conversations.today} week={m.conversations.week} month={m.conversations.month} glow="#a78bfa" />
           <Kpi icon="🏠" label="Reservas" hoy={m.reservations.today} week={m.reservations.week} month={m.reservations.month} glow={HEX.green} />
-          <Kpi icon="💰" label="Ingresos" hoy={m.revenue.direct.today} week={m.revenue.direct.week} month={m.revenue.direct.month} prefix="$" glow={HEX.amber} footer="directo · Airbnb al activar PayPal" />
+          <Kpi icon="💰" label="Ingresos" hoy={sumRev(rev.direct.today, rev.airbnb.today)} week={sumRev(rev.direct.week, rev.airbnb.week)} month={sumRev(rev.direct.month, rev.airbnb.month)} prefix="$" glow={HEX.amber} footer={incomeFooter} />
         </section>
 
         {/* Diagrama protagonista */}
