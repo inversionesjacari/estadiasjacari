@@ -76,6 +76,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         LIMIT 100`,
     ).all<ConversationRow>();
 
+    // Teléfonos con el bot pausado (handoff a humano). Query aparte y fail-soft
+    // para no romper el inbox si la tabla `bot_pauses` todavía no está aplicada.
+    let paused = new Set<string>();
+    try {
+      const p = await env.DB.prepare(`SELECT phone FROM bot_pauses`).all<{ phone: string }>();
+      paused = new Set((p.results ?? []).map((x) => x.phone));
+    } catch {
+      /* tabla no existe todavía → ningún número pausado */
+    }
+
     return json({
       ok: true,
       conversations: (results ?? []).map((r) => ({
@@ -86,6 +96,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         messageCount: r.message_count,
         lastMatchedRule: r.last_matched_rule,
         escalated: r.last_escalated === 1,
+        botPaused: paused.has(r.phone),
         contactName: r.contact_name,
         reservation: r.reservation_id
           ? {

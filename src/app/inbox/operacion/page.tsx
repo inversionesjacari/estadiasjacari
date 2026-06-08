@@ -36,6 +36,31 @@ const REFERRER_NAMES: Record<string, string> = {
   "t.co": "X / Twitter",
 };
 
+// Registro de cambios / mejoras del sistema (curado a mano; lo más nuevo arriba).
+// Se muestra al final del Centro de Control como bitácora visible del equipo.
+const CHANGELOG: { date: string; items: string[] }[] = [
+  {
+    date: "8 jun 2026",
+    items: [
+      "Bot: se apaga automáticamente al escalar (handoff a humano) y se reactiva con el botón “Reactivar bot” del inbox.",
+      "Bot: reglas de alcance — solo ofrece nuestras propiedades; lo que está fuera de alcance lo redirige al WhatsApp directo; dejó de inventar ubicaciones.",
+      "Bot: aviso por email + etiqueta “escalado” en el inbox cada vez que escala.",
+      "Ingresos: captura del ingreso de Airbnb en vivo vía PayPal (Transaction Search), separado del directo.",
+      "Diagrama: rediseño — zona “ORIGEN”, logos de marca (Google a 4 colores, Jacarí, BAC), Airbnb como canal con “Viajeros”, dinero consolidado y líneas más nítidas.",
+      "KPIs: cada tarjeta muestra Hoy / 7 días / 30 días.",
+    ],
+  },
+  {
+    date: "7 jun 2026",
+    items: [
+      "Centro de Control creado: KPIs, embudo de ventas, salud de sistemas, diagrama de operación en vivo y tráfico web.",
+      "Diagrama: cuenta el proceso del negocio y asume los sistemas activos (rojo solo ante falla real).",
+      "Bot conversacional con IA (Workers AI · Llama 3.3): cotiza, verifica disponibilidad real, recuerda el hilo y usa una base de conocimiento editable.",
+      "Fix del seguimiento automático: reintenta si WhatsApp falla, sin quemar el seguimiento.",
+    ],
+  },
+];
+
 interface Metrics {
   generatedAt: string;
   messages: { todayIn: number; todayOut: number; weekIn: number; weekOut: number; today: number; week: number; month: number };
@@ -290,6 +315,25 @@ export default function OperacionPage() {
               ))}
             </ul>
           )}
+        </Panel>
+
+        {/* Registro de cambios / debugging — bitácora visible del sistema */}
+        <Panel title="🛠️ Registro de cambios" subtitle="mejoras y arreglos del sistema">
+          <div className="space-y-4">
+            {CHANGELOG.map((entry) => (
+              <div key={entry.date}>
+                <p className="text-[11px] font-mono text-cyan-400/80 mb-1.5 uppercase tracking-wider">{entry.date}</p>
+                <ul className="space-y-1.5">
+                  {entry.items.map((it, i) => (
+                    <li key={i} className="flex items-start gap-2 text-[13px] text-slate-300 leading-snug">
+                      <span className="text-cyan-500/70 mt-0.5 shrink-0">▸</span>
+                      <span>{it}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
         </Panel>
 
         <p className="text-center text-[10px] text-slate-600 font-mono pb-4">● actualización automática cada 10 s</p>

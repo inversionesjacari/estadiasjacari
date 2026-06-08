@@ -31,6 +31,18 @@ import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_l
 import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
 import { verifyMetaSignature } from "../_lib/meta-signature";
 import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
+import { pauseBot, isBotPaused } from "../_lib/bot-pause";
+
+// Reglas que significan "un humano toma la conversación" → pausamos el bot para
+// ese número (deja de auto-responder) hasta reactivarlo a mano desde el inbox.
+const HANDOFF_RULES = new Set<string>([
+  "out_of_scope_redirect",      // fuera de alcance / no resoluble
+  "existing_guest_escalation",  // huésped existente pide soporte
+  "payment_reported",           // cliente dice que ya pagó/transfirió
+  "transfer_proof_received",    // mandó comprobante de transferencia
+  "paypal_usd_requested",       // pidió el monto en USD del link PayPal
+  "escalar_humano",             // pidió hablar con un humano (rule-based)
+]);
 import type { IcalEnv } from "../_lib/availability";
 
 interface Env extends IcalEnv {
@@ -343,6 +355,14 @@ async function processIncomingMessage(
     return;
   }
 
+  // ── Bot pausado (handoff a humano) → NO auto-respondemos ───────────────────
+  // El mensaje entrante ya quedó guardado arriba, así que aparece en el inbox
+  // para que lo atienda un humano. El bot se reactiva a mano con "Reactivar bot".
+  if (await isBotPaused(fromE164, env.DB)) {
+    console.log(`Bot pausado para ${fromE164} — mensaje queda en el inbox, sin auto-respuesta`);
+    return;
+  }
+
   // ID autoincremental de ESTE mensaje entrante — usado abajo para "última
   // palabra gana": si mientras procesamos llega otro mensaje del mismo número,
   // este webhook NO responde (lo hará el del mensaje más nuevo, con más contexto).
@@ -510,7 +530,11 @@ async function processIncomingMessage(
         guestMessage: bodyText,
         guestPhone: fromE164,
         reservation,
-        reason: quoteResult?.escalateToOwner
+        reason: quoteResult?.ruleName === "out_of_scope_redirect"
+          ? "Fuera de alcance — el bot redirigió al cliente a tu WhatsApp (+504 9764-9035). Escribile vos si querés cerrarlo."
+          : quoteResult?.ruleName === "existing_guest_escalation"
+          ? "Huésped existente pidiendo soporte de su estadía"
+          : quoteResult?.escalateToOwner
           ? `Quote flow: ${quoteResult.ruleName} — Cliente quiere reservar / mandar link de pago`
           : ruleName === "escalar_humano"
             ? "El huésped pidió hablar con un humano"
@@ -539,6 +563,13 @@ async function processIncomingMessage(
         // ignore
       }
     }
+  }
+
+  // ── Handoff a humano → pausar el bot en esta conversación ──────────────────
+  // A partir de acá el bot deja de auto-responder a este número; lo atendés vos
+  // desde el inbox y lo reactivás con el botón "Reactivar bot".
+  if (ruleName && HANDOFF_RULES.has(ruleName)) {
+    await pauseBot(fromE164, ruleName, env.DB);
   }
 
   // Nota sobre `contactName`: si quisiéramos personalizar el saludo del bot

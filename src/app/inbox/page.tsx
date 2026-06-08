@@ -28,6 +28,7 @@ interface Conversation {
   messageCount: number;
   lastMatchedRule: string | null;
   escalated: boolean;
+  botPaused: boolean;
   contactName: string | null;
   reservation: {
     id: number;
@@ -316,6 +317,21 @@ export default function InboxPage() {
       setLoadingConv(false);
     }
   }, []);
+
+  // Reactivar el bot para una conversación pausada (handoff a humano).
+  const handleResumeBot = useCallback(async (phone: string): Promise<void> => {
+    try {
+      await fetch("/api/inbox/bot-resume", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      fetchConversations();
+    } catch (err) {
+      console.error("handleResumeBot error", err);
+    }
+  }, [fetchConversations]);
 
   useEffect(() => {
     fetchConversations();
@@ -640,6 +656,23 @@ export default function InboxPage() {
                         </p>
                       )}
                     </div>
+                    {conv?.botPaused && (
+                      <div className="ml-auto flex items-center gap-2 shrink-0">
+                        <span
+                          style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}
+                          className="text-[11px] font-medium rounded-full px-2.5 py-1 whitespace-nowrap"
+                        >
+                          🤖 Bot en pausa
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => { if (selectedPhone) handleResumeBot(selectedPhone); }}
+                          className="text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1.5 whitespace-nowrap transition"
+                        >
+                          Reactivar bot
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

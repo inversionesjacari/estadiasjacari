@@ -13,6 +13,7 @@
 import { requireInboxAuth } from "../../_lib/inbox-auth";
 import { sendTextMessage } from "../../_lib/whatsapp";
 import { isValidE164 } from "../../_lib/phone";
+import { pauseBot } from "../../_lib/bot-pause";
 
 interface Env {
   DB: D1Database;
@@ -95,6 +96,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       .run();
   } catch (logErr) {
     console.error("Error guardando mensaje saliente manual:", (logErr as Error).message);
+  }
+
+  // El humano tomó la conversación → pausar el bot para este número.
+  // Se reactiva a mano con el botón "Reactivar bot" del inbox.
+  if (sendResult.ok) {
+    await pauseBot(phone, "manual_inbox", env.DB);
   }
 
   if (!sendResult.ok) {

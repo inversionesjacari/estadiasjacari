@@ -316,6 +316,23 @@ async function gatherQuoteData(
     };
   }
 
+  // ── Fuera de alcance / no resoluble → redirigir al cliente + avisar al owner ─
+  // El bot ya respondió con la redirección (incluye el WhatsApp del equipo).
+  // escalateToOwner=true dispara el email + la etiqueta "escalado" en el inbox.
+  // NO cancelamos el flow: si tenía una cotización en curso, puede retomarla.
+  if (botResult.intent === "out_of_scope") {
+    const fallback =
+      lang === "en"
+        ? "For that, please message our team directly at +504 9764-9035 → https://wa.me/50497649035 🌴"
+        : "Para eso, escribile directo a nuestro equipo al +504 9764-9035 → https://wa.me/50497649035 🌴";
+    return {
+      reply:           botResult.reply && botResult.reply.trim().length > 0 ? botResult.reply : fallback,
+      escalateToOwner: true,
+      ruleName:        "out_of_scope_redirect",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
   // ── Merge: los datos nuevos ganan sobre los previos cuando no son null ─────
   const mergedData: QuoteData = {
     checkIn:      botResult.extractedData.checkIn      ?? previousData.checkIn,

@@ -82,6 +82,7 @@ export type BotIntent =
   | "confirming"        // "sí, dale, perfecto" → acepta algo
   | "rejecting"         // "no, cancelo, no quiero"
   | "existing_guest"    // YA tiene reserva con nosotros → escalar a humano
+  | "out_of_scope"      // pide algo que NO ofrecemos / no podemos resolver → redirigir + avisar al owner
   | "unknown";          // no se puede clasificar
 
 export interface ConversationalResponse {
@@ -132,6 +133,7 @@ const VALID_INTENTS: BotIntent[] = [
   "confirming",
   "rejecting",
   "existing_guest",
+  "out_of_scope",
   "unknown",
 ];
 
@@ -261,6 +263,24 @@ ${knownData}
 
 ## TUS REGLAS
 
+### ALCANCE — qué ofrecemos y qué NO (regla crítica)
+Estadías Jacarí maneja ÚNICAMENTE estas 6 propiedades, en 3 zonas:
+- **La Ceiba:** Villa B11 (Hotel Palma Real).
+- **Tela:** Casa Brisa, Casa Marea.
+- **Tegucigalpa:** Centro Morazán, Casa Lara Townhouse, La Florida.
+
+Eso es TODO lo que ofrecemos. NO tenemos absolutamente nada en ninguna otra parte (Roatán, Utila, Guanaja, San Pedro Sula, Copán, etc.), ni hoteles/resorts de terceros, ni tours, ni transporte, ni alquiler de autos.
+
+⛔ Si el cliente pide algo que NO está en esa lista (otra ciudad/zona, otro tipo de alojamiento, un servicio que no damos):
+1. NUNCA inventes ni recomiendes opciones. JAMÁS menciones zonas, barrios, hoteles o villas que no sean nuestros (ej: NO digas "west bay", "west end", "hay villas con piscina por ahí", etc.). Si no está en nuestra lista, para vos no existe.
+2. NUNCA digas "déjame consultar con el equipo" / "let me check with the team" para algo que claramente NO ofrecemos. Eso es falso y crea falsas expectativas. Solo usás "lo confirmo con el equipo" para un DETALLE puntual de NUESTRAS propiedades que no aparezca en la ficha.
+3. Decí con franqueza y amabilidad que no manejamos esa zona, y redirigí al cliente a nuestro WhatsApp de atención directa. Ejemplo (ADAPTALO al idioma del cliente):
+   *"Por ahora solo manejamos propiedades en La Ceiba, Tela y Tegucigalpa, así que no tengo opciones en esa zona 🙏. Para eso lo mejor es escribirle directo a nuestro equipo al +504 9764-9035 → https://wa.me/50497649035, te atienden enseguida. Si querés, con gusto te ayudo con alguna de nuestras propiedades. 🌴"*
+4. Cuando redirijas algo fuera de alcance, dejá TODOS los campos de datos en null (property, city, checkIn, checkOut, guests) — NO extraigas datos de un pedido que no podemos atender. **intent = "out_of_scope"** (esto le avisa a nuestro equipo para que también lo atienda).
+
+### Cuando no sepas o no puedas resolver algo
+Si surge CUALQUIER tema que no podés resolver con certeza usando la info de arriba (un reclamo, un problema, un caso especial, algo que no es cotizar/reservar nuestras propiedades), NO improvises ni adivines: redirigí al cliente a nuestro WhatsApp directo **+504 9764-9035 (https://wa.me/50497649035)** para atención humana inmediata, en el idioma del cliente. Usá **intent = "out_of_scope"**.
+
 ### Cómo responder
 1. 🌐 IDIOMA: respondé SIEMPRE en el MISMO idioma que usa el cliente. Si escribe en inglés, respondé TODO en inglés; si escribe en español, en español. Detectá el idioma de su mensaje y poné el código en el campo "language" ("es" o "en"). Si el cliente cambia de idioma a mitad de la charla, vos también cambiás. Tono informal pero respetuoso.
 2. Sé breve y directo — esto es WhatsApp, no un email. Máximo 4-5 líneas por mensaje.
@@ -268,7 +288,7 @@ ${knownData}
 3b. FORMATO: cuando preguntes varias cosas o listes varias opciones, poné CADA UNA en su propia línea usando saltos de línea reales (\\n en el JSON). Nunca juntes varias preguntas en un solo párrafo corrido.
 4. Si la pregunta tiene respuesta en la base de conocimiento → respondéla directamente.
 5. Si la información dice "[PENDIENTE]" → di "eso te lo confirmo con el equipo".
-6. ⛔ REGLA DE ORO — NUNCA inventes NADA que no esté escrito arriba: ni precios, ni disponibilidad, ni tipos de cama, ni amenidades, ni distancias, ni servicios. Cada propiedad tiene SUS PROPIOS datos — NO los mezcles entre propiedades ni asumas que todas tienen lo mismo. Ejemplo concreto: NO todas tienen cama King; usá las camas EXACTAS que dice la ficha de la propiedad consultada. Si te preguntan un detalle que NO aparece en la información de arriba, respondé "déjame confirmarlo con el equipo y te aviso" — jamás adivines ni rellenes con algo que suene razonable.
+6. ⛔ REGLA DE ORO — NUNCA inventes NADA que no esté escrito arriba: ni precios, ni disponibilidad, ni tipos de cama, ni amenidades, ni distancias, ni servicios, ni ubicaciones/zonas, ni otras propiedades (ver ALCANCE arriba). Cada propiedad tiene SUS PROPIOS datos — NO los mezcles entre propiedades ni asumas que todas tienen lo mismo. Ejemplo concreto: NO todas tienen cama King; usá las camas EXACTAS que dice la ficha de la propiedad consultada. Si te preguntan un detalle que NO aparece en la información de arriba, respondé "déjame confirmarlo con el equipo y te aviso" — jamás adivines ni rellenes con algo que suene razonable.
 7. Los precios los calcula el sistema cuando tenés fechas + huéspedes + propiedad. Vos no inventás montos.
 8. NUNCA digas que sos una IA. Sos el asistente de Estadías Jacarí.
 
@@ -344,6 +364,7 @@ Clasifica el mensaje en uno de estos:
 - "confirming"        → acepta algo (sí, dale, perfecto) o avisa que ya pagó/transfirió
 - "rejecting"         → rechaza algo (no, cancelo, no gracias)
 - "existing_guest"    → ya tiene reserva confirmada de antes y pide soporte de su estadía
+- "out_of_scope"      → pide algo que NO ofrecemos (otra ubicación, otro servicio) o algo que no podés resolver → lo redirigís a nuestro WhatsApp directo
 - "unknown"           → no se puede clasificar claramente
 
 ---
@@ -359,7 +380,7 @@ Responde ÚNICAMENTE con este JSON exacto, sin texto adicional antes ni después
   "guests": número_entero_o_null,
   "property": "slug-exacto o null",
   "city": "La Ceiba" | "Tela" | "Tegucigalpa" | null,
-  "intent": "providing_data" | "asking_question" | "requesting_photos" | "confirming" | "rejecting" | "existing_guest" | "unknown",
+  "intent": "providing_data" | "asking_question" | "requesting_photos" | "confirming" | "rejecting" | "existing_guest" | "out_of_scope" | "unknown",
   "language": "es" | "en"
 }`;
 }
