@@ -513,6 +513,12 @@ export default function InboxPage() {
         </div>
         <div className="flex items-center gap-3 text-sm">
           <a
+            href="/inbox/operacion"
+            className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted"
+          >
+            🛰️ Centro de control
+          </a>
+          <a
             href="/inbox/conocimiento"
             className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted"
           >
