@@ -13,7 +13,10 @@
 //   - Solo estados activos sin cerrar (awaiting_quote_data, quote_provided,
 //     awaiting_payment_method).
 //   - Inactivo entre 10 min y 24 h (la ventana de 24h de WhatsApp para texto libre).
-//   - Un solo followup por conversación (followup_sent_at IS NULL).
+//   - Hasta 2 intentos de followup por conversación (followup_attempts < 2):
+//       · Si Meta confirma el envío → se marca followup_sent_at y ya no se reintenta.
+//       · Si Meta devuelve failed → solo se incrementa followup_attempts y el
+//         siguiente tick lo reintenta, hasta agotar los 2 intentos.
 //
 // Respuesta SIEMPRE 200 con detalle JSON.
 //
@@ -106,6 +109,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
          FROM conversation_state
         WHERE state IN ('awaiting_quote_data', 'quote_provided', 'awaiting_payment_method')
           AND followup_sent_at IS NULL
+          AND followup_attempts < 2
           AND updated_at <= datetime('now', '-10 minutes')
           AND updated_at >= datetime('now', '-24 hours')
           AND expires_at > datetime('now')
@@ -136,11 +140,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
     const sendResult = await sendTextMessage(row.phone, message, env);
 
-    // Marcar followup enviado SIEMPRE (incluso si falló) para no reintentar en bucle.
-    // NO tocamos updated_at: así el ciclo de inactividad no se reinicia.
+    // Contabilizar el intento. NO tocamos updated_at: así el ciclo de
+    // inactividad no se reinicia.
+    //   - Envío OK   → marcar followup_sent_at + sumar intento: no se reintenta más.
+    //   - Envío FAIL → solo sumar intento: el siguiente tick lo reintenta hasta
+    //     llegar a 2 intentos (la query filtra followup_attempts < 2).
     try {
       await env.DB.prepare(
-        `UPDATE conversation_state SET followup_sent_at = datetime('now') WHERE phone = ?`,
+        sendResult.ok
+          ? `UPDATE conversation_state
+                SET followup_sent_at = datetime('now'),
+                    followup_attempts = followup_attempts + 1
+              WHERE phone = ?`
+          : `UPDATE conversation_state
+                SET followup_attempts = followup_attempts + 1
+              WHERE phone = ?`,
       )
         .bind(row.phone)
         .run();
