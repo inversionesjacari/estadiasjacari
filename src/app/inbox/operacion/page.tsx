@@ -76,7 +76,7 @@ interface Metrics {
   funnel: { awaitingData: number; quoteProvided: number; awaitingPaymentMethod: number; awaitingPaypal: number; awaitingTransfer: number; total: number };
   reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
   revenue: { direct: { today: number; week: number; month: number }; airbnb: { today: number | null; week: number | null; month: number | null } };
-  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown" };
+  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
@@ -116,6 +116,14 @@ function cronHex(iso: string | null): string {
 }
 function airbnbHex(s: string): string {
   return s === "unavailable" ? HEX.red : HEX.green;
+}
+// Bot IA en ROJO si el LLM (Workers AI) registró un error en los últimos 20 min
+// (el webhook escribe el latido 'bot_llm_error' al caer en bot_glitch_silent).
+// Sin errores recientes → verde (se asume recuperado).
+function botHex(llmErrorAt: string | null): string {
+  const t = parseUtc(llmErrorAt);
+  if (Number.isNaN(t)) return HEX.green;
+  return (Date.now() - t) / 60000 <= 20 ? HEX.red : HEX.green;
 }
 function isLive(iso: string | null, minutes = 10): boolean {
   const t = parseUtc(iso);
@@ -272,7 +280,7 @@ export default function OperacionPage() {
           <Panel title="🩺 Salud de sistemas">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <HealthItem hex={recencyHex(m.health.lastInAt)} label="WhatsApp" detail={`últ. ${timeAgo(m.health.lastInAt)}`} />
-              <HealthItem hex={recencyHex(m.health.lastOutAt)} label="Bot IA" detail={`últ. ${timeAgo(m.health.lastOutAt)}`} />
+              <HealthItem hex={botHex(m.health.botLlmErrorAt)} label="Bot IA" detail={botHex(m.health.botLlmErrorAt) === HEX.red ? `⚠ falla IA · ${timeAgo(m.health.botLlmErrorAt)}` : `últ. ${timeAgo(m.health.lastOutAt)}`} />
               <HealthItem hex={airbnbHex(m.health.airbnbStatus)} label="Airbnb" detail={AIRBNB_LABEL[m.health.airbnbStatus]} />
               <HealthItem hex={cronHex(m.health.cronLastAt)} label="Seguimientos" detail={`últ. ${timeAgo(m.health.cronLastAt)}`} />
               <HealthItem hex={recencyHex(m.health.lastReservationAt, 24 * 30)} label="Reservas / PayPal" detail={`últ. ${timeAgo(m.health.lastReservationAt)}`} />
@@ -589,7 +597,7 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
     airbnb: airbnbHex(health.airbnbStatus),
     wa: recencyHex(health.lastInAt),
     sitio: HEX.green,
-    bot: recencyHex(health.lastOutAt),
+    bot: botHex(health.botLlmErrorAt),
     agente: HEX.green,
     db: HEX.green,
     cron: cronHex(health.cronLastAt),

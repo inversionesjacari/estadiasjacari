@@ -114,6 +114,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
   ]);
 
+  // Salud del LLM del bot: último error registrado por el webhook cuando el bot
+  // cae en bot_glitch_silent (Workers AI falló). Alimenta el semáforo rojo del Bot IA.
+  const llmError = await db
+    .prepare(`SELECT last_at AS t FROM system_heartbeat WHERE key='bot_llm_error'`)
+    .first<{ t: string }>()
+    .catch(() => ({ t: null }));
+
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
   let airbnbStatus: "full" | "partial" | "unavailable" | "unknown" = "unknown";
   try {
@@ -216,6 +223,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       lastReservationAt: strOf(lastResv, "t"),
       cronLastAt: strOf(heartbeat, "t"),
       airbnbStatus,
+      botLlmErrorAt: strOf(llmError, "t"),
     },
     botHealth: {
       inbound: bc.inbound,

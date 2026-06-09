@@ -78,7 +78,7 @@ function extractTokens(result: unknown): number {
 async function aiRunWithRetry(
   env: WorkersAIEnv,
   payload: unknown,
-  attempts = 3,
+  attempts = 5,
 ): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -87,8 +87,10 @@ async function aiRunWithRetry(
     } catch (err) {
       lastErr = err;
       if (i < attempts - 1) {
-        // Backoff creciente: 300ms, 700ms
-        await new Promise((r) => setTimeout(r, 300 + i * 400));
+        // Backoff exponencial capeado: 400ms, 800ms, 1600ms, 2500ms (~5.3s total).
+        // Recupera los hipos BREVES de Workers AI dentro del mismo request, sin que
+        // el cliente note nada. Los hipos LARGOS los cubre el reintento diferido (cron).
+        await new Promise((r) => setTimeout(r, Math.min(400 * 2 ** i, 2500)));
       }
     }
   }

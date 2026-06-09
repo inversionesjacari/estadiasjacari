@@ -57,6 +57,7 @@ const CRON_DISPATCH = {
   '*/10 * * * *': BASE + '/api/cron/quote-followups',  // cada 10 min — seguimiento de cotizaciones a medias
   '0 * * * *':    BASE + '/api/cron/paypal-income',    // cada hora — ingreso Airbnb vía PayPal Transaction Search
   '30 11 * * *':  BASE + '/api/inbox/bot-qa-run',      // 5:30 AM HN — QA del bot (revisión diaria de conversaciones)
+  '*/2 * * * *':  BASE + '/api/cron/bot-retry',        // cada 2 min — AUTO-RECUPERACIÓN del bot (reprocesa glitches del LLM)
 };
 
 // Mapeo manual ?hito= → URL (usado por el handler `fetch` para test).
@@ -69,6 +70,7 @@ const MANUAL_DISPATCH = {
   income:        BASE + '/api/cron/paypal-income',          // corre de verdad y cachea
   'income-debug': BASE + '/api/cron/paypal-income?debug=1', // muestra las txns de Airbnb que matchea, SIN escribir
   qa:            BASE + '/api/inbox/bot-qa-run',            // QA del bot: revisa conversaciones y guarda hallazgos
+  retry:         BASE + '/api/cron/bot-retry',             // AUTO-RECUPERACIÓN: reprocesa la cola de glitches del LLM
 };
 
 export default {

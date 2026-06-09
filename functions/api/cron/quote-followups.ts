@@ -107,19 +107,21 @@ function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boo
   if (!hasGuests) missing.push(en ? "how many guests" : "cuántas personas");
   if (!hasDates) missing.push(en ? "the dates" : "las fechas");
 
-  // Ya tiene todo lo necesario: el flujo cotiza cuando responda; el followup solo reanima.
+  // Ya tiene todo: el followup solo reanima, SIN asumir que es una cotización en
+  // firme (el cliente puede estar solo explorando — "quiero info" no es "cotizame").
   if (missing.length === 0) {
     return en
-      ? `Hi again! 👋 I've got everything to put your quote together${ref}. Want me to go ahead? 🙏`
-      : `¡Hola de nuevo! 👋 Tengo todo para armarte la cotización${ref}. ¿Le damos? 🙏`;
+      ? `Hi again! 👋 Want me to check availability and options${ref}? Just let me know. 🙏`
+      : `¡Hola de nuevo! 👋 ¿Te muestro disponibilidad y opciones${ref}? Avisame cuando gustes. 🙏`;
   }
 
   const join = (xs: string[]) =>
     xs.length === 1 ? xs[0] : `${xs.slice(0, -1).join(", ")} ${en ? "and" : "y"} ${xs[xs.length - 1]}`;
 
+  // Tono exploratorio, no transaccional: "te muestro opciones", no "la cotización".
   return en
-    ? `Hi again! 👋 To send your quote${ref}, I just need ${join(missing)}. Whenever you're ready! 🌴`
-    : `¡Hola de nuevo! 👋 Para pasarte la cotización${ref}, solo me falta ${join(missing)}. ¡Cuando gustes! 🌴`;
+    ? `Hi again! 👋 Shall we continue${ref}? Tell me ${join(missing)} and I'll show you some options. No rush! 🌴`
+    : `¡Hola de nuevo! 👋 ¿Seguimos${ref}? Contame ${join(missing)} y te muestro opciones. ¡Sin apuro! 🌴`;
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
@@ -154,6 +156,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           AND updated_at <= datetime('now', '-10 minutes')
           AND updated_at >= datetime('now', '-24 hours')
           AND expires_at > datetime('now')
+          AND phone NOT IN (SELECT phone FROM bot_pauses)
         LIMIT 20`,
     ).all<StateRow>();
     rows = res.results ?? [];

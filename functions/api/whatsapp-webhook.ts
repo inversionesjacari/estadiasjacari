@@ -469,43 +469,27 @@ async function processIncomingMessage(
   //   2. dejar latido del error del LLM → el Centro de Control puede pintarlo rojo.
   //   3. avisarte por email (máx 1 cada 30 min, para no spamear ante una racha).
   if (quoteResult?.silent) {
-    console.error(`Glitch del bot (Workers AI) para ${fromE164} (id ${currentMsgId}) — escalado silencioso al inbox`);
+    console.error(`Glitch del bot (Workers AI) para ${fromE164} (id ${currentMsgId}) — encolado para auto-recuperación`);
 
-    // 1. Marcar el mensaje entrante como escalado (no mandamos nada al cliente).
+    // AUTO-RECUPERACIÓN (decisión de César): en vez de quedar mudo o escalarte de
+    // una, encolamos la conversación. El cron /api/cron/bot-retry reprocesa el último
+    // mensaje cada ~2 min; cuando el LLM se recupera, el bot responde SOLO y retoma.
+    // Solo te escala si tras varios intentos sigue caído. NO le mandamos nada al
+    // cliente ahora (se respeta el silent).
     try {
       await env.DB.prepare(
-        `UPDATE whatsapp_messages SET escalated = 1 WHERE meta_message_id = ? AND direction = 'in'`,
-      ).bind(msg.id).run();
+        `INSERT INTO bot_retry_queue (phone, last_in_id, attempts, created_at)
+         VALUES (?, ?, 0, datetime('now'))
+         ON CONFLICT(phone) DO UPDATE SET last_in_id = excluded.last_in_id`,
+      ).bind(fromE164, msg.id).run();
     } catch { /* best-effort */ }
 
-    // 2. Latido del error del LLM (para la salud del bot en el Centro de Control).
+    // Latido del error del LLM → semáforo rojo del Bot IA (visibilidad inmediata).
     try {
       await env.DB.prepare(
         `INSERT INTO system_heartbeat (key, last_at) VALUES ('bot_llm_error', datetime('now'))
          ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
       ).run();
-    } catch { /* best-effort */ }
-
-    // 3. Aviso por email throttled (1 cada 30 min) para no spamear ante fallos seguidos.
-    try {
-      const recentAlert = await env.DB.prepare(
-        `SELECT 1 AS x FROM system_heartbeat WHERE key = 'bot_llm_alert_at' AND last_at > datetime('now','-30 minutes')`,
-      ).first<{ x: number }>();
-      if (!recentAlert) {
-        await env.DB.prepare(
-          `INSERT INTO system_heartbeat (key, last_at) VALUES ('bot_llm_alert_at', datetime('now'))
-           ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
-        ).run();
-        await sendEscalationEmail(
-          {
-            guestMessage: bodyText,
-            guestPhone: fromE164,
-            reservation,
-            reason: "⚠️ El bot no pudo responder por una falla técnica del LLM (Workers AI). El cliente quedó sin respuesta y la conversación quedó marcada como escalada en el inbox — atendelo a mano. Si se repite seguido, el modelo de IA está fallando de forma intermitente.",
-          },
-          { RESEND_API_KEY: env.RESEND_API_KEY ?? "", EMAIL_FROM: env.EMAIL_FROM ?? "", EMAIL_REPLY_TO: env.EMAIL_REPLY_TO },
-        );
-      }
     } catch { /* best-effort */ }
 
     return;
