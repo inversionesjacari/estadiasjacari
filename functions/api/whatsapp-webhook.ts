@@ -427,15 +427,31 @@ async function processIncomingMessage(
   let ruleName: string | null;
   let escalate: boolean;
 
+  // 📸 CÁMARA: marcamos que llegamos al procesamiento del bot (antes de la IA).
+  try {
+    await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'PRE_LLM', ?)`)
+      .bind(fromE164, bodyText.slice(0, 60)).run();
+  } catch { /* best-effort */ }
+
   // Pasamos `env` completo: incluye DB, AI, PayPal y las AIRBNB_ICAL_* que el
   // quote flow usa para verificar disponibilidad real antes de cotizar.
-  const quoteResult = await handleQuoteIncoming(
-    fromE164,
-    bodyText,
-    today,
-    env,
-    /* hasActiveReservation: */ !!reservation,
-  );
+  let quoteResult: Awaited<ReturnType<typeof handleQuoteIncoming>>;
+  try {
+    quoteResult = await handleQuoteIncoming(
+      fromE164,
+      bodyText,
+      today,
+      env,
+      /* hasActiveReservation: */ !!reservation,
+    );
+  } catch (botErr) {
+    // 📸 CÁMARA: el bot LANZÓ una excepción → la guardamos exacta (con stack).
+    try {
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'THREW', ?)`)
+        .bind(fromE164, `${(botErr as Error).message} :: ${String((botErr as Error).stack ?? "").slice(0, 500)}`).run();
+    } catch { /* best-effort */ }
+    return;
+  }
 
   if (quoteResult) {
     // Quote flow tomó este mensaje

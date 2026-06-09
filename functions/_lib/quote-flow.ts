@@ -318,6 +318,12 @@ async function gatherQuoteData(
     // Mejor el silencio que un mensaje raro o una falsa promesa de "un humano
     // te responde". El bot se recupera solo en el próximo mensaje del cliente.
     console.error("conversational-bot glitch (silencioso):", botResult.error);
+    // 📸 CÁMARA: guardar el error EXACTO del LLM en D1 para diagnóstico.
+    try {
+      await env.DB.prepare(
+        `INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'LLM_GLITCH', ?)`,
+      ).bind(phone, String(botResult.error ?? "sin detalle").slice(0, 800)).run();
+    } catch { /* best-effort */ }
     return {
       reply: "",
       silent: true,
