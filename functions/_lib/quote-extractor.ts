@@ -23,7 +23,8 @@ export type PropertySlug =
   | "casa-marea"
   | "centro-morazan"
   | "casa-lara-townhouse"
-  | "la-florida";
+  | "la-florida"
+  | "las-gemelas-tela";
 
 export type City = "La Ceiba" | "Tela" | "Tegucigalpa";
 
@@ -172,6 +173,7 @@ Extrae los datos actualizados.`;
     "centro-morazan",
     "casa-lara-townhouse",
     "la-florida",
+    "las-gemelas-tela",
   ];
   const validCities: City[] = ["La Ceiba", "Tela", "Tegucigalpa"];
   const validIntents = [

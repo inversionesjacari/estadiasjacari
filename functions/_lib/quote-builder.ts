@@ -59,6 +59,16 @@ export const PROPERTY_PRICING: Record<PropertySlug, PropertyPricing> = {
     pricePerNightUSD: 90,
     cleaningFeeUSD: 14,
   },
+  "las-gemelas-tela": {
+    slug: "las-gemelas-tela",
+    name: "Las Gemelas (Casa Brisa + Casa Marea)",
+    city: "Tela",
+    capacity: 12,
+    pricePerNightHNL: 4900,
+    cleaningFeeHNL: 700,
+    pricePerNightUSD: 176,
+    cleaningFeeUSD: 28,
+  },
   "centro-morazan": {
     slug: "centro-morazan",
     name: "Centro Morazán",

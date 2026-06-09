@@ -220,6 +220,27 @@ export async function checkRangeAvailable(
 }
 
 /**
+ * Las Gemelas juntas (Casa Brisa + Casa Marea): disponibles SOLO si AMBAS casas
+ * lo están en el rango. Reusa la verificación individual de cada casa (iCal +
+ * LAS_GEMELAS + D1) → no introduce riesgo nuevo de doble reserva.
+ */
+export async function checkGemelasAvailable(
+  checkInIso: string,
+  checkOutIso: string,
+  env: AvailabilityEnv,
+): Promise<RangeAvailability> {
+  const [brisa, marea] = await Promise.all([
+    checkRangeAvailable("casa-brisa", checkInIso, checkOutIso, env),
+    checkRangeAvailable("casa-marea", checkInIso, checkOutIso, env),
+  ]);
+  return {
+    available: brisa.available && marea.available,
+    verified: brisa.verified && marea.verified,
+    conflictDates: Array.from(new Set([...brisa.conflictDates, ...marea.conflictDates])),
+  };
+}
+
+/**
  * Convierte iCal a fechas bloqueadas. DTSTART inclusivo, DTEND exclusivo.
  * onlyReserved: solo cuenta VEVENTs con SUMMARY="Reserved" (iCals cruzados).
  */

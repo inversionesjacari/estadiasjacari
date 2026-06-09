@@ -28,6 +28,7 @@ const PHOTO_CONFIG: Record<PropertySlug, { folder: string; ext: string }> = {
   "centro-morazan": { folder: "centro-morazan", ext: "jpg" },
   "casa-lara-townhouse": { folder: "casa-lara-townhouse", ext: "jpg" },
   "la-florida": { folder: "la-florida", ext: "jpg" },
+  "las-gemelas-tela": { folder: "casa-brisa", ext: "png" }, // gemelas → fotos de Casa Brisa
 };
 
 /**

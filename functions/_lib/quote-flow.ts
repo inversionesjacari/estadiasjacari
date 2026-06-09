@@ -28,7 +28,7 @@ import {
 } from "./quote-state";
 import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
-import { checkRangeAvailable, type AvailabilityEnv } from "./availability";
+import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "./availability";
 import type { PropertySlug } from "./quote-extractor";
 import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
 import {
@@ -471,12 +471,10 @@ async function gatherQuoteData(
     let availabilityNote = "";
     let escalateUnverified = false;
     if (quote.available) {
-      const avail = await checkRangeAvailable(
-        mergedData.property!,
-        mergedData.checkIn!,
-        mergedData.checkOut!,
-        env,
-      );
+      // Las Gemelas juntas: verificar que AMBAS casas estén libres (anti doble reserva).
+      const avail = mergedData.property === "las-gemelas-tela"
+        ? await checkGemelasAvailable(mergedData.checkIn!, mergedData.checkOut!, env)
+        : await checkRangeAvailable(mergedData.property!, mergedData.checkIn!, mergedData.checkOut!, env);
       if (avail.verified && !avail.available) {
         // Confirmado: las fechas están ocupadas en Airbnb → NO disponible
         await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
