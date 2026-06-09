@@ -91,6 +91,15 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       /* tabla no existe todavía → ningún número pausado */
     }
 
+    // Descartados de "Pendientes" (botón ✕): phone → dismissed_at. Fail-soft.
+    let dismissed = new Map<string, string>();
+    try {
+      const d = await env.DB.prepare(`SELECT phone, dismissed_at FROM pendientes_dismissed`).all<{ phone: string; dismissed_at: string }>();
+      dismissed = new Map((d.results ?? []).map((x) => [x.phone, x.dismissed_at]));
+    } catch {
+      /* tabla no existe todavía → ninguno descartado */
+    }
+
     return json({
       ok: true,
       conversations: (results ?? []).map((r) => ({
@@ -102,6 +111,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         lastMatchedRule: r.last_matched_rule,
         escalated: r.last_escalated === 1,
         botPaused: paused.has(r.phone),
+        dismissed: ((da) => da != null && da >= r.last_at)(dismissed.get(r.phone)),
         state: r.conv_state,
         lastOutAt: r.last_out_at,
         contactName: r.contact_name,

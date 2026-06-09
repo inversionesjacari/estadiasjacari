@@ -29,6 +29,7 @@ interface Conversation {
   lastMatchedRule: string | null;
   escalated: boolean;
   botPaused: boolean;
+  dismissed: boolean;
   state: string | null;
   lastOutAt: string | null;
   contactName: string | null;
@@ -281,40 +282,50 @@ function PendienteGroup({ label, count, color, children }: { label: string; coun
 }
 
 function PendienteItem({
-  conv, subtitle, accent, onSelect, active,
+  conv, subtitle, accent, onSelect, onDismiss, active,
 }: {
-  conv: Conversation; subtitle: string; accent: string; onSelect: (phone: string) => void; active: boolean;
+  conv: Conversation; subtitle: string; accent: string; onSelect: (phone: string) => void; onDismiss: (phone: string) => void; active: boolean;
 }) {
   const name = conv.reservation?.guestName ?? conv.contactName ?? formatPhone(conv.phone);
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(conv.phone)}
-      className={`w-full text-left rounded-lg border px-2.5 py-2 mb-1.5 last:mb-0 transition hover:brightness-95 ${accent} ${active ? "ring-2 ring-secondary/40" : ""}`}
-    >
-      <div className="flex justify-between items-baseline gap-2">
-        <span className="text-[12px] font-semibold text-primary dark:text-slate-100 truncate">{name}</span>
-        <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">{formatTimeAgo(conv.lastAt)}</span>
-      </div>
-      <p className="text-[11px] text-muted dark:text-slate-400 truncate">{subtitle}</p>
-    </button>
+    <div className={`relative rounded-lg border px-2.5 py-2 mb-1.5 last:mb-0 transition hover:brightness-95 ${accent} ${active ? "ring-2 ring-secondary/40" : ""}`}>
+      <button type="button" onClick={() => onSelect(conv.phone)} className="w-full text-left pr-5">
+        <div className="flex justify-between items-baseline gap-2">
+          <span className="text-[12px] font-semibold text-primary dark:text-slate-100 truncate">{name}</span>
+          <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">{formatTimeAgo(conv.lastAt)}</span>
+        </div>
+        <p className="text-[11px] text-muted dark:text-slate-400 truncate">{subtitle}</p>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDismiss(conv.phone); }}
+        className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded text-muted dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-black/5 dark:hover:bg-white/10 text-[11px] leading-none"
+        title="Descartar de Pendientes (reaparece si el cliente vuelve a escribir)"
+        aria-label="Descartar de Pendientes"
+      >
+        ✕
+      </button>
+    </div>
   );
 }
 
 function PendientesColumn({
-  conversations, onSelect, selectedPhone,
+  conversations, onSelect, onDismiss, selectedPhone,
 }: {
-  conversations: Conversation[]; onSelect: (phone: string) => void; selectedPhone: string | null;
+  conversations: Conversation[]; onSelect: (phone: string) => void; onDismiss: (phone: string) => void; selectedPhone: string | null;
 }) {
   const paused: Conversation[] = [];
   const escalated: Conversation[] = [];
   const awaitingPay: Conversation[] = [];
   const unanswered: Conversation[] = [];
   for (const c of conversations) {
+    if (c.dismissed) continue; // descartado con ✕ → fuera de Pendientes hasta que el cliente vuelva a escribir
     if (c.botPaused) paused.push(c);
     else if (c.escalated) escalated.push(c);
     else if (c.state && PAY_STATES.has(c.state)) awaitingPay.push(c);
-    else if ((!c.lastOutAt || c.lastAt > c.lastOutAt) && minutesSince(c.lastAt) > 30) unanswered.push(c);
+    // "Sin responder" solo entre 30 min y 24 h: pasada la ventana de WhatsApp ya
+    // no es accionable (no se puede mandar texto libre) → sale del panel solo.
+    else if ((!c.lastOutAt || c.lastAt > c.lastOutAt) && minutesSince(c.lastAt) > 30 && minutesSince(c.lastAt) < 24 * 60) unanswered.push(c);
   }
   const total = paused.length + escalated.length + awaitingPay.length + unanswered.length;
 
@@ -331,28 +342,28 @@ function PendientesColumn({
       {paused.length > 0 && (
         <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700 dark:text-amber-400">
           {paused.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/40" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {escalated.length > 0 && (
         <PendienteGroup label="⚠ Escaladas" count={escalated.length} color="text-rose-700 dark:text-rose-400">
           {escalated.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/40" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {awaitingPay.length > 0 && (
         <PendienteGroup label="💳 Esperando pago" count={awaitingPay.length} color="text-emerald-700 dark:text-emerald-400">
           {awaitingPay.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {unanswered.length > 0 && (
         <PendienteGroup label="🕐 Sin responder >30 min" count={unanswered.length} color="text-sky-700 dark:text-sky-400">
           {unanswered.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
@@ -500,6 +511,22 @@ export default function InboxPage() {
       fetchConversations();
     } catch (err) {
       console.error("handleBotRetry error", err);
+    }
+  }, [fetchConversations]);
+
+  // Descartar un chat de la columna "Pendientes" (botón ✕). Reaparece si el
+  // cliente vuelve a escribir (un mensaje más nuevo que el descarte).
+  const handleDismiss = useCallback(async (phone: string): Promise<void> => {
+    try {
+      await fetch("/api/inbox/pendiente-dismiss", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      fetchConversations();
+    } catch (err) {
+      console.error("handleDismiss error", err);
     }
   }, [fetchConversations]);
 
@@ -1009,6 +1036,7 @@ export default function InboxPage() {
         <PendientesColumn
           conversations={conversations}
           onSelect={selectConversation}
+          onDismiss={handleDismiss}
           selectedPhone={selectedPhone}
         />
       </div>
