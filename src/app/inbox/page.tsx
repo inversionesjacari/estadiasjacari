@@ -273,7 +273,7 @@ function minutesSince(iso: string): number {
 
 function PendienteGroup({ label, count, color, children }: { label: string; count: number; color: string; children: React.ReactNode }) {
   return (
-    <div className="px-4 py-3 border-b border-gray-100">
+    <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-800">
       <p className={`text-[10px] font-bold uppercase tracking-wide mb-2 ${color}`}>{label} ({count})</p>
       {children}
     </div>
@@ -293,10 +293,10 @@ function PendienteItem({
       className={`w-full text-left rounded-lg border px-2.5 py-2 mb-1.5 last:mb-0 transition hover:brightness-95 ${accent} ${active ? "ring-2 ring-secondary/40" : ""}`}
     >
       <div className="flex justify-between items-baseline gap-2">
-        <span className="text-[12px] font-semibold text-primary truncate">{name}</span>
-        <span className="text-[10px] text-muted whitespace-nowrap">{formatTimeAgo(conv.lastAt)}</span>
+        <span className="text-[12px] font-semibold text-primary dark:text-slate-100 truncate">{name}</span>
+        <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">{formatTimeAgo(conv.lastAt)}</span>
       </div>
-      <p className="text-[11px] text-muted truncate">{subtitle}</p>
+      <p className="text-[11px] text-muted dark:text-slate-400 truncate">{subtitle}</p>
     </button>
   );
 }
@@ -319,13 +319,13 @@ function PendientesColumn({
   const total = paused.length + escalated.length + awaitingPay.length + unanswered.length;
 
   return (
-    <aside className="hidden lg:flex flex-col w-72 border-l border-gray-200 bg-[#fbfcfc] overflow-y-auto shrink-0">
-      <div className="px-4 py-3 border-b border-gray-200 sticky top-0 bg-[#fbfcfc] z-10">
-        <h3 className="font-bold text-primary text-sm flex items-center gap-1.5">
+    <aside className="hidden lg:flex flex-col w-72 border-l border-gray-200 dark:border-slate-700 bg-[#fbfcfc] dark:bg-slate-900 overflow-y-auto shrink-0">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-slate-700 sticky top-0 bg-[#fbfcfc] dark:bg-slate-900 z-10">
+        <h3 className="font-bold text-primary dark:text-slate-100 text-sm flex items-center gap-1.5">
           📌 Pendientes
           {total > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{total}</span>}
         </h3>
-        <p className="text-[11px] text-muted">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
+        <p className="text-[11px] text-muted dark:text-slate-400">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
       </div>
 
       {paused.length > 0 && (
@@ -345,21 +345,21 @@ function PendientesColumn({
       {awaitingPay.length > 0 && (
         <PendienteGroup label="💳 Esperando pago" count={awaitingPay.length} color="text-emerald-700">
           {awaitingPay.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 dark:border-slate-700 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {unanswered.length > 0 && (
         <PendienteGroup label="🕐 Sin responder >30 min" count={unanswered.length} color="text-sky-700">
           {unanswered.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 dark:border-slate-700 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
 
       {total === 0 && (
         <div className="flex-1 flex items-center justify-center px-6 text-center">
-          <p className="text-muted text-sm">No hay nada pendiente.<br />Todo bajo control. 🌴</p>
+          <p className="text-muted dark:text-slate-400 text-sm">No hay nada pendiente.<br />Todo bajo control. 🌴</p>
         </div>
       )}
     </aside>
@@ -377,6 +377,19 @@ export default function InboxPage() {
   const [loadingConv, setLoadingConv] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // Tema día/noche del inbox. Persiste en localStorage y aplica la clase `dark`
+  // al <html> (Tailwind darkMode:'class'). Solo afecta al inbox en la práctica:
+  // las páginas públicas no usan variantes dark:.
+  const [darkMode, setDarkMode] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setDarkMode(localStorage.getItem("inbox-theme") === "dark");
+  }, []);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.toggle("dark", darkMode);
+    try { localStorage.setItem("inbox-theme", darkMode ? "dark" : "light"); } catch { /* ignore */ }
+  }, [darkMode]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
@@ -613,28 +626,28 @@ export default function InboxPage() {
 
   if (authenticated === null) {
     return (
-      <div className="min-h-screen bg-bg flex items-center justify-center">
-        <p className="text-muted">Cargando...</p>
+      <div className="min-h-screen bg-bg dark:bg-slate-950 flex items-center justify-center">
+        <p className="text-muted dark:text-slate-400">Cargando...</p>
       </div>
     );
   }
 
   if (!authenticated) {
     return (
-      <div className="min-h-screen bg-bg flex items-center justify-center px-4">
+      <div className="min-h-screen bg-bg dark:bg-slate-950 flex items-center justify-center px-4">
         <div className="w-full max-w-sm bg-white rounded-2xl shadow-lg p-8">
-          <h1 className="font-display text-3xl text-primary mb-2">Inbox</h1>
-          <p className="text-muted text-sm mb-6">Acceso privado — Estadías Jacarí</p>
+          <h1 className="font-display text-3xl text-primary dark:text-slate-100 mb-2">Inbox</h1>
+          <p className="text-muted dark:text-slate-400 text-sm mb-6">Acceso privado — Estadías Jacarí</p>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-primary mb-1.5">
+              <label className="block text-sm font-medium text-primary dark:text-slate-100 mb-1.5">
                 Contraseña
               </label>
               <input
                 type="password"
                 name="password"
                 autoFocus
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
+                className="w-full px-4 py-2.5 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
                 required
               />
             </div>
@@ -656,36 +669,44 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="h-screen bg-bg flex flex-col overflow-hidden">
+    <div className="h-screen bg-bg dark:bg-slate-950 flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+      <header className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-4 py-3 flex items-center justify-between">
         <div>
-          <h1 className="font-display text-xl text-primary">Inbox</h1>
-          <p className="text-xs text-muted">Estadías Jacarí · WhatsApp manual</p>
+          <h1 className="font-display text-xl text-primary dark:text-slate-100">Inbox</h1>
+          <p className="text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          <button
+            onClick={() => setDarkMode((d) => !d)}
+            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
+            aria-label="Cambiar tema día/noche"
+            title={darkMode ? "Modo día" : "Modo noche"}
+          >
+            {darkMode ? "☀️" : "🌙"}
+          </button>
           <a
             href="/inbox/operacion"
-            className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted"
+            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
           >
             🛰️ Centro de control
           </a>
           <a
             href="/inbox/conocimiento"
-            className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted"
+            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
           >
             🤖 Conocimiento del bot
           </a>
           <button
             onClick={fetchConversations}
             disabled={loadingConv}
-            className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted disabled:opacity-50"
+            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50"
           >
             {loadingConv ? "..." : "Refrescar"}
           </button>
           <button
             onClick={handleLogout}
-            className="px-3 py-1.5 text-muted hover:text-primary"
+            className="px-3 py-1.5 text-muted dark:text-slate-400 hover:text-primary dark:text-slate-100"
           >
             Salir
           </button>
@@ -695,9 +716,9 @@ export default function InboxPage() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
-        <aside className="w-80 border-r border-gray-200 bg-white overflow-y-auto">
+        <aside className="w-80 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto">
           {conversations.length === 0 && !loadingConv && (
-            <div className="p-6 text-center text-muted text-sm">
+            <div className="p-6 text-center text-muted dark:text-slate-400 text-sm">
               No hay conversaciones todavía.
               <br />
               Aparecerán cuando los huéspedes escriban.
@@ -708,14 +729,14 @@ export default function InboxPage() {
               <li
                 key={c.phone}
                 onClick={() => selectConversation(c.phone)}
-                className={`px-4 py-3 border-b border-gray-100 border-l-4 cursor-pointer transition flex gap-3 ${
+                className={`px-4 py-3 border-b border-gray-100 dark:border-slate-800 border-l-4 cursor-pointer transition flex gap-3 ${
                   c.botPaused ? "border-l-amber-400" : "border-l-transparent"
                 } ${
                   selectedPhone === c.phone
                     ? "bg-secondary/10"
                     : c.botPaused
                       ? "bg-amber-50 hover:bg-amber-100/70"
-                      : "hover:bg-gray-50"
+                      : "hover:bg-gray-50 dark:hover:bg-slate-800"
                 }`}
               >
                 <Avatar
@@ -725,10 +746,10 @@ export default function InboxPage() {
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between mb-0.5 gap-2">
-                    <span className="font-semibold text-primary text-sm truncate">
+                    <span className="font-semibold text-primary dark:text-slate-100 text-sm truncate">
                       {c.reservation?.guestName ?? c.contactName ?? formatPhone(c.phone)}
                     </span>
-                    <span className="text-[10px] text-muted whitespace-nowrap">
+                    <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">
                       {formatTimeAgo(c.lastAt)}
                     </span>
                   </div>
@@ -738,7 +759,7 @@ export default function InboxPage() {
                       {c.reservation.checkIn && ` · ${c.reservation.checkIn}`}
                     </p>
                   )}
-                  <p className="text-xs text-muted truncate">
+                  <p className="text-xs text-muted dark:text-slate-400 truncate">
                     {c.lastDirection === "out" && <span className="text-secondary">Tú: </span>}
                     {c.lastMessage}
                   </p>
@@ -759,7 +780,7 @@ export default function InboxPage() {
                       </span>
                     )}
                     {!c.reservation && (
-                      <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-1.5 py-0.5 rounded">
                         sin reserva
                       </span>
                     )}
@@ -773,7 +794,7 @@ export default function InboxPage() {
         {/* Detalle de conversación */}
         <main className="flex-1 flex flex-col">
           {!selectedPhone ? (
-            <div className="flex-1 flex items-center justify-center text-muted">
+            <div className="flex-1 flex items-center justify-center text-muted dark:text-slate-400">
               Selecciona una conversación
             </div>
           ) : (
@@ -785,16 +806,16 @@ export default function InboxPage() {
                 const paused = conv?.botPaused ?? false;
                 return (
                   <>
-                    <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
+                    <div className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-6 py-3 flex items-center gap-3">
                       <Avatar name={guestName} phone={selectedPhone} size="lg" />
                       <div className="min-w-0">
-                        <h2 className="font-semibold text-primary leading-tight">
+                        <h2 className="font-semibold text-primary dark:text-slate-100 leading-tight">
                           {guestName ?? formatPhone(selectedPhone)}
                         </h2>
                         {/* Solo mostrar el teléfono debajo si arriba estamos
                             mostrando un nombre — sino sería un duplicado. */}
                         {guestName && (
-                          <p className="text-xs text-muted">{formatPhone(selectedPhone)}</p>
+                          <p className="text-xs text-muted dark:text-slate-400">{formatPhone(selectedPhone)}</p>
                         )}
                         {conv?.reservation && (
                           <p className="text-[11px] text-secondary mt-0.5">
@@ -838,7 +859,7 @@ export default function InboxPage() {
               {/* Mensajes */}
               <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6 space-y-3">
                 {loadingMsgs && messages.length === 0 && (
-                  <p className="text-center text-muted text-sm">Cargando...</p>
+                  <p className="text-center text-muted dark:text-slate-400 text-sm">Cargando...</p>
                 )}
                 {messages.map((m) => (
                   <div
@@ -849,11 +870,11 @@ export default function InboxPage() {
                       className={`max-w-[70%] rounded-2xl px-4 py-2 ${
                         m.direction === "out"
                           ? "bg-secondary text-white"
-                          : "bg-white border border-gray-200 text-primary"
+                          : "bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-primary dark:text-slate-100"
                       }`}
                     >
                       <p className="text-sm whitespace-pre-wrap break-words">{m.body}</p>
-                      <p className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === "out" ? "text-white/70 justify-end" : "text-muted"}`}>
+                      <p className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === "out" ? "text-white/70 justify-end" : "text-muted dark:text-slate-400"}`}>
                         <span>{formatDate(m.createdAt)}</span>
                         {m.matchedRule && m.matchedRule !== "manual_inbox" && <span>· 🤖 {m.matchedRule}</span>}
                         {m.escalated && <span>· ⚠</span>}
@@ -868,17 +889,17 @@ export default function InboxPage() {
               {/* Composer */}
               <form
                 onSubmit={handleSend}
-                className="bg-white border-t border-gray-200 p-4 flex gap-3 items-end relative"
+                className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 p-4 flex gap-3 items-end relative"
               >
                 {/* Emoji picker — popover por categorías, scrolleable */}
                 {emojiOpen && (
                   <div
-                    className="absolute bottom-full left-4 mb-2 bg-white border border-gray-200 rounded-xl shadow-lg z-10 overflow-y-auto"
+                    className="absolute bottom-full left-4 mb-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-10 overflow-y-auto"
                     style={{ width: "20rem", maxHeight: "18rem" }}
                   >
                     {EMOJI_CATEGORIES.map((cat) => (
                       <div key={cat.label} className="p-2">
-                        <p className="text-[10px] uppercase tracking-wide text-muted px-1 mb-1 sticky top-0 bg-white">
+                        <p className="text-[10px] uppercase tracking-wide text-muted dark:text-slate-400 px-1 mb-1 sticky top-0 bg-white dark:bg-slate-800">
                           {cat.label}
                         </p>
                         <div className="grid grid-cols-8 gap-1">
@@ -890,7 +911,7 @@ export default function InboxPage() {
                                 insertAtCursor(e);
                                 // no cerramos: permite insertar varios seguidos
                               }}
-                              className="text-xl hover:bg-gray-100 rounded p-1 transition"
+                              className="text-xl hover:bg-gray-100 dark:hover:bg-slate-700 rounded p-1 transition"
                               aria-label={`Insertar ${e}`}
                             >
                               {e}
@@ -907,7 +928,7 @@ export default function InboxPage() {
                   type="button"
                   onClick={() => setEmojiOpen((v) => !v)}
                   disabled={sending}
-                  className="text-2xl text-muted hover:text-primary transition disabled:opacity-50 self-end pb-1"
+                  className="text-2xl text-muted dark:text-slate-400 hover:text-primary dark:text-slate-100 transition disabled:opacity-50 self-end pb-1"
                   aria-label="Abrir selector de emojis"
                 >
                   😊
@@ -933,7 +954,7 @@ export default function InboxPage() {
                   }}
                   placeholder="Escribir mensaje... (Enter para nueva línea, Cmd+Enter para enviar)"
                   rows={1}
-                  className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
+                  className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
                   style={{ maxHeight: "200px" }}
                   disabled={sending}
                 />

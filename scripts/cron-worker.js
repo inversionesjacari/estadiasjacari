@@ -1,87 +1,86 @@
 /**
  * Cloudflare Worker — dispara los crons del sitio Estadías Jacarí.
  *
- * Llama por HTTP a los endpoints `/api/cron/*` del sitio (Pages Functions) en
- * los horarios programados. Se separa en un Worker porque Cloudflare Pages NO
- * soporta Cron Triggers (solo Workers). El Worker no necesita base de datos:
- * toda la lógica vive en los endpoints del sitio; este solo los "patea" con
- * el secreto.
+ * Llama por HTTP a los endpoints `/api/cron/*` del sitio (Pages Functions). Se
+ * separa en un Worker porque Cloudflare Pages NO soporta Cron Triggers. El Worker
+ * no necesita base de datos: la lógica vive en los endpoints; este solo los
+ * "patea" con el secreto.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * MAPA DE TRIGGERS (todos en hora Honduras UTC-6, sin daylight saving):
+ * ⚠️ UN SOLO CRON TRIGGER: `* * * * *` (cada minuto).
  *
- *   ┌─────────────┬────────┬────────────────────────────────────────────────────┐
- *   │ Cron UTC    │ HN     │ Endpoint → Hito                                     │
- *   ├─────────────┼────────┼────────────────────────────────────────────────────┤
- *   │  0 13 * * * │  7 AM  │ /api/cron/whatsapp-operations?hito=morning-staff    │
- *   │  0 15 * * * │  9 AM  │ /api/cron/whatsapp-operations?hito=morning-guests   │
- *   │ 30 17 * * * │ 11:30  │ /api/cron/whatsapp-operations?hito=checkout-cleaning│
- *   │  0  0 * * * │  6 PM  │ /api/cron/checkin-reminders (Correo #2 + WA T-1d)  │
- *   └─────────────┴────────┴────────────────────────────────────────────────────┘
+ * El plan gratis de Cloudflare permite máximo 5 Cron Triggers por Worker. En vez
+ * de un trigger por tarea (que choca con ese límite), usamos UN trigger cada
+ * minuto y `dueEndpoints()` decide qué disparar según la hora UTC. Así podemos
+ * tener tantas tareas como queramos con un solo trigger.
  *
- * SETUP (una sola vez por TRIGGER, todo desde el dashboard):
+ * Horarios (UTC; Honduras = UTC-6):
+ *   cada 2 min   → bot-retry          (auto-recuperación del bot tras glitch del LLM)
+ *   cada 10 min  → quote-followups    (seguimiento de cotizaciones a medias)
+ *   cada hora    → paypal-income      (ingreso Airbnb vía PayPal)
+ *   00:00 UTC    → checkin-reminders  (6 PM HN — Correo #2 + WA T-1 día)
+ *   11:30 UTC    → bot-qa-run         (5:30 AM HN — QA diario del bot)
+ *   13:00/15:00/17:30 UTC → whatsapp-operations (avisos operativos — DESACTIVADO
+ *                  hasta cargar property_contacts; descomentar abajo cuando esté)
  *
- * 1. Cloudflare Dashboard → Workers & Pages → estadia-jacari-cron → Edit code.
- *    Pegar TODO este archivo → Deploy.
+ * SETUP (una sola vez):
+ *   1. Workers & Pages → estadia-jacari-cron → Edit code → pegar TODO → Deploy.
+ *   2. Settings → Variables: CRON_SECRET = (el mismo de Pages, encrypted).
+ *   3. Settings → Triggers → Cron Triggers: BORRAR todos los triggers viejos y
+ *      dejar UNO SOLO: `* * * * *`. Deploy.
  *
- * 2. Settings → Variables and Secrets:
- *      CRON_SECRET = (el mismo valor que está en Pages como CRON_SECRET, encrypted)
- *
- * 3. Settings → Triggers → Cron Triggers → Add Cron Trigger (UNO POR EXPRESIÓN):
- *      a) Expresión: 0 13 * * *   (= 7 AM HN — limpieza + seguridad)
- *      b) Expresión: 0 15 * * *   (= 9 AM HN — huéspedes)
- *      c) Expresión: 30 17 * * *  (= 11:30 AM HN — checkout limpieza)
- *      d) Expresión: 0 0 * * *    (= 6 PM HN — recordatorio T-1 día, ya existía)
- *    Add → Deploy.
- *
- * 4. (Opcional) Eliminar el trigger viejo si quedó duplicado.
- *
- * PRUEBA MANUAL: abre la URL del Worker con ?secret=TU_SECRET&hito=<hito>:
- *   - ?secret=...&hito=checkin    → /api/cron/checkin-reminders (sin querystring extra)
- *   - ?secret=...&hito=staff      → ?hito=morning-staff
- *   - ?secret=...&hito=guests     → ?hito=morning-guests
- *   - ?secret=...&hito=cleaning   → ?hito=checkout-cleaning
- *   - (sin hito)                  → default = checkin (compatibilidad anterior)
+ * PRUEBA MANUAL: abrir la URL del Worker con ?secret=TU_SECRET&hito=<hito>
+ *   (hitos válidos: checkin, staff, guests, cleaning, followups, income,
+ *    income-debug, qa, retry).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 const BASE = 'https://estadiasjacari.pages.dev';
 
-// Mapeo cron expression → URL completa del endpoint a disparar.
-// Usado por el handler `scheduled` para saber qué pegarle según qué cron lo invocó.
-const CRON_DISPATCH = {
-  '0 0 * * *':    BASE + '/api/cron/checkin-reminders',
-  '0 13 * * *':   BASE + '/api/cron/whatsapp-operations?hito=morning-staff',
-  '0 15 * * *':   BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
-  '30 17 * * *':  BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',
-  '*/10 * * * *': BASE + '/api/cron/quote-followups',  // cada 10 min — seguimiento de cotizaciones a medias
-  '0 * * * *':    BASE + '/api/cron/paypal-income',    // cada hora — ingreso Airbnb vía PayPal Transaction Search
-  '30 11 * * *':  BASE + '/api/inbox/bot-qa-run',      // 5:30 AM HN — QA del bot (revisión diaria de conversaciones)
-  '*/2 * * * *':  BASE + '/api/cron/bot-retry',        // cada 2 min — AUTO-RECUPERACIÓN del bot (reprocesa glitches del LLM)
-};
+/**
+ * Dada la hora del tick (UTC), devuelve los endpoints que toca disparar ahora.
+ * Un solo Cron Trigger `* * * * *` invoca esto cada minuto.
+ */
+function dueEndpoints(date) {
+  const h = date.getUTCHours();
+  const m = date.getUTCMinutes();
+  const urls = [];
+
+  if (m % 2 === 0)  urls.push(BASE + '/api/cron/bot-retry');        // cada 2 min
+  if (m % 10 === 0) urls.push(BASE + '/api/cron/quote-followups');  // cada 10 min
+  if (m === 0)      urls.push(BASE + '/api/cron/paypal-income');    // cada hora
+
+  if (h === 0  && m === 0)  urls.push(BASE + '/api/cron/checkin-reminders'); // 6 PM HN
+  if (h === 11 && m === 30) urls.push(BASE + '/api/inbox/bot-qa-run');       // 5:30 AM HN
+
+  // Avisos operativos — DESCOMENTAR cuando property_contacts esté cargado:
+  // if (h === 13 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-staff');    // 7 AM HN
+  // if (h === 15 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-guests');   // 9 AM HN
+  // if (h === 17 && m === 30) urls.push(BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning');// 11:30 HN
+
+  return urls;
+}
 
 // Mapeo manual ?hito= → URL (usado por el handler `fetch` para test).
 const MANUAL_DISPATCH = {
-  checkin:   BASE + '/api/cron/checkin-reminders',
-  staff:     BASE + '/api/cron/whatsapp-operations?hito=morning-staff',
-  guests:    BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
-  cleaning:  BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',
-  followups: BASE + '/api/cron/quote-followups',
-  income:        BASE + '/api/cron/paypal-income',          // corre de verdad y cachea
-  'income-debug': BASE + '/api/cron/paypal-income?debug=1', // muestra las txns de Airbnb que matchea, SIN escribir
-  qa:            BASE + '/api/inbox/bot-qa-run',            // QA del bot: revisa conversaciones y guarda hallazgos
-  retry:         BASE + '/api/cron/bot-retry',             // AUTO-RECUPERACIÓN: reprocesa la cola de glitches del LLM
+  checkin:        BASE + '/api/cron/checkin-reminders',
+  staff:          BASE + '/api/cron/whatsapp-operations?hito=morning-staff',
+  guests:         BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
+  cleaning:       BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',
+  followups:      BASE + '/api/cron/quote-followups',
+  income:         BASE + '/api/cron/paypal-income',          // corre de verdad y cachea
+  'income-debug': BASE + '/api/cron/paypal-income?debug=1',  // muestra txns Airbnb SIN escribir
+  qa:             BASE + '/api/inbox/bot-qa-run',            // QA del bot
+  retry:          BASE + '/api/cron/bot-retry',              // auto-recuperación del bot
 };
 
 export default {
-  // Disparo automático por Cron Trigger. event.cron = la expresión que disparó.
+  // Disparo automático. UN solo trigger `* * * * *` → corre cada minuto.
   async scheduled(event, env, ctx) {
-    const target = CRON_DISPATCH[event.cron];
-    if (!target) {
-      console.error(`Cron expresión desconocida: "${event.cron}"`);
-      return;
+    const now = new Date(event.scheduledTime);
+    for (const url of dueEndpoints(now)) {
+      ctx.waitUntil(trigger(url, env));
     }
-    ctx.waitUntil(trigger(target, env));
   },
 
   // Disparo manual (para probar). ?secret=... obligatorio; ?hito=... opcional.
