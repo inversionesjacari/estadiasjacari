@@ -329,30 +329,30 @@ function PendientesColumn({
       </div>
 
       {paused.length > 0 && (
-        <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700">
+        <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700 dark:text-amber-400">
           {paused.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 bg-amber-50" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/40" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {escalated.length > 0 && (
-        <PendienteGroup label="⚠ Escaladas" count={escalated.length} color="text-rose-700">
+        <PendienteGroup label="⚠ Escaladas" count={escalated.length} color="text-rose-700 dark:text-rose-400">
           {escalated.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 bg-rose-50" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/40" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {awaitingPay.length > 0 && (
-        <PendienteGroup label="💳 Esperando pago" count={awaitingPay.length} color="text-emerald-700">
+        <PendienteGroup label="💳 Esperando pago" count={awaitingPay.length} color="text-emerald-700 dark:text-emerald-400">
           {awaitingPay.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 dark:border-slate-700 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={`${PAY_LABEL[c.state ?? ""] ?? "En pago"}${c.reservation?.propertySlug ? ` · ${PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug}` : ""}`} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {unanswered.length > 0 && (
-        <PendienteGroup label="🕐 Sin responder >30 min" count={unanswered.length} color="text-sky-700">
+        <PendienteGroup label="🕐 Sin responder >30 min" count={unanswered.length} color="text-sky-700 dark:text-sky-400">
           {unanswered.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 dark:border-slate-700 bg-white" onSelect={onSelect} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={c.lastMessage} accent="border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800" onSelect={onSelect} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
@@ -652,7 +652,7 @@ export default function InboxPage() {
               />
             </div>
             {loginError && (
-              <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <p className="text-red-600 dark:text-red-300 text-sm bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 rounded-lg px-3 py-2">
                 {loginError}
               </p>
             )}
@@ -716,7 +716,7 @@ export default function InboxPage() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
-        <aside className="w-80 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto">
+        <aside className="w-80 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 dark:bg-slate-800 overflow-y-auto">
           {conversations.length === 0 && !loadingConv && (
             <div className="p-6 text-center text-muted dark:text-slate-400 text-sm">
               No hay conversaciones todavía.
@@ -735,7 +735,7 @@ export default function InboxPage() {
                   selectedPhone === c.phone
                     ? "bg-secondary/10"
                     : c.botPaused
-                      ? "bg-amber-50 hover:bg-amber-100/70"
+                      ? "bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100/70 dark:hover:bg-amber-900/40"
                       : "hover:bg-gray-50 dark:hover:bg-slate-800"
                 }`}
               >
@@ -765,12 +765,12 @@ export default function InboxPage() {
                   </p>
                   <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                     {c.botPaused && (
-                      <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700/50 px-1.5 py-0.5 rounded">
                         ⏸ Bot en pausa
                       </span>
                     )}
                     {c.escalated && (
-                      <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded">
                         ⚠ escalado
                       </span>
                     )}
