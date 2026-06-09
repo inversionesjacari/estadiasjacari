@@ -16,6 +16,11 @@
 //
 
 const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+// Red de respaldo: si el modelo principal (70B) agota sus reintentos, caemos a un
+// modelo más chico y de OTRO backend (8B "-fast", vigente, no deprecado). Responde
+// la mayoría de las veces que el 70B tiene un hipo → el cliente recibe respuesta
+// (quizá un poco más simple) en vez de silencio.
+const FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 export interface WorkersAIEnv {
   /** Cloudflare Workers AI binding. Variable name en Cloudflare Pages debe ser "AI". */
@@ -78,12 +83,13 @@ function extractTokens(result: unknown): number {
 async function aiRunWithRetry(
   env: WorkersAIEnv,
   payload: unknown,
+  model: string,
   attempts = 5,
 ): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await env.AI!.run(MODEL, payload as Parameters<Ai["run"]>[1]);
+      return await env.AI!.run(model as Parameters<Ai["run"]>[0], payload as Parameters<Ai["run"]>[1]);
     } catch (err) {
       lastErr = err;
       if (i < attempts - 1) {
@@ -95,6 +101,20 @@ async function aiRunWithRetry(
     }
   }
   throw lastErr;
+}
+
+/**
+ * Corre el modelo PRINCIPAL (70B) con reintentos; si agota todos, cae al modelo
+ * de RESPALDO (8B). Así un hipo del 70B no deja al cliente sin respuesta — la red
+ * de respaldo que pidió César.
+ */
+async function aiRunWithFallback(env: WorkersAIEnv, payload: unknown): Promise<unknown> {
+  try {
+    return await aiRunWithRetry(env, payload, MODEL, 5);
+  } catch (errPrimary) {
+    console.error("Workers AI 70B falló, probando respaldo 8B:", (errPrimary as Error).message);
+    return await aiRunWithRetry(env, payload, FALLBACK_MODEL, 2);
+  }
 }
 
 /**
@@ -115,7 +135,7 @@ export async function callWorkersAI(
   }
 
   try {
-    const result = await aiRunWithRetry(env, {
+    const result = await aiRunWithFallback(env, {
       messages,
       temperature: opts.temperature ?? 0.1,
       max_tokens: opts.maxTokens ?? 512,
@@ -154,7 +174,7 @@ export async function callWorkersAIJson<T = unknown>(
   }
 
   try {
-    const result = await aiRunWithRetry(env, {
+    const result = await aiRunWithFallback(env, {
       messages,
       temperature: opts.temperature ?? 0,
       max_tokens: opts.maxTokens ?? 512,
