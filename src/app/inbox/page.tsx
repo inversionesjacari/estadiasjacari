@@ -482,6 +482,27 @@ export default function InboxPage() {
     }
   }, [fetchConversations]);
 
+  // "Que el bot retome": encola el chat para que el cron de auto-recuperación
+  // reprocese el último mensaje y el bot responda solo (útil si quedó mudo por un
+  // crash del LLM). Seguro de apretar: el cron lo descarta si ya hubo respuesta.
+  const handleBotRetry = useCallback(async (phone: string): Promise<void> => {
+    try {
+      const res = await fetch("/api/inbox/bot-retry-now", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      window.alert(data.ok
+        ? "✅ Listo. El bot va a retomar este chat en 1-2 min (si nadie lo atendió a mano)."
+        : `No se pudo: ${data.error ?? "error"}`);
+      fetchConversations();
+    } catch (err) {
+      console.error("handleBotRetry error", err);
+    }
+  }, [fetchConversations]);
+
   useEffect(() => {
     fetchConversations();
   }, [fetchConversations]);
@@ -842,15 +863,27 @@ export default function InboxPage() {
                         />
                         {paused ? "⏸ Bot en pausa · le respondés vos" : "🤖 Bot activo · responde solo"}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => { if (selectedPhone) (paused ? handleResumeBot : handlePauseBot)(selectedPhone); }}
-                        className={paused
-                          ? "shrink-0 text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1 whitespace-nowrap transition"
-                          : "shrink-0 text-[12px] font-semibold text-green-900/70 bg-white/70 border border-green-300 hover:bg-white rounded-lg px-3 py-1 whitespace-nowrap transition"}
-                      >
-                        {paused ? "Reactivar bot" : "Pausar bot"}
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!paused && (
+                          <button
+                            type="button"
+                            onClick={() => { if (selectedPhone) handleBotRetry(selectedPhone); }}
+                            className="text-[12px] font-semibold text-slate-700 bg-white/80 border border-slate-300 hover:bg-white rounded-lg px-3 py-1 whitespace-nowrap transition"
+                            title="Reprocesa el último mensaje: si el bot quedó mudo por un crash, lo retoma solo en 1-2 min"
+                          >
+                            🔄 Que el bot retome
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { if (selectedPhone) (paused ? handleResumeBot : handlePauseBot)(selectedPhone); }}
+                          className={paused
+                            ? "text-[12px] font-semibold text-white bg-secondary hover:opacity-90 rounded-lg px-3 py-1 whitespace-nowrap transition"
+                            : "text-[12px] font-semibold text-green-900/70 bg-white/70 border border-green-300 hover:bg-white rounded-lg px-3 py-1 whitespace-nowrap transition"}
+                        >
+                          {paused ? "Reactivar bot" : "Pausar bot"}
+                        </button>
+                      </div>
                     </div>
                   </>
                 );
