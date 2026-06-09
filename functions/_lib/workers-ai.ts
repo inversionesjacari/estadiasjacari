@@ -43,6 +43,10 @@ export interface AIJsonResponse<T> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Texto crudo del modelo cuando NO parsea como JSON. Habilita el "modo
+   *  degradado": si Cloudflare rompe el modo JSON del modelo (y responde texto
+   *  plano), usamos ese texto como respuesta en vez de descartarlo. */
+  rawText?: string;
   tokensUsed: number;
 }
 
@@ -194,6 +198,7 @@ export async function callWorkersAIJson<T = unknown>(
     return {
       ok: false,
       error: `Respuesta no-JSON del modelo: ${rawText.slice(0, 300)}`,
+      rawText,
       tokensUsed,
     };
   } catch (err) {

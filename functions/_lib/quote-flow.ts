@@ -324,6 +324,20 @@ async function gatherQuoteData(
         `INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'LLM_GLITCH', ?)`,
       ).bind(phone, String(botResult.error ?? "sin detalle").slice(0, 800)).run();
     } catch { /* best-effort */ }
+
+    // MODO DEGRADADO: si el modelo respondió en texto plano (no JSON) — pasa
+    // cuando Cloudflare rompe el modo JSON del modelo — usamos ese texto como
+    // respuesta en vez de callar. El bot conversa (sin extracción estructurada),
+    // mucho mejor que el silencio.
+    if (botResult.degradedReply) {
+      return {
+        reply:           botResult.degradedReply,
+        escalateToOwner: false,
+        ruleName:        "bot_text_mode",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
+
     return {
       reply: "",
       silent: true,

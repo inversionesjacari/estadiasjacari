@@ -97,6 +97,10 @@ export interface ConversationalResponse {
   tokensUsed: number;
   /** Mensaje de error si ok=false. */
   error?: string;
+  /** MODO DEGRADADO: si el modelo respondió en texto plano (no JSON) — pasa cuando
+   *  Cloudflare cambia el backend del modelo y rompe el modo JSON — acá va ese
+   *  texto para usarlo como respuesta en vez de callar. */
+  degradedReply?: string;
 }
 
 // Schema que debe retornar el modelo
@@ -178,6 +182,14 @@ export async function runConversationalBot(
   );
 
   if (!result.ok || !result.data) {
+    // MODO DEGRADADO: si el modelo RESPONDIÓ pero en texto plano (no JSON) — pasa
+    // cuando Cloudflare cambia el backend (ej. speculative decoding) y rompe el
+    // modo JSON — lo pasamos como degradedReply para usarlo en vez de callar.
+    const raw = result.rawText?.trim();
+    const degradedReply =
+      raw && raw.length > 1 && !raw.startsWith("{") && !raw.startsWith("[")
+        ? raw
+        : undefined;
     return {
       ok:            false,
       reply:         "Disculpa, tuve un problema técnico procesando tu mensaje. Un agente humano te responde en breve. 🙏",
@@ -185,6 +197,7 @@ export async function runConversationalBot(
       intent:        "unknown",
       tokensUsed:    result.tokensUsed,
       error:         result.error,
+      degradedReply,
     };
   }
 
