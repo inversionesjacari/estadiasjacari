@@ -29,8 +29,9 @@ type Env = QuoteFlowEnv & WhatsAppEnv & {
   EMAIL_REPLY_TO?: string;
 };
 
-/** Conversaciones a reprocesar por tick (controla tiempo/costo). */
-const BATCH = 10;
+/** Conversaciones a reprocesar por tick (controla tiempo/costo). Bajo a propósito:
+ *  cada reproceso golpea la IA, y un lote grande la satura (círculo vicioso). */
+const BATCH = 3;
 /** Tras cuántos intentos fallidos seguidos escalar a César. Con cron cada 2 min,
  *  ~6 intentos ≈ 12 min de auto-recuperación antes de pedir ayuda humana. */
 const MAX_ATTEMPTS = 6;
@@ -66,6 +67,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
        ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
     ).run();
   } catch { /* best-effort */ }
+
+  // ── FRENO (circuit breaker): si la IA falló hace muy poco, NO reproceses ──
+  // Reintentar mientras Workers AI está saturado/caído solo lo empeora: es un
+  // círculo vicioso (el reproceso golpea la IA → falla → reencola → la golpea
+  // más → nunca se libera). Si hubo un error del LLM en los últimos 3 min,
+  // saltamos el ciclo para que la IA respire. Cuando se recupere (sin errores
+  // recientes), el cron reanuda solo en el próximo tick.
+  try {
+    const recentErr = await env.DB
+      .prepare(
+        `SELECT 1 AS x FROM system_heartbeat
+          WHERE key = 'bot_llm_error' AND last_at > datetime('now','-3 minutes')`,
+      )
+      .first<{ x: number }>();
+    if (recentErr) {
+      return json({ ok: true, skipped: "LLM con error reciente (<3 min) — ciclo omitido para no saturar la IA" });
+    }
+  } catch { /* best-effort: si el chequeo falla, seguimos normal */ }
 
   let queue: QueueRow[] = [];
   try {

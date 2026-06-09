@@ -110,10 +110,12 @@ async function aiRunWithRetry(
  */
 async function aiRunWithFallback(env: WorkersAIEnv, payload: unknown): Promise<unknown> {
   try {
-    return await aiRunWithRetry(env, payload, MODEL, 5);
+    // Reintentos moderados: 2 al 70B (no 5). Reintentar de más cuando la IA está
+    // saturada solo la satura más. El reintento DIFERIDO (cron) cubre el resto.
+    return await aiRunWithRetry(env, payload, MODEL, 2);
   } catch (errPrimary) {
     console.error("Workers AI 70B falló, probando respaldo 8B:", (errPrimary as Error).message);
-    return await aiRunWithRetry(env, payload, FALLBACK_MODEL, 2);
+    return await aiRunWithRetry(env, payload, FALLBACK_MODEL, 1);
   }
 }
 
