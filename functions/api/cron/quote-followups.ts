@@ -69,8 +69,9 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
         return `Hi! 👋 Were you able to make the transfer${ref}? When you do, *send me a photo of the receipt here* and we'll confirm your booking. 🙏`;
       case "awaiting_paypal_capture":
         return `Hi! 👋 Were you able to complete the payment with the link${ref}? Let me know if you ran into any trouble. 🙏`;
+      case "awaiting_quote_data":
       default:
-        return `Hi! 👋 We're still here to help${ref}. Want me to check availability or a quote? Send me the dates and let's take a look. 🌴`;
+        return buildGatherFollowup(data, ref, true);
     }
   }
 
@@ -85,8 +86,40 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
       return `¡Hola! 👋 ¿Pudiste completar el pago con el link${ref}? Si tuviste algún problema, avisame. 🙏`;
     case "awaiting_quote_data":
     default:
-      return `¡Hola! 👋 Seguimos a tu disposición${ref}. ¿Querés que te ayude a ver disponibilidad o una cotización? Contame las fechas y lo vemos. 🌴`;
+      return buildGatherFollowup(data, ref, false);
   }
+}
+
+/**
+ * Followup cuando la charla quedó juntando datos (awaiting_quote_data).
+ * Reconoce lo que el cliente YA dio (destino, personas, fechas) y pide SOLO lo
+ * que falta. Repreguntar en genérico ("contame las fechas") cuando el cliente
+ * ya las dio se siente como que el bot no lo escuchó, y enfría la venta.
+ * `ref` ya trae el destino (" con X" / " en Ciudad") si lo hay.
+ */
+function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boolean): string {
+  const hasDest = ref !== "";
+  const hasGuests = typeof data.guests === "number" && (data.guests as number) > 0;
+  const hasDates = Boolean(data.checkIn && data.checkOut);
+
+  const missing: string[] = [];
+  if (!hasDest) missing.push(en ? "the destination (La Ceiba, Tela or Tegucigalpa)" : "el destino (La Ceiba, Tela o Tegucigalpa)");
+  if (!hasGuests) missing.push(en ? "how many guests" : "cuántas personas");
+  if (!hasDates) missing.push(en ? "the dates" : "las fechas");
+
+  // Ya tiene todo lo necesario: el flujo cotiza cuando responda; el followup solo reanima.
+  if (missing.length === 0) {
+    return en
+      ? `Hi again! 👋 I've got everything to put your quote together${ref}. Want me to go ahead? 🙏`
+      : `¡Hola de nuevo! 👋 Tengo todo para armarte la cotización${ref}. ¿Le damos? 🙏`;
+  }
+
+  const join = (xs: string[]) =>
+    xs.length === 1 ? xs[0] : `${xs.slice(0, -1).join(", ")} ${en ? "and" : "y"} ${xs[xs.length - 1]}`;
+
+  return en
+    ? `Hi again! 👋 To send your quote${ref}, I just need ${join(missing)}. Whenever you're ready! 🌴`
+    : `¡Hola de nuevo! 👋 Para pasarte la cotización${ref}, solo me falta ${join(missing)}. ¡Cuando gustes! 🌴`;
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
