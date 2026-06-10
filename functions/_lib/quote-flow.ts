@@ -220,7 +220,7 @@ export async function handleQuoteIncoming(
     // Huésped existente sin quote flow en curso → dejar que el rule-bot responda
     if (hasActiveReservation) return null;
     // Potencial nuevo huésped → siempre iniciar el funnel (cualquier mensaje)
-    return gatherQuoteData(phone, text, emptyQuoteData(), todayIso, env, true, pricingMap);
+    return gatherQuoteData(phone, text, emptyQuoteData(), todayIso, env, true, null, pricingMap);
   }
 
   // ── CASO 2: Quote ya entregado, esperando "sí" ─────────────────────────────
@@ -248,7 +248,7 @@ export async function handleQuoteIncoming(
       };
     }
     // No confirmó → volver a recolectar datos (puede haber cambiado fechas)
-    return gatherQuoteData(phone, text, existing.data, todayIso, env, false, pricingMap);
+    return gatherQuoteData(phone, text, existing.data, todayIso, env, false, existing.state, pricingMap);
   }
 
   // ── CASO 2.5: Esperando método de pago ────────────────────────────────────
@@ -306,7 +306,7 @@ export async function handleQuoteIncoming(
   }
 
   // ── CASO 3: awaiting_quote_data — seguir recolectando datos ───────────────
-  return gatherQuoteData(phone, text, existing.data, todayIso, env, false, pricingMap);
+  return gatherQuoteData(phone, text, existing.data, todayIso, env, false, existing.state, pricingMap);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,6 +326,7 @@ async function gatherQuoteData(
   todayIso: string,
   env: QuoteFlowEnv,
   isFirstMessage: boolean,
+  previousState: ConvState | null,
   pricingMap: Record<PropertySlug, PropertyPricing>,
 ): Promise<QuoteFlowResult> {
   // Si es primer mensaje, crear el estado vacío antes de llamar al bot
@@ -606,11 +607,18 @@ async function gatherQuoteData(
   }
 
   // ── Datos incompletos / pregunta suelta — respuesta natural del bot ───────
-  // Si los datos YA estaban completos (el cliente solo hizo una pregunta tras la
-  // cotización), MANTENEMOS "quote_provided" — no retrocedemos a
-  // awaiting_quote_data. Así el seguimiento sabe que ya hay cotización y no
-  // vuelve a pedir las fechas, y el flujo no "se olvida" del quote.
-  const keepState: ConvState = isQuoteDataComplete(mergedData) ? "quote_provided" : "awaiting_quote_data";
+  // MANTENEMOS "quote_provided" SOLO si ya se había entregado una cotización
+  // DISPONIBLE (el estado previo ya era quote_provided) y el cliente solo hizo
+  // una pregunta — así el seguimiento sabe que hay cotización y no re-pregunta.
+  // PERO no PROMOVEMOS desde awaiting_quote_data: si la última cotización fue NO
+  // disponible (quote_unavailable_airbnb deja awaiting_quote_data con los datos
+  // completos), un "ok"/"sí" de cortesía posterior NO debe ascender a
+  // quote_provided → confirmar → pedir pago de algo que no está disponible.
+  // (Bug real: cliente Vania, 10-jun — declinó y el bot le pidió el depósito.)
+  const keepState: ConvState =
+    previousState === "quote_provided" && isQuoteDataComplete(mergedData)
+      ? "quote_provided"
+      : "awaiting_quote_data";
   await upsertState(phone, keepState, mergedData, env.DB);
   return {
     reply:           botResult.reply,
