@@ -260,6 +260,20 @@ export default function BookingWidget({
     );
   }, [range, blockedDates]);
 
+  // ── Noche ocupada vs. día de recambio (check-out) ──────────────────────────
+  // En hospedaje, una noche ocupada (ej. la noche del 11) NO impide salir ese
+  // mismo día: quien llegó antes hace check-out por la mañana y el próximo
+  // huésped entra por la tarde. Por eso el PRIMER día de cada bloque ocupado debe
+  // poder elegirse como CHECK-OUT. Solo los días ocupados cuyo día ANTERIOR
+  // también está ocupado (noches intermedias del bloque) se mantienen
+  // deshabilitados — ahí sí tendrías que dormir una noche ya tomada.
+  const isBlockedNight = (day: Date) =>
+    blockedDates.some((b) => isSameDay(b, day));
+  const disabledBlocked = useMemo(
+    () => blockedDates.filter((b) => blockedDates.some((x) => isSameDay(x, addDays(b, -1)))),
+    [blockedDates],
+  );
+
   const handleProceed = () => {
     // Validación inline — sin alert(), errores junto a cada input
     const errors = {
@@ -466,6 +480,14 @@ export default function BookingWidget({
                 mode="range"
                 selected={range}
                 onSelect={(r) => {
+                  // Un día ocupado puede ser CHECK-OUT (día de recambio) pero
+                  // NUNCA CHECK-IN: no se puede empezar la estadía en una noche
+                  // ya tomada. Si el inicio del rango cae en una noche ocupada,
+                  // descartamos la selección (el usuario re-elige un día libre).
+                  if (r?.from && isBlockedNight(r.from)) {
+                    setRange(undefined);
+                    return;
+                  }
                   setRange(r);
                   setStep("form");
                   setPaypalRevealed(false);
@@ -473,7 +495,9 @@ export default function BookingWidget({
                 disabled={[
                   { before: minDate },
                   { after: maxDate },
-                  ...blockedDates,
+                  // Solo las noches intermedias de un bloque ocupado: el primer
+                  // día de cada bloque queda libre para elegirlo como check-out.
+                  ...disabledBlocked,
                 ]}
                 startMonth={minDate}
                 endMonth={maxDate}
