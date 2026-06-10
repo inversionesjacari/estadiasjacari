@@ -141,6 +141,19 @@ export function isPaymentReported(text: string): boolean {
   return /\b(ya pague|ya page|ya transferi|hice el deposito|ya deposite|pago realizado|pago hecho|ya hice el pago|envie el comprobante|aqui esta el comprobante|adjunto comprobante)\b/.test(t);
 }
 
+/**
+ * En el paso "esperando comprobante", el cliente dice que TODAVÍA no hizo la
+ * transferencia o la posterga (no es un comprobante). Ej: "No", "todavía no",
+ * "primero se valida con la familia", "después", "mañana".
+ */
+export function indicatesNotDoneYet(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return (
+    /^(no|nop|todavia no|aun no|negativo)\b/.test(t) ||
+    /\b(todavia no|aun no|primero|despues|mas tarde|luego|manana|en un rato|ahorita no|no (lo|la) (he|hice)|no he (hecho|transferido|pagado)|estamos validando|se valida|valido con|consulto con|consultar con|aun estamos|todavia estamos)\b/.test(t)
+  );
+}
+
 /** Cliente pide explícitamente que lo llamen por teléfono → mejor lo toma un humano
  *  (César llama). No tiene sentido seguir el flujo automático si quiere hablar. */
 export function isCallRequested(text: string): boolean {
@@ -373,12 +386,28 @@ export async function handleQuoteIncoming(
         tokensUsed:      0,
       };
     }
-    // Cualquier cosa (incluyendo foto/imagen) → escalar al humano para verificar
-    await cancelQuoteFlow(phone, env.DB);
+    // El cliente dice que TODAVÍA no transfirió / lo posterga ("No", "primero se
+    // valida con la familia") → recordatorio amable, SIN asumir comprobante;
+    // mantenemos el estado (sigue esperando la foto del comprobante).
+    if (indicatesNotDoneYet(text)) {
+      return {
+        reply: lang === "en"
+          ? "No problem! 🙏 Whenever you make the transfer, just send me a photo of the receipt here and we'll confirm. No rush."
+          : "¡Sin problema! 🙏 Cuando hagas la transferencia, mandame la foto del comprobante por acá y te confirmamos. Sin apuro.",
+        escalateToOwner: false,
+        ruleName:        "transfer_pending_reminder",
+        tokensUsed:      0,
+      };
+    }
+    // El comprobante REAL es una FOTO (la captura el webhook). Acá llega TEXTO:
+    // pedimos la foto para confirmar, sin asumir que ya la mandó (era el bug de
+    // tratar cualquier texto —incluido "No"— como "recibí tu comprobante").
     return {
-      reply:           T.transferProofReceived(lang),
-      escalateToOwner: true,
-      ruleName:        "transfer_proof_received",
+      reply: lang === "en"
+        ? "Great! 🙏 To confirm your booking, please send me a photo of the transfer receipt here."
+        : "¡Perfecto! 🙏 Para confirmar tu reserva, mandame por acá una foto del comprobante de la transferencia.",
+      escalateToOwner: false,
+      ruleName:        "transfer_ask_proof",
       tokensUsed:      0,
     };
   }
