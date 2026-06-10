@@ -25,6 +25,10 @@ const FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 export interface WorkersAIEnv {
   /** Cloudflare Workers AI binding. Variable name en Cloudflare Pages debe ser "AI". */
   AI?: Ai;
+  /** API key de OpenAI (secret en Cloudflare Pages). Si está presente, el bot usa
+   *  GPT-4o-mini como cerebro principal (respeta JSON, sin cuota diaria de Cloudflare).
+   *  Workers AI queda como respaldo. */
+  OPENAI_API_KEY?: string;
 }
 
 export interface AIMessage {
@@ -214,7 +218,7 @@ export async function callWorkersAIJson<T = unknown>(
  * Intenta parsear JSON de un string, incluyendo limpieza de fences y extracción
  * del primer {} válido si hay texto extra alrededor.
  */
-function tryParseJson<T>(raw: string): T | null {
+export function tryParseJson<T>(raw: string): T | null {
   // 1. Intento directo
   try { return JSON.parse(raw) as T; } catch { /* continúa */ }
 

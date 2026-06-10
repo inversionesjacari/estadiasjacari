@@ -17,6 +17,7 @@
 
 import { PROPERTY_KNOWLEDGE_BASE } from "./property-kb";
 import { callWorkersAIJson, type WorkersAIEnv, type AIMessage } from "./workers-ai";
+import { callOpenAIJson } from "./openai";
 
 // Re-export so callers can import WorkersAIEnv from here or from workers-ai directly
 export type { WorkersAIEnv };
@@ -175,11 +176,22 @@ export async function runConversationalBot(
     messages.push({ role: "user", content: buildUserPrompt(userMessage, previousData) });
   }
 
-  const result = await callWorkersAIJson<LlamaOutput>(
+  // Cerebro PRINCIPAL: GPT-4o-mini (OpenAI) — respeta el JSON y no tiene la cuota
+  // diaria de Cloudflare. Si no hay API key o falla con error de red, caemos a
+  // Workers AI (Llama) como respaldo (que a su vez tiene su modo degradado).
+  let result = await callOpenAIJson<LlamaOutput>(
     messages,
     env,
     { temperature: 0.15, maxTokens: 600 },
   );
+  if (!result.ok && !result.rawText) {
+    // OpenAI no disponible (sin key / error de red) → respaldo Workers AI (Llama).
+    result = await callWorkersAIJson<LlamaOutput>(
+      messages,
+      env,
+      { temperature: 0.15, maxTokens: 600 },
+    );
+  }
 
   if (!result.ok || !result.data) {
     // MODO DEGRADADO: si el modelo RESPONDIÓ pero en texto plano (no JSON) — pasa
