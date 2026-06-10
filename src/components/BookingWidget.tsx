@@ -143,6 +143,18 @@ export default function BookingWidget({
 
   // ── ESTADO DE LA RESERVA ────────────────────────────────────────────────
   const [range, setRange] = useState<DateRange | undefined>(undefined);
+  // Calendario colapsable: arranca CERRADO (compacto, no abruma). Se abre al
+  // tocar Llegada/Salida. En pantallas anchas muestra 2 meses (estilo Airbnb).
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [monthsToShow, setMonthsToShow] = useState(1);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    const apply = () => setMonthsToShow(mq.matches ? 2 : 1);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
@@ -271,6 +283,12 @@ export default function BookingWidget({
     blockedDates.some((b) => isSameDay(b, day));
   const disabledBlocked = useMemo(
     () => blockedDates.filter((b) => blockedDates.some((x) => isSameDay(x, addDays(b, -1)))),
+    [blockedDates],
+  );
+  // Días "solo salida": el primer día de cada bloque ocupado (su noche está
+  // tomada, pero sirve de check-out). Se marcan con la etiqueta "Solo salida".
+  const checkoutOnlyDays = useMemo(
+    () => blockedDates.filter((b) => !blockedDates.some((x) => isSameDay(x, addDays(b, -1)))),
     [blockedDates],
   );
 
@@ -466,69 +484,104 @@ export default function BookingWidget({
             mitiga porque el sitio acepta solo reservas con cobro directo y el
             staff puede gestionar conflictos manualmente vía WhatsApp.) */}
 
-        {/* Calendario de fechas */}
-        <div className="mb-4">
-          <label className="text-xs text-gray-500 font-medium block mb-2">
-            Selecciona tus fechas
-          </label>
+        {/* Fechas — COLAPSADO al inicio (no abruma); el calendario se despliega
+            al tocar Llegada/Salida, estilo Airbnb (2 meses en desktop). */}
+        <div className="mb-4 relative">
+          <div className="grid grid-cols-2 rounded-xl border border-gray-300 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setCalendarOpen((o) => !o)}
+              className={`text-left px-3 py-2.5 transition ${calendarOpen ? "ring-2 ring-primary ring-inset" : "hover:bg-gray-50"}`}
+            >
+              <div className="text-[10px] font-bold text-primary tracking-wide">LLEGADA</div>
+              <div className={`text-sm ${range?.from ? "text-primary font-medium" : "text-gray-400"}`}>
+                {range?.from ? format(range.from, "EEE d MMM", { locale: es }) : "Agregar fecha"}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCalendarOpen(true)}
+              className="text-left px-3 py-2.5 border-l border-gray-300 hover:bg-gray-50 transition"
+            >
+              <div className="text-[10px] font-bold text-primary tracking-wide">SALIDA</div>
+              <div className={`text-sm ${range?.to ? "text-primary font-medium" : "text-gray-400"}`}>
+                {range?.to ? format(range.to, "EEE d MMM", { locale: es }) : "Agregar fecha"}
+              </div>
+            </button>
+          </div>
 
-          {loadingAvailability ? (
-            <div className="animate-pulse bg-gray-100 rounded-xl h-72" />
-          ) : (
-            <div className="overflow-x-auto -mx-2 px-2">
-              <DayPicker
-                mode="range"
-                selected={range}
-                onSelect={(r) => {
-                  // Un día ocupado puede ser CHECK-OUT (día de recambio) pero
-                  // NUNCA CHECK-IN: no se puede empezar la estadía en una noche
-                  // ya tomada. Si el inicio del rango cae en una noche ocupada,
-                  // descartamos la selección (el usuario re-elige un día libre).
-                  if (r?.from && isBlockedNight(r.from)) {
-                    setRange(undefined);
-                    return;
-                  }
-                  setRange(r);
-                  setStep("form");
-                  setPaypalRevealed(false);
-                }}
-                disabled={[
-                  { before: minDate },
-                  { after: maxDate },
-                  // Solo las noches intermedias de un bloque ocupado: el primer
-                  // día de cada bloque queda libre para elegirlo como check-out.
-                  ...disabledBlocked,
-                ]}
-                startMonth={minDate}
-                endMonth={maxDate}
-                numberOfMonths={1}
-                locale={es}
-                weekStartsOn={1}
-                showOutsideDays={false}
-                classNames={{
-                  month_caption:
-                    "text-primary font-display text-base mb-2 capitalize",
-                  caption_label: "text-primary",
-                  chevron: "fill-primary",
-                  weekday: "text-muted text-xs font-medium uppercase",
-                  day: "text-sm",
-                  day_button:
-                    "w-9 h-9 rounded-md hover:bg-secondary/10 transition",
-                  today: "font-bold text-accent",
-                  selected: "!bg-primary !text-white",
-                  range_start:
-                    "rounded-l-md [&_button]:!bg-primary [&_button]:!text-white",
-                  range_end:
-                    "rounded-r-md [&_button]:!bg-primary [&_button]:!text-white",
-                  range_middle:
-                    "[&_button]:bg-secondary/20 [&_button]:!text-primary",
-                  disabled:
-                    "line-through text-gray-300 cursor-not-allowed opacity-50",
-                }}
-              />
-            </div>
+          {calendarOpen && (
+            <>
+              {/* backdrop: cerrar al tocar afuera */}
+              <div className="fixed inset-0 z-30" onClick={() => setCalendarOpen(false)} aria-hidden />
+              <div className="absolute z-40 top-full right-0 mt-2 bg-white rounded-2xl shadow-2xl border border-gray-200 p-4 w-[min(640px,calc(100vw-2rem))]">
+                {loadingAvailability ? (
+                  <div className="animate-pulse bg-gray-100 rounded-xl h-64" />
+                ) : (
+                  <DayPicker
+                    mode="range"
+                    selected={range}
+                    onSelect={(r) => {
+                      // Un día ocupado puede ser CHECK-OUT (recambio) pero NUNCA
+                      // CHECK-IN. Si el inicio cae en una noche ocupada, descartar.
+                      if (r?.from && isBlockedNight(r.from)) {
+                        setRange(undefined);
+                        return;
+                      }
+                      setRange(r);
+                      setStep("form");
+                      setPaypalRevealed(false);
+                      if (r?.from && r?.to) setCalendarOpen(false); // rango completo → cerrar
+                    }}
+                    disabled={[
+                      { before: minDate },
+                      { after: maxDate },
+                      ...disabledBlocked, // solo las noches intermedias de cada bloque
+                    ]}
+                    modifiers={{ checkoutOnly: checkoutOnlyDays }}
+                    modifiersClassNames={{ checkoutOnly: "[&_button]:!text-gray-400 [&_button]:hover:!ring-gray-300" }}
+                    components={{
+                      DayButton: ({ day: _day, modifiers, ...buttonProps }) => (
+                        <button
+                          {...buttonProps}
+                          title={modifiers.checkoutOnly ? "Solo salida (check-out)" : undefined}
+                        />
+                      ),
+                    }}
+                    startMonth={minDate}
+                    endMonth={maxDate}
+                    numberOfMonths={monthsToShow}
+                    locale={es}
+                    weekStartsOn={1}
+                    showOutsideDays={false}
+                    classNames={{
+                      months: "flex gap-6 justify-center",
+                      month_caption: "text-primary font-semibold text-sm mb-3 text-center capitalize",
+                      caption_label: "text-primary",
+                      chevron: "fill-primary",
+                      weekday: "text-muted text-[11px] font-normal",
+                      day: "text-sm",
+                      day_button: "w-9 h-9 rounded-full font-medium text-primary hover:ring-1 hover:ring-primary/40 transition",
+                      today: "font-bold",
+                      selected: "!bg-primary !text-white",
+                      range_start: "[&_button]:!bg-primary [&_button]:!text-white [&_button]:!rounded-full",
+                      range_end: "[&_button]:!bg-primary [&_button]:!text-white [&_button]:!rounded-full",
+                      range_middle: "[&_button]:!bg-secondary/15 [&_button]:!text-primary [&_button]:!rounded-none",
+                      disabled: "[&_button]:line-through [&_button]:!text-gray-300 [&_button]:cursor-not-allowed [&_button]:hover:!ring-0",
+                    }}
+                  />
+                )}
+                <div className="flex justify-between items-center mt-3 pt-3 border-t border-gray-100">
+                  <button type="button" onClick={() => setRange(undefined)} className="text-sm font-semibold text-primary underline">
+                    Borrar fechas
+                  </button>
+                  <button type="button" onClick={() => setCalendarOpen(false)} className="bg-primary text-white text-sm font-semibold px-5 py-2 rounded-lg hover:bg-primary/90 transition">
+                    Listo
+                  </button>
+                </div>
+              </div>
+            </>
           )}
-
         </div>
 
         {/* Aviso si el rango pisa fecha bloqueada */}
