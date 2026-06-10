@@ -32,6 +32,7 @@ interface Conversation {
   dismissed: boolean;
   state: string | null;
   lastOutAt: string | null;
+  lastOutRule: string | null;
   contactName: string | null;
   reservation: {
     id: number;
@@ -309,6 +310,23 @@ function PendienteItem({
   );
 }
 
+/** Traduce el motivo por el que una conversación quedó pendiente (la regla que la
+ *  escaló/pausó) a un texto claro — como un empleado diciendo por qué te pide apoyo. */
+function motivoPendiente(rule: string | null | undefined): string {
+  switch (rule) {
+    case "call_requested":            return "📞 Pidió que lo llamen";
+    case "payment_reported":          return "💳 Dice que ya pagó — verificá";
+    case "transfer_proof_received":   return "💳 Mandó comprobante — verificá";
+    case "existing_guest_escalation": return "🏠 Huésped con reserva — pide soporte";
+    case "out_of_scope_redirect":     return "❓ Consulta fuera del alcance del bot";
+    case "paypal_usd_requested":      return "💵 Quiere pagar en USD (PayPal)";
+    case "escalar_humano":            return "🙋 Pidió hablar con una persona";
+    case "manual_inbox":              return "✍️ Vos tomaste esta conversación";
+    case "bot_glitch_silent":         return "⚠️ El bot no pudo seguir solo";
+    default:                          return "Necesita tu atención";
+  }
+}
+
 function PendientesColumn({
   conversations, onSelect, onDismiss, selectedPhone,
 }: {
@@ -342,14 +360,14 @@ function PendientesColumn({
       {paused.length > 0 && (
         <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700 dark:text-amber-400">
           {paused.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="Vos llevás esta conversación" accent="border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={motivoPendiente(c.lastOutRule)} accent="border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}
       {escalated.length > 0 && (
         <PendienteGroup label="⚠ Escaladas" count={escalated.length} color="text-rose-700 dark:text-rose-400">
           {escalated.map((c) => (
-            <PendienteItem key={c.phone} conv={c} subtitle="El bot pidió ayuda humana" accent="border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
+            <PendienteItem key={c.phone} conv={c} subtitle={motivoPendiente(c.lastOutRule)} accent="border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/40" onSelect={onSelect} onDismiss={onDismiss} active={selectedPhone === c.phone} />
           ))}
         </PendienteGroup>
       )}

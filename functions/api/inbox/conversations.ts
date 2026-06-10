@@ -36,6 +36,7 @@ interface ConversationRow {
   conv_state: string | null;
   last_out_at: string | null;
   last_out_body: string | null;
+  last_out_rule: string | null;
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
@@ -67,6 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               (SELECT COUNT(*) FROM whatsapp_messages m2 WHERE m2.from_phone = lm.phone OR m2.to_phone = lm.phone) AS message_count,
               (SELECT MAX(m3.created_at) FROM whatsapp_messages m3 WHERE m3.to_phone = lm.phone AND m3.direction = 'out') AS last_out_at,
               (SELECT m4.body FROM whatsapp_messages m4 WHERE m4.to_phone = lm.phone AND m4.direction = 'out' ORDER BY m4.created_at DESC, m4.id DESC LIMIT 1) AS last_out_body,
+              (SELECT m5.matched_rule FROM whatsapp_messages m5 WHERE m5.to_phone = lm.phone AND m5.direction = 'out' AND m5.matched_rule IS NOT NULL ORDER BY m5.created_at DESC, m5.id DESC LIMIT 1) AS last_out_rule,
               c.profile_name AS contact_name,
               r.guest_name,
               r.property_slug,
@@ -122,6 +124,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         dismissed: ((da) => da != null && da >= r.last_at)(dismissed.get(r.phone)),
         state: r.conv_state,
         lastOutAt: r.last_out_at,
+        lastOutRule: r.last_out_rule,
         contactName: r.contact_name,
         reservation: r.reservation_id
           ? {
