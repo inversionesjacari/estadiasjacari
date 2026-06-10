@@ -101,6 +101,13 @@ export const T = {
       ? "\n\nWhenever you're ready, just tell me *Card* or *Transfer* and we'll continue."
       : "\n\nCuando la veas y estés lista, decime *Tarjeta* o *Transferencia* y seguimos.",
 
+  // Cliente pide un número para llamar → darlo directo y amable (sin disculpas
+  // ni recitar las ciudades; eso es para lo que SÍ está fuera de alcance).
+  phoneContact: (l: Lang): string =>
+    l === "en"
+      ? "Of course! 📞 You can call or message us at +504 9764-9035. Happy to help with your booking here too!"
+      : "¡Claro! 📞 Podés llamarnos o escribirnos al +504 9764-9035. ¡Con gusto te ayudo también por acá con tu reserva!",
+
   // "Último aviso" antes de cerrar la ventana de 24h — la fecha SIGUE disponible.
   lastCallAlive: (l: Lang, ref: string): string =>
     l === "en"

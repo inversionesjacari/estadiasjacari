@@ -151,6 +151,25 @@ export function isCallRequested(text: string): boolean {
   return /\b(me puede llamar|me pueden llamar|puede llamarme|pueden llamarme|que me llame|que me llamen|llamenme|llamame|me puede marcar|me pueden marcar|marquenme|prefiero una llamada|mejor una llamada|quiero una llamada|me podrian llamar|podrian llamarme)\b/.test(t);
 }
 
+/**
+ * Cliente pide un NÚMERO de teléfono / contacto para llamar él (distinto de pedir
+ * que LO llamen, que es isCallRequested). Pedir un teléfono NO es "fuera de
+ * alcance": se da el número, amablemente y directo.
+ */
+export function isPhoneNumberRequest(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // "numero" solo cuenta con contexto telefónico/contacto/llamar — así NO roba
+  // "numero de personas" ni "numero de cuenta" (eso es isBankAccountRequest).
+  return (
+    /\b(numero de telefono|numero telefonico|numero de contacto|telefono de contacto|numero para llamar)\b/.test(t) ||
+    /\b(tienen|tenes|tienes|hay) (un |algun )?telefono\b/.test(t) ||
+    /\b(me (pasas?|pasan?|das?|dan?|facilitas?)|me (podes|podrias) (pasar|dar)) (un |el |su |tu )?telefono\b/.test(t) ||
+    /\b(a que (numero|telefono)) (llamo|los llamo|marco|marcar|puedo llamar|te llamo)\b/.test(t) ||
+    /\b(ocupo|necesito|quiero|dame|deme|pasame|paseme) (un |el |su |tu )?telefono\b/.test(t) ||
+    /\b(phone number|number to call|contact number|your (phone )?number)\b/.test(t)
+  );
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -259,6 +278,19 @@ export async function handleQuoteIncoming(
         tokensUsed:      0,
       };
     }
+  }
+
+  // ── Cliente pide un NÚMERO de teléfono / para llamar → darlo directo ────────
+  // Pedir un teléfono NO es "fuera de alcance": se da el número amablemente, sin
+  // disculpas ni recitar las ciudades (el out_of_scope_redirect NO aplica acá).
+  // Determinístico, antes del LLM, para que no lo malinterprete como out_of_scope.
+  if (isPhoneNumberRequest(text)) {
+    return {
+      reply:           T.phoneContact(lang),
+      escalateToOwner: false,
+      ruleName:        "phone_contact_sent",
+      tokensUsed:      0,
+    };
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
