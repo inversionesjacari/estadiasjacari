@@ -122,6 +122,22 @@ export function isCallRequested(text: string): boolean {
   return /\b(me puede llamar|me pueden llamar|puede llamarme|pueden llamarme|que me llame|que me llamen|llamenme|llamame|me puede marcar|me pueden marcar|marquenme|prefiero una llamada|mejor una llamada|quiero una llamada|me podrian llamar|podrian llamarme)\b/.test(t);
 }
 
+/** Cliente pide la ubicación / cómo llegar / el mapa. */
+export function isLocationRequest(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return /\b(ubicacion|ubicados?|ubicada|donde (estan|esta|queda|quedan|se encuentra|ubicad)|como llegar|direccion|el mapa|un mapa|en maps|google maps|location|where (are|is)|address)\b/.test(t);
+}
+
+/** Link de Google Maps por propiedad. Las de Tela comparten el complejo Shores Plantation. */
+const PROPERTY_MAPS: Partial<Record<PropertySlug, string>> = {
+  "casa-brisa":           "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "casa-marea":           "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "las-gemelas-tela":     "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "villa-b11-palma-real": "https://maps.app.goo.gl/1JN66ajXPAmL3xtA6",
+  "centro-morazan":       "https://maps.app.goo.gl/KwBr1PAt79UyNogU6",
+  // PENDIENTE (pedir a César los links): casa-lara-townhouse, la-florida.
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos públicos
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +190,30 @@ export async function handleQuoteIncoming(
 
   // Idioma del cliente persistido en el estado (para responder en su idioma).
   const lang = asLang(existing?.data.language);
+
+  // ── Cliente pide la UBICACIÓN → mandar el link del mapa ────────────────────
+  // "Siempre debe enviarse la ubicación" (César). Funciona en CUALQUIER estado:
+  // si están en pleno pago y preguntan dónde queda, mandamos el mapa Y recordamos
+  // el método de pago, sin que el bot se "cierre" ni pierda el hilo.
+  if (isLocationRequest(text) && existing?.data.property) {
+    const mapUrl = PROPERTY_MAPS[existing.data.property];
+    if (mapUrl) {
+      const base = lang === "en"
+        ? `Here's the exact location 📍\n${mapUrl}`
+        : `Acá te comparto la ubicación exacta 📍\n${mapUrl}`;
+      const tail = existing.state === "awaiting_payment_method"
+        ? (lang === "en"
+            ? "\n\nWhenever you're ready, tell me *Card* or *Transfer* to confirm 🌴"
+            : "\n\nCuando quieras, decime *Tarjeta* o *Transferencia* para confirmar 🌴")
+        : "";
+      return {
+        reply:           base + tail,
+        escalateToOwner: false,
+        ruleName:        "location_sent",
+        tokensUsed:      0,
+      };
+    }
+  }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
   if (!existing) {
