@@ -26,19 +26,54 @@ const SOURCE_NAMES: Record<string, string> = {
 };
 
 const REFERRER_NAMES: Record<string, string> = {
+  "(directo)": "Directo",
   "instagram.com": "Instagram",
   "l.instagram.com": "Instagram",
   "facebook.com": "Facebook",
   "l.facebook.com": "Facebook",
   "m.facebook.com": "Facebook",
+  "lm.facebook.com": "Facebook",
   "google.com": "Google",
   "www.google.com": "Google",
   "t.co": "X / Twitter",
+  "bing.com": "Bing",
+  "duckduckgo.com": "DuckDuckGo",
+  "linkedin.com": "LinkedIn",
+  "youtube.com": "YouTube",
+  "tiktok.com": "TikTok",
+  "wa.me": "WhatsApp",
+  "api.whatsapp.com": "WhatsApp",
 };
+
+// Emoji por origen para que el panel se lea de un vistazo.
+const SOURCE_ICON: Record<string, string> = {
+  Directo: "🔗", Instagram: "📸", Facebook: "👍", Google: "🔎",
+  "X / Twitter": "𝕏", Bing: "🔎", DuckDuckGo: "🦆", LinkedIn: "💼",
+  YouTube: "▶️", TikTok: "🎵", WhatsApp: "💬",
+};
+
+// Nombre legible de una ruta del sitio: "/" → Inicio, /propiedades/<slug> → nombre.
+function pageLabel(path: string): string {
+  if (path === "/") return "Inicio";
+  if (path === "/propiedades") return "Todas las propiedades";
+  const m = path.match(/^\/propiedades\/(.+)$/);
+  if (m) return PROPERTY_NAMES[m[1]] ?? m[1].replace(/-/g, " ");
+  return path;
+}
+function sourceLabel(ref: string): string {
+  return REFERRER_NAMES[ref] ?? ref.replace(/^www\./, "");
+}
 
 // Registro de cambios / mejoras del sistema (curado a mano; lo más nuevo arriba).
 // Se muestra al final del Centro de Control como bitácora visible del equipo.
 const CHANGELOG: { date: string; items: string[] }[] = [
+  {
+    date: "9 jun 2026",
+    items: [
+      "Inbox: ahora se ven las notas de voz 🎧, imágenes y comprobantes de pago que mandan los clientes (antes se descartaban). Las fotos que manda el bot se ven como imágenes. Y podés adjuntar y enviar tus propias imágenes/videos al cliente con el botón 📎.",
+      "Tráfico web: tablero rediseñado — visitas de hoy vs ayer, visitantes únicos, “en vivo ahora”, tendencia de los últimos 7 días, páginas con nombres legibles (Casa Brisa en vez de /propiedades/casa-brisa) y de dónde llegan incluyendo el tráfico directo con su %.",
+    ],
+  },
   {
     date: "8 jun 2026",
     items: [
@@ -80,7 +115,13 @@ interface Metrics {
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
-  web?: { viewsToday: number; uniqueToday: number; now: number; topPages: { path: string; c: number }[]; topReferrers: { referrer: string; c: number }[] };
+  web?: {
+    viewsToday: number; uniqueToday: number; viewsYesterday: number;
+    viewsWeek: number; uniqueWeek: number; now: number;
+    topPages: { path: string; c: number }[];
+    sources: { referrer: string; c: number }[];
+    trend: { day: string; views: number; uniques: number }[];
+  };
   qa?: {
     lastRun: { ranAt: string | null; analyzed: number; found: number; trigger: string | null } | null;
     findings: { id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string | null }[];
@@ -302,16 +343,34 @@ export default function OperacionPage() {
 
         {/* Tráfico web */}
         {m.web && (
-          <Panel title="🌐 Tráfico web" subtitle={m.web.now > 0 ? `🟢 ${m.web.now} ${m.web.now === 1 ? "persona" : "personas"} ahora` : undefined}>
+          <Panel title="🌐 Tráfico web" subtitle={m.web.now > 0 ? `🟢 ${m.web.now} ${m.web.now === 1 ? "persona navegando" : "personas navegando"} ahora` : "visitas al sitio"}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-              <MiniStat label="Visitas hoy" value={m.web.viewsToday} />
-              <MiniStat label="Únicos hoy" value={m.web.uniqueToday} />
-              <MiniStat label="Ahora en el sitio" value={m.web.now} accent />
-              <MiniStat label="Vistas hoy" value={m.web.topPages.reduce((s, p) => s + p.c, 0)} />
+              <WebStat label="Visitas hoy" value={m.web.viewsToday} foot={<Delta today={m.web.viewsToday} prev={m.web.viewsYesterday} />} />
+              <WebStat label="Visitantes únicos" value={m.web.uniqueToday} foot={<span className="text-slate-500">personas distintas hoy</span>} />
+              <WebStat label="En vivo ahora" value={m.web.now} live />
+              <WebStat label="Visitas · 7 días" value={m.web.viewsWeek} foot={<span className="text-slate-500">{m.web.uniqueWeek.toLocaleString("en-US")} únicos</span>} />
+            </div>
+            <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3 mb-4">
+              <div className="flex items-baseline justify-between mb-2">
+                <p className="text-[11px] text-slate-500 font-medium uppercase tracking-wider">Tendencia · últimos 7 días</p>
+                <p className="text-[10px] text-slate-500">vistas por día</p>
+              </div>
+              <WebTrend data={m.web.trend} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <MiniList title="Páginas más vistas (hoy)" rows={m.web.topPages.map((p) => ({ label: p.path, value: p.c }))} empty="Sin visitas hoy todavía." />
-              <MiniList title="De dónde llegan (7d)" rows={m.web.topReferrers.map((r) => ({ label: REFERRER_NAMES[r.referrer] ?? r.referrer, value: r.c }))} empty="Tráfico directo o sin datos." />
+              <BarList
+                title="Páginas más vistas (hoy)"
+                rows={m.web.topPages.map((p) => ({ label: pageLabel(p.path), value: p.c }))}
+                empty="Sin visitas hoy todavía."
+                hex={HEX.cyan}
+              />
+              <BarList
+                title="De dónde llegan (7 días)"
+                rows={m.web.sources.map((s) => { const name = sourceLabel(s.referrer); return { label: name, value: s.c, icon: SOURCE_ICON[name] }; })}
+                empty="Sin datos de origen aún."
+                hex="#a78bfa"
+                showPct
+              />
             </div>
           </Panel>
         )}
@@ -524,11 +583,103 @@ function Row({ label, value, hex }: { label: string; value: number; hex?: string
   );
 }
 
-function MiniStat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+// KPI del tablero de tráfico. `live` = métrica de tiempo real (punto pulsante
+// verde si hay alguien, gris si no). `foot` = línea de contexto (delta, etc.).
+function WebStat({ label, value, foot, live }: { label: string; value: number; foot?: React.ReactNode; live?: boolean }) {
+  const animated = useCountUp(value);
+  const on = !!live && value > 0;
   return (
     <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
-      <div className={`font-mono text-2xl font-bold leading-none ${accent ? "text-green-400" : "text-slate-100"}`}>{value}</div>
+      <div className="flex items-center gap-1.5">
+        {live && (
+          <span className="relative flex h-2 w-2 shrink-0">
+            {on && <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-70" style={{ background: HEX.green }} />}
+            <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: on ? HEX.green : HEX.gray }} />
+          </span>
+        )}
+        <span className={`font-mono text-2xl font-bold leading-none ${on ? "text-green-400" : "text-slate-100"}`}>{animated.toLocaleString("en-US")}</span>
+      </div>
       <div className="text-[11px] text-slate-500 mt-1">{label}</div>
+      {foot && <div className="text-[10px] mt-1 leading-tight">{foot}</div>}
+    </div>
+  );
+}
+
+// Variación vs ayer: ▲ verde sube · ▼ rojo baja · = gris igual. Muestra el dato
+// de ayer para dar contexto a la cifra de hoy.
+function Delta({ today, prev }: { today: number; prev: number }) {
+  if (prev === 0 && today === 0) return <span className="text-slate-600">— sin datos de ayer</span>;
+  if (prev === 0) return <span style={{ color: HEX.green }}>▲ nuevo · ayer 0</span>;
+  const pct = Math.round(((today - prev) / prev) * 100);
+  if (pct === 0) return <span className="text-slate-500">= igual · ayer {prev}</span>;
+  const up = pct > 0;
+  return <span style={{ color: up ? HEX.green : HEX.red }}>{up ? "▲" : "▼"} {Math.abs(pct)}% · ayer {prev}</span>;
+}
+
+// Sparkline de vistas por día (7d). La última barra (hoy, parcial) va resaltada.
+function WebTrend({ data }: { data: { day: string; views: number; uniques: number }[] }) {
+  if (data.length === 0) return <p className="text-slate-500 text-sm py-4 text-center">Aún sin datos de tendencia. Se llena con las visitas de los próximos días.</p>;
+  const max = Math.max(...data.map((d) => d.views), 1);
+  const DOW = ["D", "L", "M", "M", "J", "V", "S"];
+  return (
+    <div className="flex items-end gap-1.5 h-20">
+      {data.map((d, i) => {
+        const pct = Math.round((d.views / max) * 100);
+        const last = i === data.length - 1;
+        const dow = DOW[new Date(d.day + "T12:00:00").getDay()];
+        return (
+          <div key={d.day} className="group relative flex-1 flex flex-col items-center justify-end h-full">
+            <span className="text-[9px] text-slate-400 mb-0.5 font-mono">{d.views}</span>
+            <div
+              className="w-full rounded-t transition-all duration-500"
+              style={{
+                height: `${Math.max(pct, 4)}%`,
+                background: last ? "linear-gradient(to top,#0891b2,#67e8f9)" : "linear-gradient(to top,#0e7490,#22d3ee)",
+                boxShadow: last ? "0 0 10px rgba(34,211,238,0.6)" : "0 0 6px rgba(34,211,238,0.3)",
+                opacity: last ? 1 : 0.85,
+              }}
+            />
+            <span className={`text-[9px] mt-1 font-mono ${last ? "text-cyan-300 font-bold" : "text-slate-500"}`}>{dow}</span>
+            <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block z-10 whitespace-nowrap rounded bg-slate-900 border border-white/10 px-2 py-1 text-[10px] text-slate-200 shadow-lg">
+              {d.day.slice(5)} · {d.views} vistas · {d.uniques} únicos
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Lista con barra de fondo proporcional (al máximo de la lista) y % de cuota opcional.
+function BarList({ title, rows, empty, hex, showPct }: { title: string; rows: { label: string; value: number; icon?: string }[]; empty: string; hex: string; showPct?: boolean }) {
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  return (
+    <div>
+      <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">{title}</p>
+      {rows.length === 0 ? (
+        <p className="text-slate-500 text-sm">{empty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((r, i) => {
+            const pct = Math.round((r.value / max) * 100);
+            const share = total > 0 ? Math.round((r.value / total) * 100) : 0;
+            return (
+              <li key={i} className="relative rounded-md overflow-hidden bg-white/[0.02]">
+                <div className="absolute inset-y-0 left-0 rounded-md transition-all duration-500" style={{ width: `${Math.max(pct, 6)}%`, background: `${hex}22` }} />
+                <div className="relative flex items-center justify-between px-2.5 py-1.5">
+                  <span className="text-slate-200 text-sm truncate mr-2">
+                    {r.icon && <span className="mr-1.5">{r.icon}</span>}{r.label}
+                  </span>
+                  <span className="font-mono text-sm font-semibold whitespace-nowrap" style={{ color: hex }}>
+                    {r.value}{showPct && <span className="text-slate-500 text-[11px] ml-1">{share}%</span>}
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

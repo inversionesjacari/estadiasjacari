@@ -68,7 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     resvCounts, resvByProperty, resvBySource, revRanges,
     lastIn, lastOut, lastResv, heartbeat,
     botCounts, trendRows, feedMsgs, feedResvs,
-    webToday, webNow, webTopPages, webReferrers, airbnbIncome,
+    webToday, webYesterday, webWeek, webNow, webTopPages, webSources, webTrend, airbnbIncome,
     qaFindings, qaLastRun,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -104,9 +104,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT property_slug, guest_name, source, created_at FROM reservations ORDER BY created_at DESC LIMIT 5`).all<FeedResvRow>().catch(() => ({ results: [] })),
     // Tráfico web (page_views) — fail-soft si la tabla no existe aún
     db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ${HN_DAY_START}`).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
+    // Ayer (día calendario HN anterior) — base del delta "vs ayer"
+    db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= datetime('now','-6 hours','start of day','-1 day','+6 hours') AND created_at < ${HN_DAY_START}`).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
+    // Últimos 7 días (escala agregada)
+    db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= datetime('now','-7 days')`).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
     db.prepare(`SELECT COUNT(DISTINCT visitor) AS c FROM page_views WHERE created_at >= datetime('now','-5 minutes')`).first<{ c: number }>().catch(() => ({ c: 0 })),
-    db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE created_at >= ${HN_DAY_START} GROUP BY path ORDER BY c DESC LIMIT 5`).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
-    db.prepare(`SELECT referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') AND referrer IS NOT NULL AND referrer <> '' GROUP BY referrer ORDER BY c DESC LIMIT 5`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE created_at >= ${HN_DAY_START} GROUP BY path ORDER BY c DESC LIMIT 6`).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
+    // Origen del tráfico (7d) incluyendo el directo (sin referrer)
+    db.prepare(`SELECT COALESCE(NULLIF(referrer,''),'(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') GROUP BY COALESCE(NULLIF(referrer,''),'(directo)') ORDER BY c DESC LIMIT 6`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
+    // Tendencia diaria (7d) — vistas y únicos por día HN, alimenta el sparkline
+    db.prepare(`SELECT date(created_at,'-6 hours') AS day, COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= datetime('now','-7 days') GROUP BY day ORDER BY day`).all<{ day: string; views: number; uniques: number }>().catch(() => ({ results: [] })),
     // Ingreso Airbnb cacheado (cron paypal-income). Fail-soft si la tabla no existe.
     db.prepare(`SELECT period, amount_usd FROM airbnb_income`).all<{ period: string; amount_usd: number }>().catch(() => ({ results: [] })),
     // QA del bot: hallazgos + última corrida. Fail-soft si las tablas no existen.
@@ -238,9 +245,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     web: {
       viewsToday: numOf(webToday, "views"),
       uniqueToday: numOf(webToday, "uniques"),
+      viewsYesterday: numOf(webYesterday, "views"),
+      viewsWeek: numOf(webWeek, "views"),
+      uniqueWeek: numOf(webWeek, "uniques"),
       now: numOf(webNow, "c"),
       topPages: rowsOf<{ path: string; c: number }>(webTopPages),
-      topReferrers: rowsOf<{ referrer: string; c: number }>(webReferrers),
+      sources: rowsOf<{ referrer: string; c: number }>(webSources),
+      trend: rowsOf<{ day: string; views: number; uniques: number }>(webTrend),
     },
     qa: {
       lastRun: qaLastRun
