@@ -79,6 +79,12 @@ export function isPriceIntent(text: string): boolean {
 /** Detecta intent de confirmación afirmativa. */
 export function isConfirmation(text: string): boolean {
   const norm = text.toLowerCase().trim();
+  // Negación clara → NO es confirmación, aunque incluya "ya"/"ok"/"listo".
+  // Ej: "ya no, gracias", "ok no", "no por ahora", "mejor no". Evita el peor caso:
+  // pedirle pagar a alguien que está rechazando (bug real: "Ya no muchas gracias").
+  if (/\b(no|nel|nop|tampoco|nada|ya no|olvidalo|olvídalo|dejalo|déjalo|cancela|cancelar|mejor no)\b/.test(norm)) {
+    return false;
+  }
   return /\b(si|sí|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
 }
 

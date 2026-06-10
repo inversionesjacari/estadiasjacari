@@ -305,6 +305,30 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         continue;
       }
 
+      // (1.5) ¿La conversación terminó FUERA DE ALCANCE o escalada? → no insistir.
+      // El último aviso es para cotizaciones tibias, no para leads que el bot ya
+      // derivó (preguntó por algo que no ofrecemos, pidió humano, reportó pago…).
+      // Buscamos la última regla "real" del bot, ignorando los propios followups.
+      let lastOutRule = "";
+      try {
+        const r = await env.DB.prepare(
+          `SELECT matched_rule FROM whatsapp_messages
+             WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL
+               AND matched_rule NOT IN ('auto_followup','last_call','last_call_redirect')
+             ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ).bind(row.phone).first<{ matched_rule: string | null }>();
+        lastOutRule = r?.matched_rule ?? "";
+      } catch { /* best-effort */ }
+      const TERMINAL_RULES = new Set([
+        "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
+        "transfer_proof_received", "escalar_humano", "call_requested",
+      ]);
+      if (lastOutRule && TERMINAL_RULES.has(lastOutRule)) {
+        await markDone();
+        lastCall.push({ phone: row.phone, sent: false, kind: `skip_${lastOutRule}` });
+        continue;
+      }
+
       // (2) Verificar disponibilidad si hay cotización con fechas.
       const slug = typeof data.property === "string" ? data.property : null;
       const checkIn = typeof data.checkIn === "string" ? data.checkIn : null;
