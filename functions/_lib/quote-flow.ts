@@ -29,7 +29,7 @@ import {
 import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
 import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "./availability";
-import type { PropertySlug } from "./quote-extractor";
+import type { PropertySlug, City } from "./quote-extractor";
 import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
 import {
   buildTransferMessageHNL,
@@ -149,6 +149,16 @@ const PROPERTY_MAPS: Partial<Record<PropertySlug, string>> = {
   // PENDIENTE (pedir a César los links): casa-lara-townhouse, la-florida.
 };
 
+// Mapa por CIUDAD: para cuando el cliente pide la ubicación explorando una ZONA
+// sin haber fijado una propiedad. En Tela (Casa Brisa + Casa Marea, mismo predio)
+// y La Ceiba (Villa B11) hay una ubicación común. Tegucigalpa NO está acá a
+// propósito: son 3 casas en zonas distintas → no hay un link único; el bot
+// pregunta de cuál (ver regla de ubicación en conversational-bot.ts).
+const CITY_MAPS: Partial<Record<City, string>> = {
+  "Tela":     "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "La Ceiba": "https://maps.app.goo.gl/1JN66ajXPAmL3xtA6",
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos públicos
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,8 +216,13 @@ export async function handleQuoteIncoming(
   // "Siempre debe enviarse la ubicación" (César). Funciona en CUALQUIER estado:
   // si están en pleno pago y preguntan dónde queda, mandamos el mapa Y recordamos
   // el método de pago, sin que el bot se "cierre" ni pierda el hilo.
-  if (isLocationRequest(text) && existing?.data.property) {
-    const mapUrl = PROPERTY_MAPS[existing.data.property];
+  if (isLocationRequest(text) && existing) {
+    // Mapa por propiedad si ya hay una elegida; si el cliente explora una ZONA
+    // con casas que comparten ubicación (Tela: Brisa+Marea; La Ceiba), usamos el
+    // mapa de la ciudad. Así no hace falta que haya fijado UNA propiedad.
+    const mapUrl =
+      (existing.data.property ? PROPERTY_MAPS[existing.data.property] : undefined) ??
+      (existing.data.city ? CITY_MAPS[existing.data.city] : undefined);
     if (mapUrl) {
       const base = lang === "en"
         ? `Here's the exact location 📍\n${mapUrl}`
