@@ -547,6 +547,52 @@ async function gatherQuoteData(
     language:      lang,
   };
 
+  // ── Ciudad sin casa elegida → auto-asignar la propiedad (decisión de César) ──
+  // No hacemos elegir cuando no hace falta. La Ceiba tiene una sola casa. En Tela
+  // las dos son casi idénticas: probamos Casa MAREA y, si está ocupada, Casa BRISA
+  // (7-12 personas → las dos juntas); si AMBAS están ocupadas → no disponible.
+  // Tegucigalpa NO se auto-asigna: las 3 casas son distintas, ahí el cliente elige.
+  // Si el cliente pidió una casa puntual, `property` ya viene seteada y la respetamos.
+  if (
+    !mergedData.property &&
+    mergedData.checkIn &&
+    mergedData.checkOut &&
+    typeof mergedData.guests === "number" &&
+    mergedData.guests > 0
+  ) {
+    if (mergedData.city === "La Ceiba") {
+      mergedData.property = "villa-b11-palma-real";
+    } else if (mergedData.city === "Tela") {
+      if (mergedData.guests <= 6) {
+        // Casa Marea primero; si no se puede verificar (iCal caído) la asignamos
+        // igual y el flujo de cotización la re-verifica + nota de confirmación.
+        const marea = await checkRangeAvailable("casa-marea", mergedData.checkIn, mergedData.checkOut, env);
+        if (marea.available || !marea.verified) {
+          mergedData.property = "casa-marea";
+        } else {
+          const brisa = await checkRangeAvailable("casa-brisa", mergedData.checkIn, mergedData.checkOut, env);
+          if (brisa.available || !brisa.verified) {
+            mergedData.property = "casa-brisa";
+          } else {
+            // Ambas confirmadas ocupadas → no disponible en Tela para esas fechas.
+            await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+            return {
+              reply: lang === "en"
+                ? "Unfortunately both our houses in Tela are booked for those dates 😔 Would you like me to check other dates or another area?"
+                : "Lamentablemente las dos casas de Tela están ocupadas en esas fechas 😔 ¿Querés que revise otras fechas u otra zona?",
+              escalateToOwner: false,
+              ruleName:        "quote_unavailable_tela",
+              tokensUsed:      botResult.tokensUsed,
+            };
+          }
+        }
+      } else if (mergedData.guests <= 12) {
+        mergedData.property = "las-gemelas-tela"; // 7-12 → las dos casas juntas
+      }
+      // > 12: no asignamos (el prompt aclara que el máximo en Tela es 12).
+    }
+  }
+
   // ── Primer mensaje sin ningún dato (saludo genérico) → bienvenida fija ─────
   // Usamos el mensaje determinístico (formato perfecto garantizado) en vez de
   // depender de cómo el LLM formatee el saludo inicial.
