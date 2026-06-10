@@ -170,6 +170,7 @@ interface MetaMessage {
   video?: MetaMediaObject;
   document?: MetaMediaObject;
   sticker?: MetaMediaObject;
+  reaction?: { message_id?: string; emoji?: string };
 }
 
 interface MetaContact {
@@ -317,6 +318,12 @@ async function processIncomingMessage(
   // Validaciones mínimas
   if (!msg.id || !msg.from) {
     console.error("Mensaje sin id o from — ignorando");
+    return;
+  }
+  if (msg.type === "reaction") {
+    // Reacción (emoji sobre un mensaje nuestro): se guarda para verla en el
+    // inbox, pero NO dispara respuesta ni escalación — es solo feedback liviano.
+    await handleReaction(msg, env);
     return;
   }
   if (msg.type !== "text") {
@@ -663,6 +670,25 @@ async function processIncomingMessage(
 // Mensajes no-texto (audio, imagen, sticker, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Reacciones (emoji sobre un mensaje nuestro). Se guardan para verlas en el
+// inbox, pero NO disparan respuesta del bot ni escalación: son feedback liviano,
+// no una consulta. (Sin esto, un simple 🙏 haría que el bot conteste y te mande
+// un email.)
+async function handleReaction(msg: MetaMessage, env: Env): Promise<void> {
+  if (!msg.id || !msg.from) return;
+  const fromE164 = normalizePhone(msg.from, { assumeAlreadyE164: true }).e164;
+  if (!isValidE164(fromE164)) return;
+  const emoji = (msg.reaction?.emoji ?? "").trim();
+  const body = emoji ? `Reaccionó con ${emoji}` : "Quitó su reacción";
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO whatsapp_messages
+       (meta_message_id, direction, from_phone, to_phone, body)
+     VALUES (?, 'in', ?, ?, ?)`,
+  )
+    .bind(msg.id, fromE164, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", body)
+    .run();
+}
+
 const MEDIA_LABELS: Record<string, string> = {
   image: "📷 Imagen",
   audio: "🎤 Nota de voz",
@@ -691,8 +717,9 @@ async function handleMediaMessage(
   const mediaMime = mediaObj?.mime_type ?? null;
   const filename = msg.document?.filename ?? null;
   const caption = (msg.image?.caption ?? msg.video?.caption ?? msg.document?.caption ?? "").trim();
-  // El body guarda el caption si hay; si no, una etiqueta legible del tipo.
-  const body = caption || MEDIA_LABELS[mediaType] || "[multimedia]";
+  // body = caption si hay; si hay archivo, etiqueta legible del tipo (se oculta
+  // bajo el adjunto); si es un tipo raro sin archivo descargable, nota visible.
+  const body = caption || (mediaId ? MEDIA_LABELS[mediaType] : `[${rawType || "mensaje"} no soportado]`) || "[multimedia]";
 
   // Guardar/actualizar el nombre de perfil de WhatsApp (igual que en texto).
   const contactName = contacts[0]?.profile?.name ?? null;
