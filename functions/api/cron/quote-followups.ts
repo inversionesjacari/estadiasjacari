@@ -102,6 +102,7 @@ function buildFollowupMessage(state: string, data: Record<string, unknown>): str
  * `ref` ya trae el destino (" con X" / " en Ciudad") si lo hay.
  */
 function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boolean): string {
+  const hasProperty = typeof data.property === "string" && !!data.property;
   const hasDest = ref !== "";
   const hasGuests = typeof data.guests === "number" && (data.guests as number) > 0;
   const hasDates = Boolean(data.checkIn && data.checkOut);
@@ -119,9 +120,20 @@ function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boo
   // "¿viste la cotización?" — reconocerlo y ofrecer ALTERNATIVAS (rescata la
   // venta, honesto). Caso real: Melisa Urbina, Centro Morazán, 10-jun.
   if (missing.length === 0) {
+    // "No me quedó disponible" SOLO si se intentó cotizar una PROPIEDAD específica
+    // (property + fechas) y no había. Con solo la CIUDAD (sin elegir la casa — ej.
+    // Tela tiene 2: Brisa y Marea), NO se cotizó nada → decir "no disponible" sería
+    // falso y contradictorio con lo que el bot venía diciendo. Invitar a elegir.
+    // (Bug real: Sandy Zelaya, Tela, 10-jun — "dos opciones disponibles" y el
+    // followup dijo "no me quedó disponible".)
+    if (hasProperty) {
+      return en
+        ? `Hi again! 👋 I couldn't find an opening${ref} for what you were looking for 😕 Want me to check other dates or show you another option? Happy to help. 🙏`
+        : `¡Hola de nuevo! 👋 No me quedó disponible${ref} para lo que buscabas 😕 ¿Querés que busque otras fechas o te muestre otra opción? Con gusto te ayudo. 🙏`;
+    }
     return en
-      ? `Hi again! 👋 I couldn't find an opening${ref} for what you were looking for 😕 Want me to check other dates or show you another option? Happy to help. 🙏`
-      : `¡Hola de nuevo! 👋 No me quedó disponible${ref} para lo que buscabas 😕 ¿Querés que busque otras fechas o te muestre otra opción? Con gusto te ayudo. 🙏`;
+      ? `Hi again! 👋 Shall we continue${ref}? Just tell me which option you like and I'll send you the quote. 🌴`
+      : `¡Hola de nuevo! 👋 ¿Seguimos${ref}? Decime cuál opción te gusta y te paso la cotización enseguida. 🌴`;
   }
 
   const join = (xs: string[]) =>
