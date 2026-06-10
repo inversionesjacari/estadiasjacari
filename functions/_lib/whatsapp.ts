@@ -306,11 +306,15 @@ export interface SendTextResult {
  *
  * @param toPhone E.164 sin '+'
  * @param text texto a enviar (Meta soporta hasta 4096 caracteres)
+ * @param previewUrl si true, Meta genera la tarjeta de previsualización del primer
+ *   link del texto (ej. un link de Google Maps → miniatura del mapa con el pin).
+ *   Default false (igual que el comportamiento histórico de Meta).
  */
 export async function sendTextMessage(
   toPhone: string,
   text: string,
   env: WhatsAppEnv,
+  previewUrl = false,
 ): Promise<SendTextResult> {
   if (!env.WHATSAPP_ACCESS_TOKEN) {
     return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
@@ -330,7 +334,7 @@ export async function sendTextMessage(
     recipient_type: "individual",
     to: toPhone,
     type: "text",
-    text: { body: text.slice(0, 4096) }, // hard cap Meta
+    text: { body: text.slice(0, 4096), preview_url: previewUrl }, // hard cap Meta
   };
 
   let resp: Response;

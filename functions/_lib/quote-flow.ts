@@ -195,26 +195,48 @@ export function isLocationRequest(text: string): boolean {
   return /\b(ubicacion|ubicados?|ubicada|donde (estan|esta|queda|quedan|se encuentra|ubicad)|como llegar|direccion|el mapa|un mapa|en maps|google maps|location|where (are|is)|address)\b/.test(t);
 }
 
-// Coordenadas (pin nativo de WhatsApp) por propiedad. Las de Tela comparten el
-// complejo Shores Plantation. Extraídas de los links de Google Maps de César.
-type GeoPin = { latitude: number; longitude: number; name: string; address: string };
-const PROPERTY_COORDS: Partial<Record<PropertySlug, GeoPin>> = {
-  "casa-brisa":           { latitude: 15.789809, longitude: -87.512843, name: "Casa Brisa — Honduras Shores Plantation", address: "Tela, Atlántida, Honduras" },
-  "casa-marea":           { latitude: 15.789809, longitude: -87.512843, name: "Casa Marea — Honduras Shores Plantation", address: "Tela, Atlántida, Honduras" },
-  "las-gemelas-tela":     { latitude: 15.789809, longitude: -87.512843, name: "Casa Brisa + Casa Marea — Honduras Shores Plantation", address: "Tela, Atlántida, Honduras" },
-  "villa-b11-palma-real": { latitude: 15.7974567, longitude: -86.5921569, name: "Villa B11 — Hotel Palma Real", address: "La Ceiba, Atlántida, Honduras" },
-  "centro-morazan":       { latitude: 14.1008364, longitude: -87.1827578, name: "Centro Morazán", address: "Tegucigalpa, Honduras" },
-  // PENDIENTE (pedir a César los links → de ahí saco las coords): casa-lara-townhouse, la-florida.
+// Links de Google Maps por propiedad. Tocar el link abre Google Maps en iPhone Y
+// Android (es un URL google.com → nunca cae en Apple Maps), que es lo que la mayoría
+// usa en Honduras. WhatsApp muestra la miniatura del mapa con el pin en la preview.
+// Las de Tela comparten el complejo Shores Plantation, así que comparten link.
+const PROPERTY_MAPS: Partial<Record<PropertySlug, string>> = {
+  "casa-brisa":           "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "casa-marea":           "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "las-gemelas-tela":     "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "villa-b11-palma-real": "https://maps.app.goo.gl/1JN66ajXPAmL3xtA6",
+  "centro-morazan":       "https://maps.app.goo.gl/KwBr1PAt79UyNogU6",
+  // PENDIENTE (pedir a César los links): casa-lara-townhouse, la-florida.
 };
 
-// Coordenadas por CIUDAD: para cuando el cliente pide la ubicación explorando una
-// ZONA sin haber fijado una propiedad. Tela (Brisa+Marea, mismo predio) y La Ceiba
-// (Villa B11) tienen una ubicación común. Tegucigalpa NO está acá a propósito: 3
-// casas en zonas distintas → el bot pregunta de cuál (regla 10 del prompt).
-const CITY_COORDS: Partial<Record<City, GeoPin>> = {
-  "Tela":     { latitude: 15.789809, longitude: -87.512843, name: "Casa Brisa / Casa Marea — Honduras Shores Plantation", address: "Tela, Atlántida, Honduras" },
-  "La Ceiba": { latitude: 15.7974567, longitude: -86.5921569, name: "Villa B11 — Hotel Palma Real", address: "La Ceiba, Atlántida, Honduras" },
+// Links por CIUDAD: para cuando el cliente pide la ubicación explorando una ZONA sin
+// haber fijado una propiedad. Tela (Brisa+Marea, mismo predio) y La Ceiba (Villa B11)
+// tienen un link común. Tegucigalpa NO está acá a propósito: 3 casas en zonas
+// distintas → el bot pregunta de cuál (regla 10 del prompt).
+const CITY_MAPS: Partial<Record<City, string>> = {
+  "Tela":     "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
+  "La Ceiba": "https://maps.app.goo.gl/1JN66ajXPAmL3xtA6",
 };
+
+/**
+ * Detecta la propiedad o ZONA que el cliente nombró EXPLÍCITAMENTE en su mensaje y
+ * devuelve su link de Google Maps. Esto manda sobre el contexto: si venían hablando
+ * de Centro Morazán pero el cliente escribe "ubicación de Tela", hay que mandar Tela,
+ * no lo de antes. Devuelve undefined si no nombra nada con link conocido (o si nombra
+ * Tegucigalpa, ambigua: 3 casas distintas → que el bot pregunte de cuál).
+ */
+function locationFromText(text: string): string | undefined {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // Propiedad nombrada explícitamente (gana sobre la ciudad).
+  if (/\bcasa\s*brisa\b|\bcasita del mar\b/.test(t))        return PROPERTY_MAPS["casa-brisa"];
+  if (/\bcasa\s*marea\b|\btela beach house\b/.test(t))      return PROPERTY_MAPS["casa-marea"];
+  if (/\bvilla\s*b\s*-?\s*11\b|\bpalma real\b/.test(t))     return PROPERTY_MAPS["villa-b11-palma-real"];
+  if (/\bcentro\s*morazan\b|\bmorazan\b/.test(t))           return PROPERTY_MAPS["centro-morazan"];
+  // Zona/ciudad. Tela (Brisa+Marea) y La Ceiba (Villa B11) tienen link común;
+  // Tegucigalpa NO está acá a propósito (3 casas distintas → undefined → el bot pregunta).
+  if (/\btela\b/.test(t))                                   return CITY_MAPS["Tela"];
+  if (/\b(la\s*)?ceiba\b/.test(t))                          return CITY_MAPS["La Ceiba"];
+  return undefined;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos públicos
@@ -232,8 +254,9 @@ export interface QuoteFlowResult {
   tokensUsed: number;
   /** URLs de imágenes a enviar (fotos de la propiedad). El webhook las manda. */
   images?: string[];
-  /** Ubicación nativa a enviar (pin en el mapa). El webhook la manda. */
-  location?: { latitude: number; longitude: number; name: string; address: string };
+  /** Si true: el webhook manda el texto con preview_url activado para que WhatsApp
+   *  muestre la miniatura del link (ej. el mapa con el pin de Google Maps). */
+  previewUrl?: boolean;
   /** Si true: el webhook NO responde nada (glitch técnico → dejar que el bot se
    *  recupere solo en el próximo mensaje, sin mensaje raro ni escalación). */
   silent?: boolean;
@@ -279,11 +302,14 @@ export async function handleQuoteIncoming(
     // Mapa por propiedad si ya hay una elegida; si el cliente explora una ZONA
     // con casas que comparten ubicación (Tela: Brisa+Marea; La Ceiba), usamos el
     // mapa de la ciudad. Así no hace falta que haya fijado UNA propiedad.
-    const coords =
-      (existing.data.property ? PROPERTY_COORDS[existing.data.property] : undefined) ??
-      (existing.data.city ? CITY_COORDS[existing.data.city] : undefined);
-    if (coords) {
-      const base = lang === "en" ? "Here's the location 📍" : "Acá te comparto la ubicación 📍";
+    const mapUrl =
+      locationFromText(text) ?? // lo que el cliente nombró AHORA gana sobre el contexto
+      (existing.data.property ? PROPERTY_MAPS[existing.data.property] : undefined) ??
+      (existing.data.city ? CITY_MAPS[existing.data.city] : undefined);
+    if (mapUrl) {
+      const base = lang === "en"
+        ? `Here's the location 📍\n${mapUrl}`
+        : `Acá te comparto la ubicación 📍\n${mapUrl}`;
       const tail = existing.state === "awaiting_payment_method"
         ? (lang === "en"
             ? "\n\nWhenever you're ready, tell me *Card* or *Transfer* to confirm 🌴"
@@ -291,7 +317,7 @@ export async function handleQuoteIncoming(
         : "";
       return {
         reply:           base + tail,
-        location:        coords, // el webhook manda el pin nativo del mapa
+        previewUrl:      true, // el webhook activa preview_url → miniatura del mapa con el pin
         escalateToOwner: false,
         ruleName:        "location_sent",
         tokensUsed:      0,
