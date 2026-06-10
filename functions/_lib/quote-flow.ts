@@ -112,6 +112,16 @@ export function isPaymentReported(text: string): boolean {
   return /\b(ya pague|ya page|ya transferi|hice el deposito|ya deposite|pago realizado|pago hecho|ya hice el pago|envie el comprobante|aqui esta el comprobante|adjunto comprobante)\b/.test(t);
 }
 
+/** Cliente pide explícitamente que lo llamen por teléfono → mejor lo toma un humano
+ *  (César llama). No tiene sentido seguir el flujo automático si quiere hablar. */
+export function isCallRequested(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  return /\b(me puede llamar|me pueden llamar|puede llamarme|pueden llamarme|que me llame|que me llamen|llamenme|llamame|me puede marcar|me pueden marcar|marquenme|prefiero una llamada|mejor una llamada|quiero una llamada|me podrian llamar|podrian llamarme)\b/.test(t);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos públicos
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +366,19 @@ async function gatherQuoteData(
       reply:           T.paymentReported(lang),
       escalateToOwner: true,
       ruleName:        "payment_reported",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
+  // ── Cliente pide que lo LLAMEN → escalar a un humano (César llama) ──────────
+  // Lo que quiere es hablar con una persona; seguir el flujo automático lo frustra.
+  if (isCallRequested(text)) {
+    return {
+      reply: lang === "en"
+        ? "Of course! I'll let our team know so they can call you shortly 📞 What time works best for you?"
+        : "¡Con gusto! Le aviso a nuestro equipo para que te llamen lo antes posible 📞 ¿En qué horario te queda mejor?",
+      escalateToOwner: true,
+      ruleName:        "call_requested",
       tokensUsed:      botResult.tokensUsed,
     };
   }

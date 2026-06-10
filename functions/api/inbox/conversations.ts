@@ -35,6 +35,7 @@ interface ConversationRow {
   check_out: string | null;
   conv_state: string | null;
   last_out_at: string | null;
+  last_out_body: string | null;
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
@@ -65,6 +66,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               lm.escalated AS last_escalated,
               (SELECT COUNT(*) FROM whatsapp_messages m2 WHERE m2.from_phone = lm.phone OR m2.to_phone = lm.phone) AS message_count,
               (SELECT MAX(m3.created_at) FROM whatsapp_messages m3 WHERE m3.to_phone = lm.phone AND m3.direction = 'out') AS last_out_at,
+              (SELECT m4.body FROM whatsapp_messages m4 WHERE m4.to_phone = lm.phone AND m4.direction = 'out' ORDER BY m4.created_at DESC, m4.id DESC LIMIT 1) AS last_out_body,
               c.profile_name AS contact_name,
               r.guest_name,
               r.property_slug,
@@ -102,10 +104,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
     return json({
       ok: true,
-      conversations: (results ?? []).map((r) => ({
+      conversations: (results ?? []).map((r) => {
+        // Preview = el mensaje MÁS RECIENTE del chat, sea del cliente (in) o
+        // ENVIADO por el bot/equipo (out). Pedido de César: ver en la lista la
+        // última respuesta enviada, no solo lo último que escribió el cliente.
+        const outNewer = r.last_out_at != null && r.last_out_at >= r.last_at;
+        const preview = (outNewer ? r.last_out_body : r.last_message)?.slice(0, 200) ?? "";
+        return {
         phone: r.phone,
-        lastMessage: r.last_message?.slice(0, 200) ?? "",
-        lastDirection: r.last_direction,
+        lastMessage: preview,
+        lastDirection: outNewer ? "out" : "in",
         lastAt: r.last_at,
         messageCount: r.message_count,
         lastMatchedRule: r.last_matched_rule,
@@ -124,7 +132,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               checkOut: r.check_out,
             }
           : null,
-      })),
+        };
+      }),
     });
   } catch (err) {
     return json(
