@@ -107,12 +107,17 @@ function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boo
   if (!hasGuests) missing.push(en ? "how many guests" : "cuántas personas");
   if (!hasDates) missing.push(en ? "the dates" : "las fechas");
 
-  // Ya tiene todo: el followup solo reanima, SIN asumir que es una cotización en
-  // firme (el cliente puede estar solo explorando — "quiero info" no es "cotizame").
+  // Tiene TODO (destino + personas + fechas) y AUN ASÍ seguimos en
+  // awaiting_quote_data → no se pudo cerrar una cotización DISPONIBLE (si la
+  // propiedad hubiera estado libre, el estado sería quote_provided). Causa
+  // típica: esas fechas/propiedad sin disponibilidad o sobre capacidad. NO
+  // insistir con "¿te muestro opciones con X?" (ya le dijimos que no había) ni
+  // "¿viste la cotización?" — reconocerlo y ofrecer ALTERNATIVAS (rescata la
+  // venta, honesto). Caso real: Melisa Urbina, Centro Morazán, 10-jun.
   if (missing.length === 0) {
     return en
-      ? `Hi again! 👋 Want me to check availability and options${ref}? Just let me know. 🙏`
-      : `¡Hola de nuevo! 👋 ¿Te muestro disponibilidad y opciones${ref}? Avisame cuando gustes. 🙏`;
+      ? `Hi again! 👋 I couldn't find an opening${ref} for what you were looking for 😕 Want me to check other dates or show you another option? Happy to help. 🙏`
+      : `¡Hola de nuevo! 👋 No me quedó disponible${ref} para lo que buscabas 😕 ¿Querés que busque otras fechas o te muestre otra opción? Con gusto te ayudo. 🙏`;
   }
 
   const join = (xs: string[]) =>
