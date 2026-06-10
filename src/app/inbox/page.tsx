@@ -53,6 +53,10 @@ interface Message {
   escalated: boolean;
   status: string | null;
   createdAt: string;
+  mediaType?: "image" | "audio" | "video" | "document" | "sticker" | null;
+  mediaUrl?: string | null;
+  mediaMime?: string | null;
+  mediaFilename?: string | null;
 }
 
 // API response shapes — todas siguen el patrón { ok: boolean, ... }
@@ -250,6 +254,51 @@ function MessageStatus({ status }: { status: string | null }) {
   return null;
 }
 
+// Etiquetas que el webhook pone como `body` cuando el media no trae caption.
+// Si el body es solo una de estas, no la mostramos como texto (ya se ve el archivo).
+const AUTO_MEDIA_LABELS = new Set([
+  "📷 Imagen", "🎤 Nota de voz", "🎥 Video", "📄 Documento", "🌟 Sticker", "[multimedia]",
+]);
+
+// Renderiza el adjunto de un mensaje: imagen, nota de voz (reproducible),
+// video o documento. La fuente (`mediaUrl`) ya viene resuelta del backend
+// (URL pública directa para fotos del bot, o proxy /api/inbox/media para Meta).
+function MediaAttachment({ msg }: { msg: Message }) {
+  const url = msg.mediaUrl;
+  if (!url) return null;
+  if (msg.mediaType === "image" || msg.mediaType === "sticker") {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block mb-1">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt="adjunto" loading="lazy" className="rounded-lg max-h-72 w-auto object-cover" />
+      </a>
+    );
+  }
+  if (msg.mediaType === "audio") {
+    // Las notas de voz de WhatsApp son ogg/opus (Safari no las reproduce inline);
+    // el link de descarga es el respaldo para cualquier navegador.
+    return (
+      <div className="my-1">
+        <audio controls preload="none" src={url} className="w-56 max-w-full h-10" />
+        <a href={url} target="_blank" rel="noopener noreferrer" className="block text-[11px] underline opacity-70 mt-0.5">
+          ⬇ descargar nota de voz
+        </a>
+      </div>
+    );
+  }
+  if (msg.mediaType === "video") {
+    return <video controls preload="metadata" src={url} className="rounded-lg max-h-72 w-auto my-1" />;
+  }
+  if (msg.mediaType === "document") {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 underline my-1 text-sm">
+        📄 {msg.mediaFilename || "Documento"}
+      </a>
+    );
+  }
+  return null;
+}
+
 // ── Columna derecha: Pendientes / Seguimiento ─────────────────────────────────
 // Agrupa las conversaciones que requieren acción para que nada se cuelgue.
 // Prioridad (cada chat cae en UN solo grupo): pausa → escalada → pago → sin responder.
@@ -403,6 +452,9 @@ export default function InboxPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [composeText, setComposeText] = useState("");
   const [sending, setSending] = useState(false);
+  // Archivo adjunto que César va a enviar (imagen/video). El composeText hace de
+  // caption opcional. El envío real va por /api/inbox/send-media (multipart).
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [loadingConv, setLoadingConv] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -419,9 +471,18 @@ export default function InboxPage() {
     document.documentElement.classList.toggle("dark", darkMode);
     try { localStorage.setItem("inbox-theme", darkMode ? "dark" : "light"); } catch { /* ignore */ }
   }, [darkMode]);
+  // Preview local del archivo adjunto (object URL revocado al cambiar/limpiar).
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+  useEffect(() => {
+    if (!mediaFile || !mediaFile.type.startsWith("image/")) { setMediaPreview(null); return; }
+    const url = URL.createObjectURL(mediaFile);
+    setMediaPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [mediaFile]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   /**
    * Marca al cambiar de conversación → fuerza scroll al final una vez,
    * después se desactiva hasta que vos vuelvas a estar cerca del fondo.
@@ -656,6 +717,12 @@ export default function InboxPage() {
   // ── Enviar mensaje ───────────────────────────────────────────────────────
   async function handleSend(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
+    // Si hay un archivo adjunto, el envío va por la ruta de media (el texto del
+    // composer se usa como caption).
+    if (mediaFile) {
+      await handleSendMedia();
+      return;
+    }
     if (!selectedPhone || !composeText.trim() || sending) return;
     setSending(true);
     try {
@@ -675,6 +742,60 @@ export default function InboxPage() {
         setEmojiOpen(false);
         // Después de enviar SÍ queremos saltar al final (estás participando
         // activamente en la conversación).
+        forceScrollOnNextLoadRef.current = true;
+        loadMessages(selectedPhone);
+        fetchConversations();
+      } else {
+        alert("Error al enviar: " + (data.error ?? "desconocido"));
+      }
+    } catch (err) {
+      alert("Error de red: " + (err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // ── Adjuntar y enviar imagen/video ────────────────────────────────────────
+  const MAX_IMAGE_MB = 5;
+  const MAX_VIDEO_MB = 16;
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>): void {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // permite re-elegir el mismo archivo después
+    if (!f) return;
+    const isImage = f.type.startsWith("image/");
+    const isVideo = f.type.startsWith("video/");
+    if (!isImage && !isVideo) {
+      alert("Solo se pueden enviar imágenes o videos.");
+      return;
+    }
+    const maxMb = isImage ? MAX_IMAGE_MB : MAX_VIDEO_MB;
+    if (f.size > maxMb * 1024 * 1024) {
+      alert(`El archivo es muy grande (${(f.size / 1048576).toFixed(1)}MB). Máximo ${maxMb}MB para ${isImage ? "imágenes" : "videos"}.`);
+      return;
+    }
+    setMediaFile(f);
+  }
+
+  async function handleSendMedia(): Promise<void> {
+    if (!selectedPhone || !mediaFile || sending) return;
+    setSending(true);
+    try {
+      const fd = new FormData();
+      fd.append("phone", selectedPhone);
+      fd.append("file", mediaFile);
+      if (composeText.trim()) fd.append("caption", composeText.trim());
+      const resp = await fetch("/api/inbox/send-media", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+      const data = (await resp.json()) as SendResponse;
+      if (data.ok) {
+        setMediaFile(null);
+        setComposeText("");
+        if (composeRef.current) composeRef.current.style.height = "auto";
+        setEmojiOpen(false);
         forceScrollOnNextLoadRef.current = true;
         loadMessages(selectedPhone);
         fetchConversations();
@@ -951,7 +1072,10 @@ export default function InboxPage() {
                           : "bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-primary dark:text-slate-100"
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap break-words">{m.body}</p>
+                      {m.mediaType && <MediaAttachment msg={m} />}
+                      {m.body && !AUTO_MEDIA_LABELS.has(m.body) && (
+                        <p className="text-sm whitespace-pre-wrap break-words">{m.body}</p>
+                      )}
                       <p className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === "out" ? "text-white/70 justify-end" : "text-muted dark:text-slate-400"}`}>
                         <span>{formatDate(m.createdAt)}</span>
                         {m.matchedRule && m.matchedRule !== "manual_inbox" && <span>· 🤖 {m.matchedRule}</span>}
@@ -1001,6 +1125,52 @@ export default function InboxPage() {
                   </div>
                 )}
 
+                {/* Preview del archivo adjunto (imagen/video a enviar) */}
+                {mediaFile && (
+                  <div className="absolute bottom-full left-0 right-0 mb-2 mx-4 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg p-2 flex items-center gap-3 z-10">
+                    {mediaPreview ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={mediaPreview} alt="preview" className="h-14 w-14 rounded object-cover shrink-0" />
+                    ) : (
+                      <div className="h-14 w-14 rounded bg-gray-100 dark:bg-slate-700 flex items-center justify-center text-2xl shrink-0">🎥</div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-primary dark:text-slate-100 truncate">{mediaFile.name}</p>
+                      <p className="text-[11px] text-muted dark:text-slate-400">
+                        {(mediaFile.size / 1048576).toFixed(1)} MB · se enviará al cliente{composeText.trim() ? " con tu texto de pie" : ""}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMediaFile(null)}
+                      disabled={sending}
+                      className="text-muted dark:text-slate-400 hover:text-red-500 transition text-xl px-2 self-start disabled:opacity-50"
+                      aria-label="Quitar archivo"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Input file oculto + botón adjuntar */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,video/mp4,video/3gpp"
+                  className="hidden"
+                  onChange={onPickFile}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={sending}
+                  className="text-2xl text-muted dark:text-slate-400 hover:text-primary dark:hover:text-slate-100 transition disabled:opacity-50 self-end pb-1"
+                  aria-label="Adjuntar imagen o video"
+                  title="Adjuntar imagen o video"
+                >
+                  📎
+                </button>
+
                 {/* Botón emoji */}
                 <button
                   type="button"
@@ -1025,12 +1195,12 @@ export default function InboxPage() {
                     // Enter solo → nueva línea (comportamiento natural del textarea)
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                       e.preventDefault();
-                      if (composeText.trim() && !sending) {
+                      if ((composeText.trim() || mediaFile) && !sending) {
                         handleSend(e as unknown as React.FormEvent<HTMLFormElement>);
                       }
                     }
                   }}
-                  placeholder="Escribir mensaje... (Enter para nueva línea, Cmd+Enter para enviar)"
+                  placeholder={mediaFile ? "Texto de pie de foto (opcional)…" : "Escribir mensaje... (Enter para nueva línea, Cmd+Enter para enviar)"}
                   rows={1}
                   className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
                   style={{ maxHeight: "200px" }}
@@ -1040,10 +1210,10 @@ export default function InboxPage() {
                 {/* Botón enviar */}
                 <button
                   type="submit"
-                  disabled={sending || !composeText.trim()}
+                  disabled={sending || (!composeText.trim() && !mediaFile)}
                   className="bg-primary text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-primary/90 transition disabled:opacity-50 self-end"
                 >
-                  {sending ? "..." : "Enviar"}
+                  {sending ? "..." : mediaFile ? "Enviar 📎" : "Enviar"}
                 </button>
               </form>
             </>

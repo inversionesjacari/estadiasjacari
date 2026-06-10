@@ -152,12 +152,24 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 // Esos los ignoramos por ahora.
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface MetaMediaObject {
+  id?: string;
+  mime_type?: string;
+  caption?: string;
+  filename?: string;
+  voice?: boolean;
+}
 interface MetaMessage {
   from?: string;
   id?: string;
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+  image?: MetaMediaObject;
+  audio?: MetaMediaObject;
+  video?: MetaMediaObject;
+  document?: MetaMediaObject;
+  sticker?: MetaMediaObject;
 }
 
 interface MetaContact {
@@ -308,8 +320,9 @@ async function processIncomingMessage(
     return;
   }
   if (msg.type !== "text") {
-    // Por ahora solo manejamos texto. Audios/imagenes/stickers → escalar genérico.
-    await handleNonTextMessage(msg, contacts, env);
+    // Audio/imagen/video/documento/sticker: guardamos el archivo (para verlo en
+    // el inbox) y escalamos a César. El bot no interpreta media.
+    await handleMediaMessage(msg, contacts, env);
     return;
   }
   const bodyText = msg.text?.body?.trim();
@@ -537,21 +550,8 @@ async function processIncomingMessage(
   // ── Enviar respuesta por WhatsApp ──────────────────────────────────────
   const sendResult = await sendTextMessage(fromE164, replyText, env);
 
-  // Si el quote flow devolvió fotos, enviarlas después del texto (en orden).
-  // Secuencial para que lleguen ordenadas (01, 02, 03, 04).
-  if (quoteResult?.images && quoteResult.images.length > 0) {
-    for (const imageUrl of quoteResult.images) {
-      const imgResult = await sendImageMessage(fromE164, imageUrl, env);
-      if (!imgResult.ok) {
-        console.error(`Error enviando foto ${imageUrl}:`, imgResult.error);
-      }
-    }
-  }
-
-  const photoNote =
-    quoteResult?.images && quoteResult.images.length > 0
-      ? `\n[📸 ${quoteResult.images.length} fotos enviadas]`
-      : "";
+  // Loggear el texto del bot PRIMERO, para que en el inbox quede ANTES de las
+  // fotos (mismo orden que las recibe el cliente en WhatsApp).
   try {
     await env.DB.prepare(
       `INSERT INTO whatsapp_messages
@@ -563,7 +563,7 @@ async function processIncomingMessage(
         reservation?.id ?? null,
         toE164,
         fromE164,
-        sendResult.ok ? replyText + photoNote : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
+        sendResult.ok ? replyText : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
         ruleName,
         escalate ? 1 : 0,
         sendResult.ok ? "sent" : "failed",
@@ -571,6 +571,37 @@ async function processIncomingMessage(
       .run();
   } catch (logErr) {
     console.error("Error guardando mensaje saliente:", (logErr as Error).message);
+  }
+
+  // Si el quote flow devolvió fotos, enviarlas después del texto (en orden) y
+  // loggear cada una como su propia burbuja de imagen en el inbox (media_url =
+  // URL pública del sitio, no necesita proxy ni token).
+  if (quoteResult?.images && quoteResult.images.length > 0) {
+    for (const imageUrl of quoteResult.images) {
+      const imgResult = await sendImageMessage(fromE164, imageUrl, env);
+      if (!imgResult.ok) {
+        console.error(`Error enviando foto ${imageUrl}:`, imgResult.error);
+      }
+      try {
+        await env.DB.prepare(
+          `INSERT INTO whatsapp_messages
+             (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status, media_type, media_url, media_mime)
+           VALUES (?, ?, 'out', ?, ?, '', ?, 0, ?, 'image', ?, 'image/jpeg')`,
+        )
+          .bind(
+            imgResult.messageId ?? null,
+            reservation?.id ?? null,
+            toE164,
+            fromE164,
+            ruleName,
+            imgResult.ok ? "sent" : "failed",
+            imageUrl,
+          )
+          .run();
+      } catch (logErr) {
+        console.error("Error guardando foto saliente:", (logErr as Error).message);
+      }
+    }
   }
 
   // ── Escalación por email ───────────────────────────────────────────────
@@ -632,7 +663,15 @@ async function processIncomingMessage(
 // Mensajes no-texto (audio, imagen, sticker, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleNonTextMessage(
+const MEDIA_LABELS: Record<string, string> = {
+  image: "📷 Imagen",
+  audio: "🎤 Nota de voz",
+  video: "🎥 Video",
+  document: "📄 Documento",
+  sticker: "🌟 Sticker",
+};
+
+async function handleMediaMessage(
   msg: MetaMessage,
   contacts: MetaContact[],
   env: Env,
@@ -641,27 +680,66 @@ async function handleNonTextMessage(
   const fromE164 = normalizePhone(msg.from, { assumeAlreadyE164: true }).e164;
   if (!isValidE164(fromE164)) return;
 
-  // Idempotencia
+  // Extraer la referencia al archivo según el tipo de mensaje.
+  const rawType = msg.type ?? "";
+  const mediaType = ["image", "audio", "video", "document", "sticker"].includes(rawType)
+    ? rawType
+    : "document";
+  const mediaObj =
+    msg.image ?? msg.audio ?? msg.video ?? msg.document ?? msg.sticker ?? undefined;
+  const mediaId = mediaObj?.id ?? null;
+  const mediaMime = mediaObj?.mime_type ?? null;
+  const filename = msg.document?.filename ?? null;
+  const caption = (msg.image?.caption ?? msg.video?.caption ?? msg.document?.caption ?? "").trim();
+  // El body guarda el caption si hay; si no, una etiqueta legible del tipo.
+  const body = caption || MEDIA_LABELS[mediaType] || "[multimedia]";
+
+  // Guardar/actualizar el nombre de perfil de WhatsApp (igual que en texto).
+  const contactName = contacts[0]?.profile?.name ?? null;
+  if (contactName) {
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_contacts (phone, profile_name, updated_at)
+           VALUES (?, ?, datetime('now'))
+         ON CONFLICT(phone) DO UPDATE SET
+           profile_name = excluded.profile_name, updated_at = datetime('now')`,
+      )
+        .bind(fromE164, contactName)
+        .run();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Idempotencia + guardar la referencia al media (lo principal: poder verlo).
   const inserted = await env.DB.prepare(
     `INSERT OR IGNORE INTO whatsapp_messages
-       (meta_message_id, direction, from_phone, to_phone, body)
-     VALUES (?, 'in', ?, ?, ?)`,
+       (meta_message_id, direction, from_phone, to_phone, body, media_type, media_id, media_mime, media_filename)
+     VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(msg.id, fromE164, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", `[${msg.type ?? "?"} no manejado]`)
+    .bind(msg.id, fromE164, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", body, mediaType, mediaId, mediaMime, filename)
     .run();
-  if ((inserted.meta?.changes ?? 0) === 0) return;
+  if ((inserted.meta?.changes ?? 0) === 0) return; // ya procesado
 
-  // Responder genérico y escalar
-  const reply = `Recibí tu mensaje (audio/imagen/multimedia). Por ahora solo respondo texto — un agente humano te va a atender en breve. Si es urgente, escríbelo en texto o llama al +504 8839-0145.`;
-  await sendTextMessage(fromE164, reply, env);
+  // Si un humano ya tomó la conversación (bot en pausa), no respondemos ni
+  // escalamos de nuevo: César ya lo está viendo y ahora puede ver el archivo.
+  if (await isBotPaused(fromE164, env.DB)) return;
+
+  // El bot no interpreta audio/imagen — avisa cálido y escala para que César
+  // lo vea en el inbox (clave para comprobantes de pago).
+  await sendTextMessage(
+    fromE164,
+    "¡Recibido! 🌴 En un momento una persona del equipo te atiende por aquí.",
+    env,
+  );
 
   const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
   await sendEscalationEmail(
     {
-      guestMessage: `[Tipo de mensaje no manejado: ${msg.type ?? "desconocido"}]`,
+      guestMessage: caption ? `[${mediaType}] ${caption}` : `[${MEDIA_LABELS[mediaType] ?? "archivo"} recibido]`,
       guestPhone: fromE164,
       reservation,
-      reason: `Mensaje multimedia (${msg.type ?? "?"}) — bot no maneja audio/imagen todavía`,
+      reason: `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
     },
     {
       RESEND_API_KEY: env.RESEND_API_KEY ?? "",
@@ -669,6 +747,4 @@ async function handleNonTextMessage(
       EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
     },
   );
-
-  void contacts;
 }

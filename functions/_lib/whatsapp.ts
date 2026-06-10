@@ -461,6 +461,129 @@ export async function sendImageMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Media genérico — para lo que César sube desde el inbox (imágenes / videos /
+// notas de voz / documentos). Flujo de 2 pasos, igual que el PDF de check-in:
+//   1. uploadMediaToMeta → POST /{PHONE_NUMBER_ID}/media (FormData) → media_id
+//   2. sendMediaById     → POST /{PHONE_NUMBER_ID}/messages con ese media_id
+// Solo funciona dentro de la ventana de 24h del cliente (igual que el texto libre).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type MediaKind = "image" | "video" | "audio" | "document";
+
+export interface UploadMediaResult {
+  ok: boolean;
+  mediaId?: string;
+  error?: string;
+}
+
+/**
+ * Sube un archivo binario a Meta Media y devuelve su media_id (válido ~30 días).
+ * `mime` debe ser un tipo soportado por WhatsApp (image/jpeg, video/mp4, etc.).
+ */
+export async function uploadMediaToMeta(
+  bytes: Uint8Array,
+  mime: string,
+  filename: string,
+  env: WhatsAppEnv,
+): Promise<UploadMediaResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) return { ok: false, error: "Falta WHATSAPP_ACCESS_TOKEN" };
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) return { ok: false, error: "Falta WHATSAPP_PHONE_NUMBER_ID" };
+  if (!bytes || bytes.byteLength === 0) return { ok: false, error: "Archivo vacío" };
+
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mime);
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mime });
+  form.append("file", blob, filename);
+
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${env.WHATSAPP_PHONE_NUMBER_ID}/media`,
+      { method: "POST", headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` }, body: form },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `Upload media timeout/red: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  if (!resp.ok) return { ok: false, error: `Upload media HTTP ${resp.status}: ${bodyText.slice(0, 400)}` };
+
+  let parsed: { id?: string };
+  try {
+    parsed = JSON.parse(bodyText) as { id?: string };
+  } catch {
+    return { ok: false, error: `Upload media JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+  if (!parsed.id) return { ok: false, error: `Upload media sin id: ${bodyText.slice(0, 200)}` };
+
+  return { ok: true, mediaId: parsed.id };
+}
+
+/**
+ * Envía un media ya subido (por su media_id) al cliente. `kind` define el tipo
+ * de mensaje de WhatsApp. `caption` aplica a image/video/document (audio no).
+ * Solo dentro de la ventana de 24h del cliente.
+ */
+export async function sendMediaById(
+  toPhone: string,
+  kind: MediaKind,
+  mediaId: string,
+  env: WhatsAppEnv,
+  opts?: { caption?: string; filename?: string },
+): Promise<SendTextResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) return { ok: false, error: "Falta WHATSAPP_ACCESS_TOKEN" };
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) return { ok: false, error: "Falta WHATSAPP_PHONE_NUMBER_ID" };
+  if (!toPhone || !isValidE164(toPhone)) return { ok: false, error: `Teléfono inválido: "${toPhone}"` };
+  if (!mediaId) return { ok: false, error: "media_id vacío" };
+
+  const caption = opts?.caption?.slice(0, 1024) || undefined;
+  const mediaObj: Record<string, string> = { id: mediaId };
+  if (kind !== "audio" && caption) mediaObj.caption = caption; // audio no acepta caption
+  if (kind === "document" && opts?.filename) mediaObj.filename = opts.filename;
+
+  const payload: Record<string, unknown> = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: toPhone,
+    type: kind,
+    [kind]: mediaObj,
+  };
+
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `Send media timeout/red: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  if (!resp.ok) return { ok: false, error: `Send media HTTP ${resp.status}: ${bodyText.slice(0, 400)}` };
+
+  let parsed: { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } };
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: `Send media JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+  if (parsed.error) return { ok: false, error: `Send media Meta error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "desconocido"}` };
+
+  const messageId = parsed.messages?.[0]?.id;
+  if (!messageId) return { ok: false, error: `Send media sin message id: ${bodyText.slice(0, 200)}` };
+
+  return { ok: true, messageId };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper: formato de fecha en español para la variable {{3}} del template.
 // "2026-05-26" + checkIn=hoy → "hoy, 26 de mayo"
 // "2026-05-26" + checkIn=mañana → "mañana, 26 de mayo"

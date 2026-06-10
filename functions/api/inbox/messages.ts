@@ -27,6 +27,11 @@ interface MessageRow {
   escalated: number;
   status: string | null;
   created_at: string;
+  media_type: string | null;
+  media_id: string | null;
+  media_url: string | null;
+  media_mime: string | null;
+  media_filename: string | null;
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
@@ -42,10 +47,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   try {
     const { results } = await env.DB.prepare(
       `SELECT id, meta_message_id, reservation_id, direction,
-              from_phone, to_phone, body, matched_rule, escalated, status, created_at
+              from_phone, to_phone, body, matched_rule, escalated, status, created_at,
+              media_type, media_id, media_url, media_mime, media_filename
          FROM whatsapp_messages
         WHERE from_phone = ? OR to_phone = ?
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         LIMIT 500`,
     )
       .bind(phone, phone)
@@ -66,6 +72,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         escalated: m.escalated === 1,
         status: m.status,
         createdAt: m.created_at,
+        // Media: el front usa la URL pública directa (fotos del bot) o, si el
+        // archivo vive en Meta (entrantes / lo que sube César), el proxy autenticado.
+        mediaType: m.media_type,
+        mediaUrl: m.media_url
+          ? m.media_url
+          : m.media_id
+            ? `/api/inbox/media?id=${encodeURIComponent(m.media_id)}`
+            : null,
+        mediaMime: m.media_mime,
+        mediaFilename: m.media_filename,
       })),
     });
   } catch (err) {
