@@ -24,7 +24,7 @@
 //
 
 import { normalizePhone, isValidE164 } from "../_lib/phone";
-import { sendTextMessage, sendImageMessage } from "../_lib/whatsapp";
+import { sendTextMessage, sendImageMessage, sendLocationMessage } from "../_lib/whatsapp";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
@@ -578,6 +578,31 @@ async function processIncomingMessage(
       .run();
   } catch (logErr) {
     console.error("Error guardando mensaje saliente:", (logErr as Error).message);
+  }
+
+  // Si el quote flow devolvió una ubicación, mandarla como pin nativo del mapa
+  // (miniatura del mapa, tocable, abre la app de mapas del huésped para navegar).
+  if (quoteResult?.location) {
+    const locResult = await sendLocationMessage(fromE164, quoteResult.location, env);
+    if (!locResult.ok) console.error("Error enviando ubicación:", locResult.error);
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_messages
+           (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+         VALUES (?, ?, 'out', ?, ?, ?, 'location_sent', 0, ?)`,
+      )
+        .bind(
+          locResult.messageId ?? null,
+          reservation?.id ?? null,
+          toE164,
+          fromE164,
+          `📍 Ubicación enviada: ${quoteResult.location.name}`,
+          locResult.ok ? "sent" : "failed",
+        )
+        .run();
+    } catch (logErr) {
+      console.error("Error guardando ubicación saliente:", (logErr as Error).message);
+    }
   }
 
   // Si el quote flow devolvió fotos, enviarlas después del texto (en orden) y

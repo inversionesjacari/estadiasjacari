@@ -460,6 +460,66 @@ export async function sendImageMessage(
   return { ok: true, messageId };
 }
 
+/**
+ * Envía una UBICACIÓN nativa de WhatsApp (pin sobre el mapa, con nombre y
+ * dirección). Se ve como cuando uno comparte su ubicación: miniatura del mapa,
+ * tocable, abre la app de mapas del huésped para navegar. Solo dentro de la
+ * ventana de 24h.
+ */
+export async function sendLocationMessage(
+  toPhone: string,
+  loc: { latitude: number; longitude: number; name: string; address: string },
+  env: WhatsAppEnv,
+): Promise<SendTextResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) return { ok: false, error: "Falta WHATSAPP_ACCESS_TOKEN" };
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) return { ok: false, error: "Falta WHATSAPP_PHONE_NUMBER_ID" };
+  if (!toPhone || !isValidE164(toPhone)) return { ok: false, error: `Teléfono inválido: "${toPhone}"` };
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: toPhone,
+    type: "location",
+    location: {
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      name: loc.name.slice(0, 1000),
+      address: loc.address.slice(0, 1000),
+    },
+  };
+
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `Send location timeout/red: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  if (!resp.ok) return { ok: false, error: `Send location HTTP ${resp.status}: ${bodyText.slice(0, 400)}` };
+
+  let parsed: { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } };
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: `Send location JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+  if (parsed.error) return { ok: false, error: `Send location Meta error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "desconocido"}` };
+
+  const messageId = parsed.messages?.[0]?.id;
+  if (!messageId) return { ok: false, error: `Send location sin message id: ${bodyText.slice(0, 200)}` };
+
+  return { ok: true, messageId };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Media genérico — para lo que César sube desde el inbox (imágenes / videos /
 // notas de voz / documentos). Flujo de 2 pasos, igual que el PDF de check-in:
