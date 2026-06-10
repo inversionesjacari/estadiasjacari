@@ -39,7 +39,10 @@ export interface ConversationTurn {
 export async function getConversationHistory(
   phone: string,
   db: D1Database,
-  limit = 14,
+  // 10 mensajes (5 idas y vueltas) = contexto de sobra. Los datos clave (personas,
+  // fechas, propiedad) viven en el ESTADO, no acá → recortar no pierde memoria,
+  // solo achica el prompt (menos Neurons por mensaje).
+  limit = 10,
 ): Promise<ConversationTurn[]> {
   try {
     const res = await db
@@ -61,7 +64,7 @@ export async function getConversationHistory(
       if (body.startsWith("[FAILED]")) continue; // no confundir al LLM con errores
       turns.push({
         role: r.direction === "in" ? "user" : "assistant",
-        content: body.slice(0, 600),
+        content: body.slice(0, 450),
       });
     }
     return turns;
