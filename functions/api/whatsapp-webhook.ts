@@ -800,11 +800,22 @@ async function handleMediaMessage(
 
   // El bot no interpreta audio/imagen — avisa cálido y escala para que César
   // lo vea en el inbox (clave para comprobantes de pago).
-  await sendTextMessage(
-    fromE164,
-    "¡Recibido! 🌴 En un momento una persona del equipo te atiende por aquí.",
-    env,
-  );
+  const ackText = "¡Recibido! 🌴 En un momento una persona del equipo te atiende por aquí.";
+  const ackResult = await sendTextMessage(fromE164, ackText, env);
+  // Loggear el saliente del bot para que aparezca en el inbox (antes el "¡Recibido!"
+  // se enviaba pero NO se guardaba → en el inbox se veía el media del cliente pero
+  // no la respuesta del bot).
+  try {
+    await env.DB.prepare(
+      `INSERT INTO whatsapp_messages
+         (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+       VALUES (?, 'out', ?, ?, ?, 'media_received', 0, ?)`,
+    )
+      .bind(ackResult.messageId ?? null, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", fromE164, ackText, ackResult.ok ? "sent" : "failed")
+      .run();
+  } catch {
+    /* best-effort */
+  }
 
   const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
   await sendEscalationEmail(
