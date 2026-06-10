@@ -29,6 +29,8 @@ export interface WorkersAIEnv {
    *  GPT-4o-mini como cerebro principal (respeta JSON, sin cuota diaria de Cloudflare).
    *  Workers AI queda como respaldo. */
   OPENAI_API_KEY?: string;
+  /** D1 (opcional) — solo para trazas de diagnóstico de qué cerebro respondió. */
+  DB?: D1Database;
 }
 
 export interface AIMessage {

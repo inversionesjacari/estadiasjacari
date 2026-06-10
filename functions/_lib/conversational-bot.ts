@@ -187,6 +187,17 @@ export async function runConversationalBot(
     env,
     { temperature: 0.15, maxTokens: 600 },
   );
+  // 📸 CÁMARA temporal de OpenAI: ¿respondió o falló, y por qué? (diagnóstico)
+  if (env.DB) {
+    try {
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES ('(openai)', ?, ?)`)
+        .bind(
+          result.ok ? "OPENAI_OK" : "OPENAI_FAIL",
+          result.ok ? "respondio bien" : String(result.error ?? "sin detalle").slice(0, 220),
+        )
+        .run();
+    } catch { /* best-effort */ }
+  }
   if (!result.ok && !result.rawText) {
     // OpenAI no disponible (sin key / error de red) → respaldo Workers AI (Llama).
     result = await callWorkersAIJson<LlamaOutput>(
