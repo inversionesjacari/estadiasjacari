@@ -24,8 +24,12 @@
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { sendTextMessage } from "../../_lib/whatsapp";
 import { PROPERTY_PRICING } from "../../_lib/quote-builder";
+import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "../../_lib/availability";
+import { isNotInterested } from "../../_lib/quote-flow";
+import { todayHn } from "../../_lib/dates";
+import { T } from "../../_lib/i18n";
 
-interface Env {
+interface Env extends AvailabilityEnv {
   DB: D1Database;
   CRON_SECRET?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
@@ -239,10 +243,108 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     });
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // ÚLTIMO AVISO — antes de que se cierre la ventana de 24h de WhatsApp.
+  // Para no dejar morir leads activos que no respondieron. Antes de insistir:
+  //   (1) NO molestar a quien ya cerró o no le interesó (isNotInterested).
+  //   (2) Si tiene cotización, verificar que la fecha NO pasó y SIGA disponible
+  //       — si ya no, ofrecer otras fechas/opciones en vez de insistir con esa.
+  // Dispara ~20–24 h tras el último intercambio (margen antes del cierre de 24h).
+  // Un solo toque por conversación (last_call_sent_at).
+  // ════════════════════════════════════════════════════════════════════════
+  const lastCall: Array<{ phone: string; sent: boolean; kind?: string; error?: string }> = [];
+  try {
+    const lc = await env.DB.prepare(
+      `SELECT phone, state, data
+         FROM conversation_state
+        WHERE state IN ('awaiting_quote_data','quote_provided','awaiting_payment_method','awaiting_transfer_proof','awaiting_paypal_capture')
+          AND last_call_sent_at IS NULL
+          AND updated_at <= datetime('now','-20 hours')
+          AND updated_at >= datetime('now','-24 hours')
+          AND expires_at > datetime('now')
+          AND phone NOT IN (SELECT phone FROM bot_pauses)
+        LIMIT 20`,
+    ).all<StateRow>();
+
+    const today = todayHn();
+
+    for (const row of lc.results ?? []) {
+      let data: Record<string, unknown> = {};
+      if (row.data) { try { data = JSON.parse(row.data) as Record<string, unknown>; } catch { /* {} */ } }
+      const lang = data.language === "en" ? "en" : "es";
+
+      // Marcar como procesado SIEMPRE (mandemos o no) para no re-evaluarlo cada tick.
+      const markDone = async () => {
+        try { await env.DB.prepare(`UPDATE conversation_state SET last_call_sent_at = datetime('now') WHERE phone = ?`).bind(row.phone).run(); } catch { /* best-effort */ }
+      };
+
+      // (1) ¿El cliente ya mostró desinterés en su ÚLTIMO mensaje? → no molestar.
+      let lastIn = "";
+      try {
+        const r = await env.DB.prepare(
+          `SELECT body FROM whatsapp_messages WHERE from_phone = ? AND direction = 'in' ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ).bind(row.phone).first<{ body: string | null }>();
+        lastIn = r?.body ?? "";
+      } catch { /* best-effort */ }
+
+      if (lastIn && isNotInterested(lastIn)) {
+        await markDone();
+        lastCall.push({ phone: row.phone, sent: false, kind: "skip_not_interested" });
+        continue;
+      }
+
+      // (2) Verificar disponibilidad si hay cotización con fechas.
+      const slug = typeof data.property === "string" ? data.property : null;
+      const checkIn = typeof data.checkIn === "string" ? data.checkIn : null;
+      const checkOut = typeof data.checkOut === "string" ? data.checkOut : null;
+      const propName = slug && PROPERTY_PRICING[slug as keyof typeof PROPERTY_PRICING]
+        ? PROPERTY_PRICING[slug as keyof typeof PROPERTY_PRICING].name : null;
+      const city = typeof data.city === "string" ? data.city : null;
+      const ref = propName
+        ? (lang === "en" ? ` for ${propName}` : ` con ${propName}`)
+        : city ? (lang === "en" ? ` in ${city}` : ` en ${city}`) : "";
+
+      let stillOk = true; // sin fechas que verificar → tratamos como vivo
+      if (slug && checkIn && checkOut) {
+        if (checkIn < today) {
+          stillOk = false; // la fecha ya pasó → no insistir con ella
+        } else {
+          const avail = slug === "las-gemelas-tela"
+            ? await checkGemelasAvailable(checkIn, checkOut, env)
+            : await checkRangeAvailable(slug, checkIn, checkOut, env);
+          // Solo "no disponible" si lo CONFIRMAMOS; si no pudimos verificar (iCal
+          // caído), asumimos vivo (no perder un lead por un fallo nuestro).
+          if (avail.verified && !avail.available) stillOk = false;
+        }
+      }
+
+      const message = stillOk ? T.lastCallAlive(lang, ref) : T.lastCallUnavailable(lang, ref);
+      if (dryRun) {
+        lastCall.push({ phone: row.phone, sent: false, kind: stillOk ? "alive(dry)" : "unavailable(dry)" });
+        continue;
+      }
+
+      const sr = await sendTextMessage(row.phone, message, env);
+      await markDone();
+      if (sr.ok) {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO whatsapp_messages (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+             VALUES (?, 'out', ?, ?, ?, ?, 0, 'sent')`,
+          ).bind(sr.messageId ?? null, env.WHATSAPP_PHONE_NUMBER_ID, row.phone, message, stillOk ? "last_call" : "last_call_redirect").run();
+        } catch { /* best-effort */ }
+      }
+      lastCall.push({ phone: row.phone, sent: sr.ok, kind: stillOk ? "alive" : "unavailable", error: sr.ok ? undefined : sr.error });
+    }
+  } catch (err) {
+    lastCall.push({ phone: "—", sent: false, error: `lastCall: ${(err as Error).message}` });
+  }
+
   return json({
     ok: true,
     candidates: rows.length,
     sent: results.filter((r) => r.sent).length,
+    lastCall: { processed: lastCall.length, sent: lastCall.filter((r) => r.sent).length, detail: lastCall },
     dryRun,
     results,
   });

@@ -114,6 +114,24 @@ export function isPhotoRequest(text: string): boolean {
   );
 }
 
+/**
+ * Señales CLARAS de que el lead ya NO está interesado: rechazó por precio, se
+ * despidió, o postergó. Se usa para NO molestarlo con el "último aviso" antes de
+ * cerrar la ventana de 24h. Conservador: solo casos evidentes (mejor dejar pasar
+ * un cierre sutil que insistirle a alguien que ya dijo que no).
+ */
+export function isNotInterested(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return (
+    // rechazo por precio
+    /\b(no me conviene|muy caro|esta caro|carisimo|fuera de (mi )?presupuesto|no me alcanza|se (me )?pasa de presupuesto|esta fuera de)\b/.test(t) ||
+    // postergación / "otra vez será"
+    /\b(lo pienso|lo voy a pensar|despues (te )?(veo|aviso|escribo|digo)|mas adelante|otra ocasion|por ahora no|no por ahora|sera (en )?otra|en otra ocasion|tal vez (luego|despues|mas adelante))\b/.test(t) ||
+    // despedida cortés como mensaje completo (no "gracias, ¿cómo pago?")
+    /^(muchas gracias|gracias|ok gracias|listo gracias|igualmente|esta bien gracias)[.! ]*$/.test(t)
+  );
+}
+
 /** Detecta si el huésped reporta que ya hizo el pago (escalar para verificar). */
 export function isPaymentReported(text: string): boolean {
   const t = text

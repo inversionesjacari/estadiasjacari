@@ -101,6 +101,19 @@ export const T = {
       ? "\n\nWhenever you're ready, just tell me *Card* or *Transfer* and we'll continue."
       : "\n\nCuando la veas y estés lista, decime *Tarjeta* o *Transferencia* y seguimos.",
 
+  // "Último aviso" antes de cerrar la ventana de 24h — la fecha SIGUE disponible.
+  lastCallAlive: (l: Lang, ref: string): string =>
+    l === "en"
+      ? `Hi! 👋 Before our chat closes here, I still have everything ready${ref}. Want to go ahead with the booking? If you'd prefer other dates, I can help too. 🌴`
+      : `¡Hola! 👋 Antes de que se cierre nuestra conversación por acá, sigo teniendo todo listo${ref}. ¿Querés que avancemos con la reserva? Si preferís otras fechas, también te ayudo. 🌴`,
+
+  // "Último aviso" cuando esas fechas YA NO están (ocupadas o ya pasaron) →
+  // no insistir con eso; ponerse a la orden con otras fechas/opciones.
+  lastCallUnavailable: (l: Lang, ref: string): string =>
+    l === "en"
+      ? `Hi! 👋 Quick heads-up — those dates${ref} are no longer available 😕, but I'd be glad to find you other dates or another option. Want me to? 🌴`
+      : `¡Hola! 👋 Te cuento que esas fechas${ref} ya no están disponibles 😕, pero con gusto te busco otras fechas u otra opción. ¿Te ayudo? 🌴`,
+
   techError: (l: Lang): string =>
     l === "en"
       ? "Sorry, I had a technical issue processing your message. A team member will reply shortly. 🙏"
