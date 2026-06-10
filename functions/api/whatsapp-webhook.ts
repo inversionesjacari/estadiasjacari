@@ -171,6 +171,10 @@ interface MetaMessage {
   document?: MetaMediaObject;
   sticker?: MetaMediaObject;
   reaction?: { message_id?: string; emoji?: string };
+  contacts?: Array<{
+    name?: { formatted_name?: string; first_name?: string };
+    phones?: Array<{ phone?: string; wa_id?: string }>;
+  }>;
 }
 
 interface MetaContact {
@@ -714,6 +718,20 @@ async function handleReaction(msg: MetaMessage, env: Env): Promise<void> {
     .run();
 }
 
+// Resumen legible de los contactos (vCards) que comparte un cliente.
+function formatSharedContacts(
+  cards?: Array<{ name?: { formatted_name?: string; first_name?: string }; phones?: Array<{ phone?: string; wa_id?: string }> }>,
+): string {
+  const list = cards ?? [];
+  if (list.length === 0) return "📇 Contacto compartido";
+  const parts = list.map((c) => {
+    const name = c.name?.formatted_name || c.name?.first_name || "Contacto";
+    const phone = c.phones?.[0]?.phone || c.phones?.[0]?.wa_id || "";
+    return phone ? `${name} · ${phone}` : name;
+  });
+  return `📇 Contacto compartido: ${parts.join(" | ")}`;
+}
+
 const MEDIA_LABELS: Record<string, string> = {
   image: "📷 Imagen",
   audio: "🎤 Nota de voz",
@@ -744,7 +762,10 @@ async function handleMediaMessage(
   const caption = (msg.image?.caption ?? msg.video?.caption ?? msg.document?.caption ?? "").trim();
   // body = caption si hay; si hay archivo, etiqueta legible del tipo (se oculta
   // bajo el adjunto); si es un tipo raro sin archivo descargable, nota visible.
-  const body = caption || (mediaId ? MEDIA_LABELS[mediaType] : `[${rawType || "mensaje"} no soportado]`) || "[multimedia]";
+  const body =
+    rawType === "contacts"
+      ? formatSharedContacts(msg.contacts)
+      : caption || (mediaId ? MEDIA_LABELS[mediaType] : `[${rawType || "mensaje"} no soportado]`) || "[multimedia]";
 
   // Guardar/actualizar el nombre de perfil de WhatsApp (igual que en texto).
   const contactName = contacts[0]?.profile?.name ?? null;
@@ -788,10 +809,10 @@ async function handleMediaMessage(
   const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
   await sendEscalationEmail(
     {
-      guestMessage: caption ? `[${mediaType}] ${caption}` : `[${MEDIA_LABELS[mediaType] ?? "archivo"} recibido]`,
+      guestMessage: rawType === "contacts" ? body : caption ? `[${mediaType}] ${caption}` : `[${MEDIA_LABELS[mediaType] ?? "archivo"} recibido]`,
       guestPhone: fromE164,
       reservation,
-      reason: `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
+      reason: rawType === "contacts" ? "El cliente compartió un contacto — míralo en el inbox" : `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
     },
     {
       RESEND_API_KEY: env.RESEND_API_KEY ?? "",
