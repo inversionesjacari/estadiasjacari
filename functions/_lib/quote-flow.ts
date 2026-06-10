@@ -103,6 +103,17 @@ export function isBankAccountRequest(text: string): boolean {
   );
 }
 
+/** Detecta si el huésped pide ver fotos / conocer la propiedad (es/en). */
+export function isPhotoRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /\b(foto|fotos|fotograf[ií]a|fotograf[ií]as|im[aá]gen|im[aá]genes)\b/.test(t) ||
+    /(ver|conocer|mostrar|mu[eé]stra|ense[ñn]a).{0,15}(casa|propiedad|lugar|villa|apartamento|depto|cuarto|habitaci)/.test(t) ||
+    /\b(photo|photos|picture|pictures|images?)\b/.test(t) ||
+    /(see|show).{0,15}(house|place|property|villa|apartment|room)/.test(t)
+  );
+}
+
 /** Detecta si el huésped reporta que ya hizo el pago (escalar para verificar). */
 export function isPaymentReported(text: string): boolean {
   const t = text
@@ -643,6 +654,22 @@ async function handlePaymentMethodChoice(
   const transferChoice = isTransferChoice(text);
 
   if (!cardChoice && !transferChoice) {
+    // El cliente no eligió método. Antes de repetir la aclaración (el bot la
+    // machacaba ignorando al cliente), atendemos un pedido legítimo y muy común
+    // ANTES de pagar: ver fotos / conocer la casa. Mandamos fotos + galería y le
+    // recordamos el paso de pago, SIN salir del estado (no rompe el cobro).
+    if (isPhotoRequest(text) && data.property) {
+      const photos = getPropertyPhotos(data.property);
+      if (photos.length > 0) {
+        return {
+          reply:           T.photosIntro(lang) + T.photosGallery(lang, getGalleryUrl(data.property)) + T.resumePaymentTail(lang),
+          images:          photos,
+          escalateToOwner: false,
+          ruleName:        "photos_during_payment",
+          tokensUsed:      0,
+        };
+      }
+    }
     return {
       reply:           T.paymentMethodClarify(lang),
       escalateToOwner: false,

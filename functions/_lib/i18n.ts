@@ -94,6 +94,13 @@ export const T = {
       ? `\n\nSee all the photos here 👇\n${galleryUrl}`
       : `\n\nMirá todas las fotos acá 👇\n${galleryUrl}`,
 
+  // Recordatorio del paso de pago tras atender una pregunta (fotos, etc.) cuando
+  // el cliente ya estaba eligiendo método. Sin emoji de playa (aplica a toda zona).
+  resumePaymentTail: (l: Lang): string =>
+    l === "en"
+      ? "\n\nWhenever you're ready, just tell me *Card* or *Transfer* and we'll continue."
+      : "\n\nCuando la veas y estés lista, decime *Tarjeta* o *Transferencia* y seguimos.",
+
   techError: (l: Lang): string =>
     l === "en"
       ? "Sorry, I had a technical issue processing your message. A team member will reply shortly. 🙏"
