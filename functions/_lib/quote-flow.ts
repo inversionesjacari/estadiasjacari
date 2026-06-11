@@ -282,7 +282,7 @@ export function isFarewell(text: string): boolean {
  */
 export function isBareAck(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
-  return /^(ok|okay|okey|oki|oka|vale|dale|listo|perfecto|excelente|entendido|de acuerdo|esta bien|bien|va|sale|ok va|got it|sounds good|alright|👍|👌|🙏|👏|🙂|😊)[.,!\s🙏👍👌🙂😊]*$/.test(t);
+  return /^(si|sii+|sip|simon|ok|okay|okey|oki|oka|vale|dale|listo|perfecto|excelente|entendido|de acuerdo|esta bien|bien|va|sale|ok va|got it|sounds good|alright|👍|👌|🙏|👏|🙂|😊)[.,!\s🙏👍👌🙂😊]*$/.test(t);
 }
 
 /** Última regla saliente del bot para este número (o "" si no hay). Para saber si
@@ -296,6 +296,26 @@ async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/**
+ * Cliente con intención de reservar que POSTERGA la confirmación ("le confirmaría la
+ * otra semana", "lo confirmo después", "te aviso", "déjame pensarlo"). Distinto de un
+ * rechazo (isNotInterested) o una despedida: sigue interesado, solo lo deja para
+ * luego. Se le responde con el recordatorio de que las fechas se apartan SOLO con el
+ * depósito (motiva sin presionar). Exige verbo de postergación + tiempo, o una frase
+ * de postergación clara — así NO confunde "quiero reservar la otra semana" (eso lleva
+ * "reservar", no es postergar) con "te confirmo la otra semana".
+ */
+export function isPostponing(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  const deferVerb = /(confirm|avis|decid|piens|pensar|consult|te escribo|te digo|le digo|lo veo|lo reviso)/;
+  const deferTime = /(la otra semana|la proxima semana|la semana que viene|el proximo mes|mas adelante|en unos dias|otro dia|otro momento|despues|luego|manana|mas tarde|el lunes|el martes|el miercoles|el jueves|el viernes|el sabado|el domingo|el finde|fin de semana)/;
+  return (
+    /\b(mas adelante|en unos dias|otro dia|otro momento|lo pienso|lo voy a pensar|dejame pensarlo|lo tengo que pensar|lo consulto y)\b/.test(t) ||
+    (deferVerb.test(t) && deferTime.test(t)) ||
+    /\b(next week|in a few days|later this week|let me think|i'?ll (confirm|let you know)|i will confirm|i'?ll get back)\b/.test(t)
+  );
 }
 
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
@@ -569,15 +589,40 @@ export async function handleQuoteIncoming(
       existing.state === "awaiting_quote_data" ||
       existing.state === "quote_provided";
     if (softState && (isFarewell(text) || isBareAck(text))) {
-      const alreadyClosed = (await getLastOutRule(phone, env.DB)) === "farewell";
+      // "Cerrado" = ya nos despedimos O ya mandamos el recordatorio de postergación
+      // (el cliente dijo que confirma luego) → un "ok"/"sí"/"gracias" posterior NO se
+      // re-responde (era el doble "¡Perfecto!…" del caso Yosmary).
+      const lastRule = await getLastOutRule(phone, env.DB);
+      const alreadyClosed = lastRule === "farewell" || lastRule === "postpone_reminder";
       if (alreadyClosed) {
-        // Ya cerramos: no encimar otra despedida ante un "ok"/"gracias" de cortesía.
         return { reply: "", silent: true, escalateToOwner: false, ruleName: "closing_ack_silent", tokensUsed: 0 };
       }
       if (isFarewell(text)) {
         return { reply: T.farewell(lang), escalateToOwner: false, ruleName: "farewell", tokensUsed: 0 };
       }
       // isBareAck sin despedida previa → sigue al flujo normal (puede ser "ok = sí").
+    }
+  }
+
+  // ── Cliente posterga la confirmación ("le confirmo la otra semana") ─────────
+  // Decisión de César: NO repetir el genérico "cuando estés listo, escribime" (no
+  // motiva). Le informamos con calidez que las fechas se apartan SOLO con el depósito
+  // y que no las garantizamos (orden de llegada) → lo motiva a no dejarlo pasar y a
+  // escribirnos ANTES de depositar para confirmar disponibilidad (evita el depósito a
+  // ciegas + el reembolso si ya estaba tomada). Solo cuando YA hay intención de
+  // reserva: cotización entregada, datos completos, o eligiendo método de pago.
+  if (existing && isPostponing(text)) {
+    const bookingIntent =
+      existing.state === "quote_provided" ||
+      existing.state === "awaiting_payment_method" ||
+      (existing.state === "awaiting_quote_data" && isQuoteDataComplete(existing.data));
+    if (bookingIntent) {
+      return {
+        reply:           T.postponeReminder(lang),
+        escalateToOwner: false,
+        ruleName:        "postpone_reminder",
+        tokensUsed:      0,
+      };
     }
   }
 

@@ -141,6 +141,16 @@ export const T = {
       ? "Thanks for reaching out! 🙏 I'm here whenever you need anything — have a great day! 😊"
       : "¡Gracias por escribirnos! 🙏 Aquí estoy cuando gustés. ¡Que tengás un buen día! 😊",
 
+  // Cliente con intención de reservar que POSTERGA ("le confirmo la otra semana").
+  // En vez del genérico "cuando estés listo, escribime", informa + motiva: las fechas
+  // se apartan SOLO con el depósito y no se garantizan (orden de llegada), y que
+  // escriba ANTES de depositar para confirmar disponibilidad (evita depositar a ciegas
+  // y el reembolso si ya estaba tomada). Decisión de César 2026-06-11.
+  postponeReminder: (l: Lang): string =>
+    l === "en"
+      ? "Of course, take the time you need! 😊 Just a heads-up: dates are only held on our calendar *once the deposit is made* — without it we can't guarantee they'll still be open, since they go on a first-come basis. So when you're ready, message me *before* sending the deposit and we'll confirm they're still available to lock them in. I'm here whenever you decide!"
+      : "¡Claro, tomate el tiempo que necesités! 😊 Solo para que lo tengas en cuenta: las fechas se apartan en nuestro calendario *únicamente con el depósito* — sin él no podemos garantizar que sigan libres, porque se reservan por orden de llegada. Así que cuando estés lista, escribime *antes de depositar* y confirmamos que sigan disponibles para apartarlas. ¡Acá estoy cuando decidás!",
+
   techError: (l: Lang): string =>
     l === "en"
       ? "Sorry, I had a technical issue processing your message. A team member will reply shortly. 🙏"
