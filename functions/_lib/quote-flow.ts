@@ -78,15 +78,42 @@ export function isPriceIntent(text: string): boolean {
 }
 
 /** Detecta intent de confirmación afirmativa. */
+/**
+ * ¿El mensaje es una consulta de DISPONIBILIDAD o un CAMBIO DE FECHA (no un "sí")?
+ * Ej: "Pero si estaría disponible para el 17 de junio?", "y si lo cambio al 20",
+ * "mejor el viernes", "del 20 al 22". Sirve para (1) que NO se confunda con una
+ * confirmación (acá "si" es "if", no "sí") y (2) re-cotizar cuando el cliente cambia
+ * de fechas en pleno flujo — el bot DEBE adaptarse, no machacar el pago.
+ */
+export function isDateChangeOrAvailabilityQuestion(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return (
+    /\b(disponible|disponibilidad)\b/.test(t) ||
+    /\b(otra fecha|otras fechas|otro dia|cambiar|cambio|lo paso|lo pasamos|mejor el|mejor para|mejor las?|y si (lo|mejor|el|para)|que tal (el|si|para)|se puede (el|para|mover|cambiar))\b/.test(t) ||
+    /\bsi (estaria|seria|sera|esta|estuviera|fuera|hay|tienen|tendrian|hubiera|tuvieran|pudiera|se puede|es posible|hubiese)\b/.test(t) ||
+    /\bdel\s+\d{1,2}\s+(al|a)\s+\d{1,2}\b/.test(t) ||
+    /\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/.test(t)
+  );
+}
+
+/**
+ * Confirmación CLARA de la cotización. Conservador: una NEGACIÓN, una PREGUNTA, o un
+ * CAMBIO DE FECHA/disponibilidad lo descartan. Acá "si" suele ser "if", no "sí" — bug
+ * real (caso Zedileth): "Pero si estaría disponible para el 17 de junio?" hizo que el
+ * bot pidiera pagar en vez de re-cotizar. El cliente debe poder cambiar de idea sin
+ * que lo mandemos a cobrar.
+ */
 export function isConfirmation(text: string): boolean {
-  const norm = text.toLowerCase().trim();
+  const norm = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
   // Negación clara → NO es confirmación, aunque incluya "ya"/"ok"/"listo".
-  // Ej: "ya no, gracias", "ok no", "no por ahora", "mejor no". Evita el peor caso:
-  // pedirle pagar a alguien que está rechazando (bug real: "Ya no muchas gracias").
-  if (/\b(no|nel|nop|tampoco|nada|ya no|olvidalo|olvídalo|dejalo|déjalo|cancela|cancelar|mejor no)\b/.test(norm)) {
+  if (/\b(no|nel|nop|tampoco|nada|ya no|olvidalo|dejalo|cancela|cancelar|mejor no)\b/.test(norm)) {
     return false;
   }
-  return /\b(si|sí|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
+  // Pregunta o cambio de fecha/disponibilidad → re-cotizar, NO confirmar ni cobrar.
+  if (/\?/.test(norm) || isDateChangeOrAvailabilityQuestion(text)) {
+    return false;
+  }
+  return /\b(si|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
 }
 
 /** Detecta si el huésped eligió tarjeta/PayPal. */
@@ -664,6 +691,12 @@ export async function handleQuoteIncoming(
 
   // ── CASO 2.5: Esperando método de pago ────────────────────────────────────
   if (existing.state === "awaiting_payment_method") {
+    // El cliente debe poder CAMBIAR DE FECHA aun en pleno pago — no machacarle "elegí
+    // una opción". Si no eligió método y pregunta por otra fecha/disponibilidad,
+    // volvemos al flujo de cotización para re-cotizar y adaptarnos.
+    if (!isCardChoice(text) && !isTransferChoice(text) && isDateChangeOrAvailabilityQuestion(text)) {
+      return gatherQuoteData(phone, text, existing.data, todayIso, env, false, existing.state, pricingMap);
+    }
     return handlePaymentMethodChoice(phone, text, existing.data, env, pricingMap);
   }
 
