@@ -64,7 +64,15 @@ interface KbRule {
   active: number;
 }
 
-type Tab = "reglas" | "propiedades" | "politicas" | "faqs";
+interface QuickReply {
+  id: number;
+  title: string;
+  content: string;
+  sortOrder: number;
+  active: number;
+}
+
+type Tab = "reglas" | "propiedades" | "politicas" | "faqs" | "respuestas";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Página
@@ -78,6 +86,7 @@ export default function ConocimientoPage() {
   const [policies, setPolicies] = useState<KbPolicy[]>([]);
   const [faqs, setFaqs] = useState<KbFaq[]>([]);
   const [rules, setRules] = useState<KbRule[]>([]);
+  const [replies, setReplies] = useState<QuickReply[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -88,7 +97,11 @@ export default function ConocimientoPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/inbox/kb");
+      // KB y respuestas rápidas viven en endpoints distintos → en paralelo.
+      const [res, repliesRes] = await Promise.all([
+        fetch("/api/inbox/kb"),
+        fetch("/api/inbox/quick-replies"),
+      ]);
       if (res.status === 401) {
         setAuthed(false);
         setLoading(false);
@@ -108,6 +121,10 @@ export default function ConocimientoPage() {
         setFaqs(data.faqs ?? []);
         setRules(data.rules ?? []);
       }
+      const repliesData = (await repliesRes
+        .json()
+        .catch(() => ({ ok: false }))) as { ok: boolean; replies?: QuickReply[] };
+      if (repliesData.ok) setReplies(repliesData.replies ?? []);
     } catch {
       // dejar loading false abajo
     }
@@ -171,6 +188,7 @@ export default function ConocimientoPage() {
             ["propiedades", "🏠 Propiedades"],
             ["politicas", "📋 Políticas"],
             ["faqs", "❓ Preguntas frecuentes"],
+            ["respuestas", "💬 Respuestas rápidas"],
           ] as [Tab, string][]).map(([key, label]) => (
             <button
               key={key}
@@ -219,6 +237,15 @@ export default function ConocimientoPage() {
         {tab === "faqs" && (
           <FaqsTab
             faqs={faqs}
+            onSaved={(msg) => {
+              load();
+              showToast(msg);
+            }}
+          />
+        )}
+        {tab === "respuestas" && (
+          <RepliesTab
+            replies={replies}
             onSaved={(msg) => {
               load();
               showToast(msg);
@@ -818,6 +845,177 @@ function RuleEditor({
             else {
               setEditing(false);
               setText(rule.rule);
+            }
+          }}
+          className="px-4 py-2 text-sm text-muted hover:text-primary"
+          disabled={saving}
+        >
+          Cancelar
+        </button>
+        <button onClick={save} disabled={saving} className="px-5 py-2 text-sm bg-primary text-white font-semibold rounded-lg hover:bg-primary/90 disabled:opacity-50">
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab Respuestas rápidas
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function postReplies(
+  action: string,
+  payload: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/inbox/quick-replies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, payload }),
+    });
+    return (await res.json()) as { ok: boolean; error?: string };
+  } catch {
+    return { ok: false, error: "Error de red" };
+  }
+}
+
+function RepliesTab({
+  replies,
+  onSaved,
+}: {
+  replies: QuickReply[];
+  onSaved: (msg: string) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-secondary/10 border border-secondary/30 rounded-xl p-4">
+        <p className="text-sm text-primary font-medium mb-1">
+          💬 Plantillas para responder a mano
+        </p>
+        <p className="text-sm text-muted">
+          Atajos de texto que aparecen en el inbox (botón 💬 del cuadro de mensaje)
+          para insertarlos con un clic cuando el bot está en pausa y respondés vos.
+          El bot NO las usa.
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => setCreating(true)}
+          className="px-4 py-2 text-sm bg-secondary text-white font-semibold rounded-lg hover:bg-secondary/90"
+        >
+          + Agregar respuesta
+        </button>
+      </div>
+
+      {creating && (
+        <ReplyEditor
+          reply={{ id: 0, title: "", content: "", sortOrder: 999, active: 1 }}
+          isNew
+          onCancel={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
+            onSaved("Respuesta agregada ✅");
+          }}
+        />
+      )}
+
+      {replies.length === 0 && !creating && (
+        <p className="text-center text-muted text-sm py-8">
+          Todavía no hay respuestas rápidas. Agregá la primera con el botón de arriba.
+        </p>
+      )}
+
+      {replies.map((r) => (
+        <ReplyEditor key={r.id} reply={r} onSaved={(msg) => onSaved(msg)} />
+      ))}
+    </div>
+  );
+}
+
+function ReplyEditor({
+  reply,
+  isNew,
+  onCancel,
+  onSaved,
+}: {
+  reply: QuickReply;
+  isNew?: boolean;
+  onCancel?: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(!!isNew);
+  const [title, setTitle] = useState(reply.title);
+  const [content, setContent] = useState(reply.content);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!title.trim() || !content.trim()) {
+      alert("El título y el contenido no pueden estar vacíos");
+      return;
+    }
+    setSaving(true);
+    const res = isNew
+      ? await postReplies("create", { title, content })
+      : await postReplies("update", { id: reply.id, title, content });
+    setSaving(false);
+    if (res.ok) {
+      if (!isNew) setEditing(false);
+      onSaved(isNew ? "Respuesta agregada ✅" : "Respuesta guardada ✅");
+    } else {
+      alert(res.error ?? "Error guardando");
+    }
+  }
+
+  async function remove() {
+    if (!confirm("¿Borrar esta respuesta rápida?")) return;
+    const res = await postReplies("delete", { id: reply.id });
+    if (res.ok) onSaved("Respuesta borrada 🗑️");
+    else alert(res.error ?? "Error borrando");
+  }
+
+  if (!editing) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <p className="font-medium text-primary text-sm">{reply.title}</p>
+            <p className="text-muted text-sm mt-1 whitespace-pre-wrap">{reply.content}</p>
+          </div>
+          <div className="flex gap-1 shrink-0">
+            <button onClick={() => setEditing(true)} className="px-2 py-1 text-sm text-muted hover:text-primary" title="Editar">
+              ✏️
+            </button>
+            <button onClick={remove} className="px-2 py-1 text-sm text-muted hover:text-red-600" title="Borrar">
+              🗑️
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-accent p-4">
+      <Field label="Título (cómo la ves en el menú)">
+        <input className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ej: Formas de pago" autoFocus />
+      </Field>
+      <div className="mt-3">
+        <Field label="Contenido (lo que se inserta en el mensaje)">
+          <textarea className={textareaCls} rows={4} value={content} onChange={(e) => setContent(e.target.value)} placeholder="El texto que querés mandar…" />
+        </Field>
+      </div>
+      <div className="mt-3 flex gap-2 justify-end">
+        <button
+          onClick={() => {
+            if (isNew) onCancel?.();
+            else {
+              setEditing(false);
+              setTitle(reply.title);
+              setContent(reply.content);
             }
           }}
           className="px-4 py-2 text-sm text-muted hover:text-primary"

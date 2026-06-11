@@ -59,6 +59,15 @@ interface Message {
   mediaFilename?: string | null;
 }
 
+// Respuesta rápida (plantilla) que el operador inserta en el composer con un clic.
+interface QuickReply {
+  id: number;
+  title: string;
+  content: string;
+  sortOrder: number;
+  active: number;
+}
+
 // API response shapes — todas siguen el patrón { ok: boolean, ... }
 interface ConversationsResponse {
   ok: boolean;
@@ -118,6 +127,11 @@ function formatPhone(e164: string): string {
   return `+${digits}`;
 }
 
+/** Normaliza texto para búsqueda: sin acentos, en minúsculas. */
+function normalizeText(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 /** Iniciales para el avatar (max 2 chars). */
 function getInitials(name: string | null, phone: string): string {
   if (name) {
@@ -152,6 +166,119 @@ function getAvatarColor(phone: string): string {
   let h = 0;
   for (let i = 0; i < phone.length; i++) h = (h * 31 + phone.charCodeAt(i)) | 0;
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Avisos (sonido + notificación del navegador)
+// ─────────────────────────────────────────────────────────────────────────────
+// Tipos de evento que pueden sonar. El operador prende/apaga cada uno desde el
+// botón 🔔 del header. Las preferencias viven en localStorage (por máquina).
+
+type NotifKind = "guest" | "needsYou" | "escalated" | "botReplied";
+
+interface NotifSettings {
+  master: boolean; // interruptor general (también gobierna el permiso de notificación)
+  guest: boolean; // 💬 cualquier mensaje entrante de un cliente
+  needsYou: boolean; // ⏸ cliente escribió y el bot está en pausa
+  escalated: boolean; // ⚠ el bot escaló a humano
+  botReplied: boolean; // 🤖 el bot respondió (confirmación de vida) — default off
+}
+
+const DEFAULT_NOTIF: NotifSettings = {
+  master: true,
+  guest: true,
+  needsYou: true,
+  escalated: true,
+  botReplied: false,
+};
+
+const NOTIF_LABELS: Record<NotifKind, string> = {
+  guest: "💬 Mensaje nuevo",
+  needsYou: "⏸ Te necesita",
+  escalated: "⚠ Escalada",
+  botReplied: "🤖 El bot respondió",
+};
+
+// AudioContext único, creado de forma perezosa (los navegadores lo bloquean
+// hasta que hay un gesto del usuario; el botón "Probar sonido" / los toggles
+// sirven de gesto).
+let _audioCtx: AudioContext | null = null;
+
+/** Beep corto generado con Web Audio (sin assets). Tono distinto por tipo para
+ *  distinguir de oído "de huéspedes" vs "del bot". Best-effort: si el navegador
+ *  bloquea el audio, falla en silencio. */
+function playBeep(kind: NotifKind): void {
+  try {
+    if (typeof window === "undefined") return;
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    if (!_audioCtx) _audioCtx = new AC();
+    const ctx = _audioCtx;
+    if (ctx.state === "suspended") void ctx.resume();
+    const tone: Record<NotifKind, { f: number; d: number }> = {
+      guest: { f: 660, d: 0.12 }, // huésped: nota media corta
+      needsYou: { f: 880, d: 0.18 }, // te necesita: más aguda
+      escalated: { f: 990, d: 0.24 }, // escalada: la más urgente
+      botReplied: { f: 440, d: 0.08 }, // bot: grave y breve
+    };
+    const { f, d } = tone[kind];
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = f;
+    // Envolvente para evitar el "click" de encendido/apagado abrupto.
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + d);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + d + 0.02);
+  } catch {
+    /* el sonido es best-effort */
+  }
+}
+
+/** Pide permiso de notificación si todavía no se decidió. Requiere gesto. */
+function requestNotifPermission(): void {
+  try {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
+  } catch {
+    /* navegador sin Notification API */
+  }
+}
+
+/** Fila de toggle (interruptor tipo pill) para el panel de avisos. */
+function NotifToggle({
+  label,
+  checked,
+  onChange,
+  bold,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: () => void;
+  bold?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className="w-full flex items-center justify-between gap-2 py-1.5 text-left"
+    >
+      <span className={`text-[12px] ${bold ? "font-semibold" : ""} text-primary dark:text-slate-100`}>
+        {label}
+      </span>
+      <span
+        className={`w-9 h-5 rounded-full relative transition shrink-0 ${checked ? "bg-secondary" : "bg-gray-300 dark:bg-slate-600"}`}
+      >
+        <span
+          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${checked ? "left-[18px]" : "left-0.5"}`}
+        />
+      </span>
+    </button>
+  );
 }
 
 /**
@@ -458,6 +585,24 @@ export default function InboxPage() {
   const [loadingConv, setLoadingConv] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+
+  // ── Avisos, no leídos, buscador y plantillas ───────────────────────────────
+  const [notif, setNotif] = useState<NotifSettings>(DEFAULT_NOTIF);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [lastSeen, setLastSeen] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState("");
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [quickOpen, setQuickOpen] = useState(false);
+  // Snapshot de la última lista de conversaciones, para detectar novedades entre
+  // polls (null = todavía no hubo primera carga → no disparar avisos al abrir).
+  const prevConvSnapshotRef = useRef<Map<string, { lastAt: string; dir: string; escalated: boolean; paused: boolean }> | null>(null);
+  // Espejos en ref para leer el valor más reciente desde el effect de detección
+  // sin re-suscribirlo en cada cambio.
+  const notifRef = useRef(notif);
+  const selectedPhoneRef = useRef<string | null>(null);
+  useEffect(() => { notifRef.current = notif; }, [notif]);
+  useEffect(() => { selectedPhoneRef.current = selectedPhone; }, [selectedPhone]);
+
   // Tema día/noche del inbox. Persiste en localStorage y aplica la clase `dark`
   // al <html> (Tailwind darkMode:'class'). Solo afecta al inbox en la práctica:
   // las páginas públicas no usan variantes dark:.
@@ -471,6 +616,31 @@ export default function InboxPage() {
     document.documentElement.classList.toggle("dark", darkMode);
     try { localStorage.setItem("inbox-theme", darkMode ? "dark" : "light"); } catch { /* ignore */ }
   }, [darkMode]);
+
+  // Cargar preferencias de avisos + estado de "visto" desde localStorage (1 vez).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("inbox-notif");
+      if (raw) setNotif({ ...DEFAULT_NOTIF, ...(JSON.parse(raw) as Partial<NotifSettings>) });
+      const seen = localStorage.getItem("inbox-lastSeen");
+      if (seen) setLastSeen(JSON.parse(seen) as Record<string, string>);
+    } catch { /* ignore */ }
+  }, []);
+  // Persistir preferencias de avisos al cambiarlas.
+  useEffect(() => {
+    try { localStorage.setItem("inbox-notif", JSON.stringify(notif)); } catch { /* ignore */ }
+  }, [notif]);
+
+  // Marca una conversación como vista hasta el timestamp `at` (no leídos).
+  const markSeen = useCallback((phone: string, at: string) => {
+    setLastSeen((prev) => {
+      if (prev[phone] && prev[phone] >= at) return prev;
+      const next = { ...prev, [phone]: at };
+      try { localStorage.setItem("inbox-lastSeen", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   // Preview local del archivo adjunto (object URL revocado al cambiar/limpiar).
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   useEffect(() => {
@@ -539,6 +709,16 @@ export default function InboxPage() {
     } finally {
       setLoadingConv(false);
     }
+  }, []);
+
+  // Cargar las respuestas rápidas (plantillas) del operador.
+  const fetchQuickReplies = useCallback(async (): Promise<void> => {
+    try {
+      const res = await fetch("/api/inbox/quick-replies", { credentials: "include" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { ok: boolean; replies?: QuickReply[] };
+      if (data.ok) setQuickReplies(data.replies ?? []);
+    } catch { /* las plantillas son opcionales; si fallan, el composer sigue */ }
   }, []);
 
   // Reactivar el bot para una conversación pausada (handoff a humano).
@@ -613,6 +793,11 @@ export default function InboxPage() {
     fetchConversations();
   }, [fetchConversations]);
 
+  // Cargar las plantillas una vez que hay sesión.
+  useEffect(() => {
+    if (authenticated) fetchQuickReplies();
+  }, [authenticated, fetchQuickReplies]);
+
   // ── Polling cada 10s ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!authenticated) return;
@@ -623,6 +808,58 @@ export default function InboxPage() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated, selectedPhone]);
+
+  // ── Avisos: detectar novedades entre polls y sonar / notificar ─────────────
+  // Corre cada vez que cambia la lista de conversaciones. Compara contra el
+  // snapshot previo; la primera carga solo inicializa (no dispara).
+  useEffect(() => {
+    const snap = new Map<string, { lastAt: string; dir: string; escalated: boolean; paused: boolean }>();
+    for (const c of conversations) {
+      snap.set(c.phone, { lastAt: c.lastAt, dir: c.lastDirection, escalated: c.escalated, paused: c.botPaused });
+    }
+    const prev = prevConvSnapshotRef.current;
+    prevConvSnapshotRef.current = snap;
+    if (!prev) return; // primera carga → solo inicializa el snapshot
+    const s = notifRef.current;
+    if (!s.master) return;
+
+    const focused = typeof document !== "undefined" && document.hasFocus();
+    const openPhone = selectedPhoneRef.current;
+    const events: { conv: Conversation; kind: NotifKind }[] = [];
+    for (const c of conversations) {
+      const before = prev.get(c.phone);
+      const advanced = !before || c.lastAt > before.lastAt;
+      if (!advanced) continue;
+      let kind: NotifKind | null = null;
+      if (c.lastDirection === "in") {
+        if (c.botPaused) kind = "needsYou";
+        else if (c.escalated) kind = "escalated";
+        else kind = "guest";
+      } else if (c.lastDirection === "out" && c.lastOutRule !== "manual_inbox") {
+        kind = "botReplied";
+      }
+      if (!kind || !s[kind]) continue;
+      if (focused && openPhone === c.phone) continue; // ya lo estás viendo
+      events.push({ conv: c, kind });
+    }
+    if (events.length === 0) return;
+    // Un solo beep por ciclo: el del evento más urgente.
+    const order: Record<NotifKind, number> = { needsYou: 0, escalated: 1, guest: 2, botReplied: 3 };
+    events.sort((a, b) => order[a.kind] - order[b.kind]);
+    playBeep(events[0].kind);
+    // Notificaciones del navegador (máx 3; el resto lo cubre el contador del título).
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      for (const ev of events.slice(0, 3)) {
+        const name = ev.conv.reservation?.guestName ?? ev.conv.contactName ?? formatPhone(ev.conv.phone);
+        const body = ev.kind === "botReplied" ? name : `${name}: ${ev.conv.lastMessage}`;
+        try {
+          const n = new Notification(NOTIF_LABELS[ev.kind], { body, tag: ev.conv.phone });
+          n.onclick = () => { window.focus(); selectConversation(ev.conv.phone); n.close(); };
+        } catch { /* ignore */ }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations]);
 
   // ── Mensajes de una conversación ─────────────────────────────────────────
   async function loadMessages(phone: string): Promise<void> {
@@ -651,6 +888,9 @@ export default function InboxPage() {
 
         setMessages(data.messages);
         prevMessageCountRef.current = data.messages.length;
+        // La conversación abierta queda "leída" hasta su mensaje más nuevo.
+        const newest = data.messages[data.messages.length - 1];
+        if (newest) markSeen(phone, newest.createdAt);
 
         if (shouldScroll) {
           setTimeout(() => {
@@ -673,6 +913,9 @@ export default function InboxPage() {
     // Cambio de conversación → fuerza scroll al final una vez
     forceScrollOnNextLoadRef.current = true;
     prevMessageCountRef.current = 0;
+    // Marcar como leída al abrirla (no leídos).
+    const c = conversations.find((x) => x.phone === phone);
+    if (c) markSeen(phone, c.lastAt);
     loadMessages(phone);
   }
 
@@ -809,6 +1052,36 @@ export default function InboxPage() {
     }
   }
 
+  // ── Derivados: no leídos + filtro de búsqueda ──────────────────────────────
+  // Una conversación está "no leída" si lo último es del cliente (in) y es más
+  // nuevo que la última vez que la abriste.
+  const isUnread = (c: Conversation): boolean =>
+    c.lastDirection === "in" && (!lastSeen[c.phone] || c.lastAt > lastSeen[c.phone]);
+  const unreadTotal = conversations.reduce((n, c) => (isUnread(c) ? n + 1 : n), 0);
+
+  const filteredConversations = (() => {
+    const q = search.trim();
+    if (!q) return conversations;
+    const nq = normalizeText(q);
+    const digits = q.replace(/\D/g, "");
+    return conversations.filter((c) => {
+      const name = c.reservation?.guestName ?? c.contactName ?? "";
+      const prop = c.reservation?.propertySlug
+        ? PROPERTY_NAMES[c.reservation.propertySlug] ?? c.reservation.propertySlug
+        : "";
+      const textHit = normalizeText(`${name} ${c.lastMessage} ${prop}`).includes(nq);
+      const phoneHit = digits.length >= 2 && c.phone.includes(digits);
+      return textHit || phoneHit;
+    });
+  })();
+
+  // Contador de no leídos en el título de la pestaña (awareness aunque estés en
+  // otra pestaña).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.title = unreadTotal > 0 ? `(${unreadTotal}) Inbox · Estadías Jacarí` : "Inbox · Estadías Jacarí";
+  }, [unreadTotal]);
+
   // ── Render ───────────────────────────────────────────────────────────────
 
   if (authenticated === null) {
@@ -864,6 +1137,52 @@ export default function InboxPage() {
           <p className="text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          {/* Avisos: sonido + notificación, configurable por tipo */}
+          <div className="relative">
+            <button
+              onClick={() => setNotifOpen((o) => !o)}
+              className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
+              aria-label="Avisos y sonido"
+              title="Avisos y sonido"
+            >
+              {notif.master ? "🔔" : "🔕"}
+            </button>
+            {notifOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setNotifOpen(false)} />
+                <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 p-3 text-left">
+                  <p className="text-xs font-bold text-primary dark:text-slate-100 mb-1">🔔 Avisos y sonido</p>
+                  <NotifToggle
+                    label="Avisos activados"
+                    checked={notif.master}
+                    bold
+                    onChange={() => {
+                      setNotif((s) => ({ ...s, master: !s.master }));
+                      if (!notif.master) requestNotifPermission();
+                    }}
+                  />
+                  <div className={`mt-0.5 ${notif.master ? "" : "opacity-40 pointer-events-none"}`}>
+                    <NotifToggle label="💬 Mensajes de huéspedes" checked={notif.guest} onChange={() => setNotif((s) => ({ ...s, guest: !s.guest }))} />
+                    <NotifToggle label="⏸ Te necesita (pausa / sin responder)" checked={notif.needsYou} onChange={() => setNotif((s) => ({ ...s, needsYou: !s.needsYou }))} />
+                    <NotifToggle label="⚠ Escaladas" checked={notif.escalated} onChange={() => setNotif((s) => ({ ...s, escalated: !s.escalated }))} />
+                    <NotifToggle label="🤖 Bot respondió" checked={notif.botReplied} onChange={() => setNotif((s) => ({ ...s, botReplied: !s.botReplied }))} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { requestNotifPermission(); playBeep("guest"); }}
+                    className="mt-2 w-full text-[12px] font-semibold text-primary dark:text-slate-100 border border-gray-300 dark:border-slate-600 rounded-lg py-1.5 hover:bg-gray-50 dark:hover:bg-slate-700"
+                  >
+                    🔊 Probar sonido
+                  </button>
+                  {typeof Notification !== "undefined" && Notification.permission === "denied" && (
+                    <p className="mt-2 text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
+                      Las notificaciones están bloqueadas en el navegador. El sonido igual funciona; para ver pop-ups, permitilas en los ajustes del sitio.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={() => setDarkMode((d) => !d)}
             className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
@@ -904,6 +1223,30 @@ export default function InboxPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
         <aside className="w-80 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 dark:bg-slate-800 overflow-y-auto">
+          {/* Buscador */}
+          <div className="sticky top-0 z-10 bg-white dark:bg-slate-800 px-3 py-2 border-b border-gray-100 dark:border-slate-800">
+            <div className="relative">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted dark:text-slate-400 text-sm pointer-events-none">🔍</span>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar por nombre o teléfono…"
+                className="w-full pl-8 pr-7 py-1.5 text-sm border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted dark:text-slate-400 hover:text-primary dark:hover:text-slate-100 text-sm"
+                  aria-label="Limpiar búsqueda"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
           {conversations.length === 0 && !loadingConv && (
             <div className="p-6 text-center text-muted dark:text-slate-400 text-sm">
               No hay conversaciones todavía.
@@ -911,8 +1254,15 @@ export default function InboxPage() {
               Aparecerán cuando los huéspedes escriban.
             </div>
           )}
+          {conversations.length > 0 && filteredConversations.length === 0 && (
+            <div className="p-6 text-center text-muted dark:text-slate-400 text-sm">
+              Nada coincide con “{search}”.
+            </div>
+          )}
           <ul>
-            {conversations.map((c) => (
+            {filteredConversations.map((c) => {
+              const unread = isUnread(c);
+              return (
               <li
                 key={c.phone}
                 onClick={() => selectConversation(c.phone)}
@@ -933,8 +1283,11 @@ export default function InboxPage() {
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between mb-0.5 gap-2">
-                    <span className="font-semibold text-primary dark:text-slate-100 text-sm truncate">
-                      {c.reservation?.guestName ?? c.contactName ?? formatPhone(c.phone)}
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      {unread && <span className="w-2 h-2 rounded-full bg-secondary shrink-0" title="No leído" />}
+                      <span className={`${unread ? "font-bold" : "font-semibold"} text-primary dark:text-slate-100 text-sm truncate`}>
+                        {c.reservation?.guestName ?? c.contactName ?? formatPhone(c.phone)}
+                      </span>
                     </span>
                     <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">
                       {formatTimeAgo(c.lastAt)}
@@ -966,15 +1319,11 @@ export default function InboxPage() {
                         🤖 {c.lastMatchedRule}
                       </span>
                     )}
-                    {!c.reservation && (
-                      <span className="text-[10px] bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-1.5 py-0.5 rounded">
-                        sin reserva
-                      </span>
-                    )}
                   </div>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </aside>
 
@@ -1125,6 +1474,34 @@ export default function InboxPage() {
                   </div>
                 )}
 
+                {/* Respuestas rápidas (plantillas) */}
+                {quickOpen && (
+                  <div className="absolute bottom-full left-4 mb-2 w-80 max-h-72 overflow-y-auto bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-10">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800">
+                      <p className="text-[10px] uppercase tracking-wide text-muted dark:text-slate-400">Respuestas rápidas</p>
+                      <a href="/inbox/conocimiento" className="text-[10px] underline text-secondary">Editar</a>
+                    </div>
+                    {quickReplies.length === 0 ? (
+                      <p className="px-3 py-4 text-sm text-muted dark:text-slate-400">
+                        No hay plantillas todavía. Crealas en{" "}
+                        <a href="/inbox/conocimiento" className="underline text-secondary">Conocimiento del bot</a>.
+                      </p>
+                    ) : (
+                      quickReplies.map((r) => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => { insertAtCursor(r.content); setQuickOpen(false); }}
+                          className="w-full text-left px-3 py-2 border-b border-gray-100 dark:border-slate-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-700 transition"
+                        >
+                          <p className="text-[12px] font-semibold text-primary dark:text-slate-100">{r.title}</p>
+                          <p className="text-[11px] text-muted dark:text-slate-400 line-clamp-2 whitespace-pre-wrap">{r.content}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+
                 {/* Preview del archivo adjunto (imagen/video a enviar) */}
                 {mediaFile && (
                   <div className="absolute bottom-full left-0 right-0 mb-2 mx-4 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg p-2 flex items-center gap-3 z-10">
@@ -1174,12 +1551,24 @@ export default function InboxPage() {
                 {/* Botón emoji */}
                 <button
                   type="button"
-                  onClick={() => setEmojiOpen((v) => !v)}
+                  onClick={() => { setEmojiOpen((v) => !v); setQuickOpen(false); }}
                   disabled={sending}
                   className="text-2xl text-muted dark:text-slate-400 hover:text-primary dark:text-slate-100 transition disabled:opacity-50 self-end pb-1"
                   aria-label="Abrir selector de emojis"
                 >
                   😊
+                </button>
+
+                {/* Botón respuestas rápidas */}
+                <button
+                  type="button"
+                  onClick={() => { setQuickOpen((v) => !v); setEmojiOpen(false); }}
+                  disabled={sending}
+                  className="text-2xl text-muted dark:text-slate-400 hover:text-primary dark:hover:text-slate-100 transition disabled:opacity-50 self-end pb-1"
+                  aria-label="Respuestas rápidas"
+                  title="Respuestas rápidas"
+                >
+                  💬
                 </button>
 
                 {/* Textarea con auto-grow */}
