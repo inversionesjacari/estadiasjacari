@@ -20,10 +20,38 @@ const body = Plus_Jakarta_Sans({
   display: "swap",
 });
 
+const SITE_URL = "https://estadiasjacari.com";
+const SITE_TITLE = "Estadías Jacarí — Alquileres Temporales en Honduras";
+const SITE_DESCRIPTION =
+  "Alquileres temporales en Honduras con todo lo que necesitas para sentirte en casa. Propiedades verificadas en La Ceiba, Tela y Tegucigalpa.";
+
 export const metadata: Metadata = {
-  title: "Estadías Jacarí — Alquileres Temporales en Honduras",
-  description:
-    "Alquileres temporales en Honduras con todo lo que necesitas para sentirte en casa. Propiedades verificadas en La Ceiba, Tela y Tegucigalpa.",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: "Estadías Jacarí",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    url: SITE_URL,
+    locale: "es_HN",
+    images: [
+      {
+        url: "/og-image.jpg",
+        width: 1200,
+        height: 630,
+        alt: "Estadías Jacarí — alquileres temporales en Honduras",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: ["/og-image.jpg"],
+  },
 };
 
 export default function RootLayout({
