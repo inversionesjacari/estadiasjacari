@@ -167,22 +167,22 @@ export default function ConocimientoPage() {
   return (
     <div className="min-h-screen bg-bg">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-        <div>
-          <h1 className="font-display text-xl text-primary">🤖 Conocimiento del bot</h1>
-          <p className="text-xs text-muted">Lo que el bot sabe y responde · Estadías Jacarí</p>
+      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between gap-2 sticky top-0 z-10">
+        <div className="min-w-0">
+          <h1 className="font-display text-lg sm:text-xl text-primary leading-tight">🤖 Conocimiento del bot</h1>
+          <p className="hidden sm:block text-xs text-muted">Lo que el bot sabe y responde · Estadías Jacarí</p>
         </div>
         <a
           href="/inbox"
-          className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted text-sm"
+          className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-muted text-sm whitespace-nowrap shrink-0"
         >
-          ← Volver al inbox
+          ← <span className="hidden sm:inline">Volver al </span>inbox
         </a>
       </header>
 
       {/* Tabs */}
-      <div className="bg-white border-b border-gray-200 px-4">
-        <nav className="flex gap-1">
+      <div className="bg-white border-b border-gray-200 px-2 sm:px-4">
+        <nav className="flex gap-1 overflow-x-auto">
           {([
             ["reglas", "⚙️ Reglas del bot"],
             ["propiedades", "🏠 Propiedades"],
@@ -193,7 +193,7 @@ export default function ConocimientoPage() {
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition ${
+              className={`px-3 sm:px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap shrink-0 transition ${
                 tab === key
                   ? "border-accent text-primary"
                   : "border-transparent text-muted hover:text-primary"

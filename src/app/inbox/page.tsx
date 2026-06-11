@@ -1166,7 +1166,7 @@ export default function InboxPage() {
             {notifOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setNotifOpen(false)} />
-                <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 p-3 text-left">
+                <div className="fixed left-2 right-2 top-16 w-auto sm:absolute sm:left-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-72 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 p-3 text-left">
                   <p className="text-xs font-bold text-primary dark:text-slate-100 mb-1">🔔 Avisos y sonido</p>
                   <NotifToggle
                     label="Avisos activados"
@@ -1617,9 +1617,9 @@ export default function InboxPage() {
                       }
                     }
                   }}
-                  placeholder={mediaFile ? "Texto de pie de foto (opcional)…" : "Escribir mensaje... (Enter para nueva línea, Cmd+Enter para enviar)"}
+                  placeholder={mediaFile ? "Pie de foto (opcional)…" : "Escribir mensaje…"}
                   rows={1}
-                  className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
+                  className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-primary dark:text-slate-100 placeholder-gray-400 dark:placeholder-slate-500 text-base focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-none overflow-y-auto leading-relaxed"
                   style={{ maxHeight: "200px" }}
                   disabled={sending}
                 />
