@@ -38,6 +38,7 @@ import {
   isUsdRequest,
 } from "./bank-transfer";
 import { getPropertyPhotos, getGalleryUrl } from "./property-photos";
+import { buildPropertyCard } from "./property-catalog";
 import { T, asLang } from "./i18n";
 import type { QuoteData } from "./quote-extractor";
 
@@ -559,8 +560,9 @@ export async function handleQuoteIncoming(
       const parts = [buildSocialReply(social, lang)];
       if (photoSlug && photos.length > 0) {
         parts.push(
-          (lang === "en" ? "And here are some photos 📸" : "Y acá te van unas fotos 📸") +
-            T.photosGallery(lang, getGalleryUrl(photoSlug)),
+          buildPropertyCard(photoSlug, lang) ||
+            (lang === "en" ? "And here are some photos 📸" : "Y acá te van unas fotos 📸") +
+              T.photosGallery(lang, getGalleryUrl(photoSlug)),
         );
       }
       return {
@@ -583,8 +585,11 @@ export async function handleQuoteIncoming(
       const photos = getPropertyPhotos(photoSlug);
       if (photos.length > 0) {
         const inPayment = existing.state === "awaiting_payment_method";
+        const card =
+          buildPropertyCard(photoSlug, lang) ||
+          T.photosIntro(lang) + T.photosGallery(lang, getGalleryUrl(photoSlug));
         return {
-          reply:           T.photosIntro(lang) + T.photosGallery(lang, getGalleryUrl(photoSlug)) + (inPayment ? T.resumePaymentTail(lang) : ""),
+          reply:           card + (inPayment ? T.resumePaymentTail(lang) : ""),
           images:          photos,
           escalateToOwner: false,
           ruleName:        inPayment ? "photos_during_payment" : "photos_sent",
@@ -1060,12 +1065,15 @@ async function gatherQuoteData(
       // Mantener el state con lo que sepamos para seguir el flujo después
       await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
       const galleryUrl = getGalleryUrl(mergedData.property);
-      const intro =
-        botResult.reply && botResult.reply.trim().length > 0
-          ? botResult.reply.trim()
-          : T.photosIntro(lang);
+      const card =
+        buildPropertyCard(mergedData.property, lang) ||
+        `${
+          botResult.reply && botResult.reply.trim().length > 0
+            ? botResult.reply.trim()
+            : T.photosIntro(lang)
+        }${T.photosGallery(lang, galleryUrl)}`;
       return {
-        reply: `${intro}${T.photosGallery(lang, galleryUrl)}`,
+        reply: card,
         images: photos,
         escalateToOwner: false,
         ruleName: "photos_sent",

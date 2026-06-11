@@ -38,7 +38,7 @@ export default function PropertyDetailPage({
   const related = getRelatedProperties(property.slug, 3);
 
   return (
-    <article className="pt-24 lg:pt-28">
+    <article className="pt-24 lg:pt-28 pb-24 lg:pb-0">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {/* Crumbs */}
         <nav className="text-sm text-muted mb-6">
@@ -46,7 +46,7 @@ export default function PropertyDetailPage({
             Inicio
           </Link>
           <span className="mx-2">/</span>
-          <Link href="/#propiedades" className="hover:text-primary">
+          <Link href="/propiedades" className="hover:text-primary">
             Propiedades
           </Link>
           <span className="mx-2">/</span>
@@ -231,7 +231,7 @@ export default function PropertyDetailPage({
           </div>
 
           {/* Sidebar */}
-          <aside className="lg:col-span-1">
+          <aside id="reservar" className="lg:col-span-1 scroll-mt-24">
             <BookingWidget
               propertyName={property.name}
               propertySlug={property.slug}
@@ -254,6 +254,22 @@ export default function PropertyDetailPage({
             ))}
           </div>
         </section>
+      </div>
+
+      {/* Barra fija de reserva — solo mobile (el widget queda abajo en celular).
+          pr-20 deja libre la esquina inferior derecha para el botón flotante de
+          WhatsApp (56px + 24px de margen) y que no se encimen. */}
+      <div className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur border-t border-gray-200 pl-4 pr-20 py-3 flex items-center justify-between gap-3">
+        <div className="leading-tight">
+          <p className="text-xs text-muted">Desde</p>
+          <p className="font-display text-lg text-primary">
+            HNL {property.pricePerNightHNL.toLocaleString("es-HN")}
+            <span className="text-sm text-muted"> /noche</span>
+          </p>
+        </div>
+        <a href="#reservar" className="btn-accent whitespace-nowrap">
+          Reservar →
+        </a>
       </div>
     </article>
   );

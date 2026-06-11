@@ -20,30 +20,37 @@ const SITE_BASE = "https://estadiasjacari.com";
 /** Cuántas fotos manda el bot al chat (las primeras N). El resto, en la galería. */
 const PHOTOS_TO_SEND = 4;
 
-/** slug de propiedad → { carpeta de imágenes, extensión, total de fotos disponibles } */
-const PHOTO_CONFIG: Record<PropertySlug, { folder: string; ext: string }> = {
-  "villa-b11-palma-real": { folder: "villa-b11", ext: "jpg" },
-  "casa-brisa": { folder: "casa-brisa", ext: "png" },
-  "casa-marea": { folder: "casa-marea", ext: "jpg" },
-  "centro-morazan": { folder: "centro-morazan", ext: "jpg" },
-  "casa-lara-townhouse": { folder: "casa-lara-townhouse", ext: "jpg" },
-  "la-florida": { folder: "la-florida", ext: "jpg" },
-  "las-gemelas-tela": { folder: "casa-brisa", ext: "png" }, // gemelas → fotos de Casa Brisa
+/**
+ * slug de propiedad → { carpeta, extensión, `cover` = orden curado de fotos }.
+ *
+ * `cover` es el orden de las MEJORES fotos (portada primero), espejo de
+ * `src/data/properties.ts` (`images[]`). NO mandamos 01–04 a ciegas: la portada
+ * de Villa B11 es la 06, la de Casa Marea la 11 y la de La Florida la 03.
+ * Si cambian las fotos en el sitio, actualizar acá también (fuente: properties.ts).
+ */
+const PHOTO_CONFIG: Record<
+  PropertySlug,
+  { folder: string; ext: string; cover: string[] }
+> = {
+  "villa-b11-palma-real": { folder: "villa-b11", ext: "jpg", cover: ["06", "15", "01", "02"] },
+  "casa-brisa": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"] },
+  "casa-marea": { folder: "casa-marea", ext: "jpg", cover: ["11", "12", "10", "02"] },
+  "centro-morazan": { folder: "centro-morazan", ext: "jpg", cover: ["01", "02", "03", "04"] },
+  "casa-lara-townhouse": { folder: "casa-lara-townhouse", ext: "jpg", cover: ["01", "02", "03", "04"] },
+  "la-florida": { folder: "la-florida", ext: "jpg", cover: ["03", "05", "02", "04"] },
+  "las-gemelas-tela": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"] }, // gemelas → fotos de Casa Brisa
 };
 
 /**
- * URLs de las primeras N fotos de una propiedad (absolutas, HTTPS).
- * Devuelve [] si el slug no es válido.
+ * URLs de las mejores N fotos de una propiedad (absolutas, HTTPS, portada
+ * primero). Devuelve [] si el slug no es válido.
  */
 export function getPropertyPhotos(slug: string): string[] {
   const cfg = PHOTO_CONFIG[slug as PropertySlug];
   if (!cfg) return [];
-  const urls: string[] = [];
-  for (let i = 1; i <= PHOTOS_TO_SEND; i++) {
-    const n = String(i).padStart(2, "0");
-    urls.push(`${SITE_BASE}/images/${cfg.folder}/${n}.${cfg.ext}`);
-  }
-  return urls;
+  return cfg.cover
+    .slice(0, PHOTOS_TO_SEND)
+    .map((n) => `${SITE_BASE}/images/${cfg.folder}/${n}.${cfg.ext}`);
 }
 
 /** Link a la galería completa de la propiedad en el sitio. */
