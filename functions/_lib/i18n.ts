@@ -106,6 +106,12 @@ export const T = {
       ? "Of course! Let me connect you with someone on our team who has access to your booking to help you right away. 🙏"
       : "¡Con gusto! Te conecto con alguien del equipo que tiene acceso a tu reserva para ayudarte enseguida. 🙏",
 
+  // Estadía a LARGO PLAZO (un mes+) → es un caso a evaluar/negociar → lo toma el equipo.
+  longTermInquiry: (l: Lang): string =>
+    l === "en"
+      ? "How nice that you'd like a longer stay! 🙌 For long-term stays we put together a custom proposal — I'm connecting you with our team and they'll reach out shortly to work out the details with you. 🙏"
+      : "¡Qué bueno que quieras quedarte una temporada larga! 🙌 Para estadías largas armamos una propuesta a tu medida — te paso con nuestro equipo y te contactan en breve para coordinar los detalles. 🙏",
+
   paymentReported: (l: Lang): string =>
     l === "en"
       ? "Perfect! 🙏 Let me verify the payment with the team and we'll confirm your booking right away."

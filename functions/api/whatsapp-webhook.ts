@@ -41,6 +41,7 @@ const HANDOFF_RULES = new Set<string>([
   // out_of_scope_redirect SACADO (César, 2026-06-11): pedir otra zona/opción que no
   // tenemos ya NO pausa ni escala — el bot declina, reenfoca y sigue atendiendo solo.
   "existing_guest_escalation",  // huésped existente pide soporte
+  "long_term_inquiry",          // renta a largo plazo → César evalúa la propuesta
   "payment_reported",           // cliente dice que ya pagó/transfirió
   "transfer_proof_received",    // mandó comprobante de transferencia
   "paypal_usd_requested",       // pidió el monto en USD del link PayPal
@@ -635,7 +636,9 @@ async function processIncomingMessage(
         guestMessage: bodyText,
         guestPhone: fromE164,
         reservation,
-        reason: quoteResult?.ruleName === "out_of_scope_redirect"
+        reason: quoteResult?.ruleName === "long_term_inquiry"
+          ? "Renta a LARGO PLAZO (estadía de un mes o más) — el bot lo pausó para que vos evalúes la propuesta a medida con el cliente."
+          : quoteResult?.ruleName === "out_of_scope_redirect"
           ? "Fuera de alcance — el bot redirigió al cliente a tu WhatsApp (+504 9764-9035). Escribile vos si querés cerrarlo."
           : quoteResult?.ruleName === "existing_guest_escalation"
           ? "Huésped existente pidiendo soporte de su estadía"

@@ -41,6 +41,7 @@ const MAX_ATTEMPTS = 6;
 const HANDOFF_RULES = new Set<string>([
   // out_of_scope_redirect SACADO (en sync con el webhook, César 2026-06-11): ya no es handoff.
   "existing_guest_escalation",
+  "long_term_inquiry",
   "payment_reported",
   "transfer_proof_received",
   "paypal_usd_requested",

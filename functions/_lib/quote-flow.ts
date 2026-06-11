@@ -345,6 +345,29 @@ export function isPostponing(text: string): boolean {
   );
 }
 
+/** A partir de cuántas noches una estadía se considera LARGO PLAZO (un mes o más) →
+ *  no se cotiza por noche; lo evalúa el equipo con una propuesta a medida. Ajustable. */
+export const LONG_TERM_NIGHTS = 30;
+
+/** Noches entre dos fechas YYYY-MM-DD (check-out exclusivo). */
+export function nightsBetween(checkInIso: string, checkOutIso: string): number {
+  const start = new Date(checkInIso + "T00:00:00Z").getTime();
+  const end = new Date(checkOutIso + "T00:00:00Z").getTime();
+  if (isNaN(start) || isNaN(end)) return 0;
+  return Math.max(0, Math.round((end - start) / (1000 * 60 * 60 * 24)));
+}
+
+/**
+ * Cliente pide explícitamente una renta a LARGO PLAZO ("largo plazo", "varios meses",
+ * "alquiler mensual", "por medio año"…). Es un caso especial: armamos una propuesta a
+ * medida (descuento mensual, condiciones) en vez de la tarifa por noche → lo evalúa
+ * César. La duración larga por FECHAS se detecta aparte (nightsBetween ≥ LONG_TERM_NIGHTS).
+ */
+export function isLongTermRequest(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return /\b(largo plazo|a largo plazo|por (varios|unos) meses|varios meses|unos meses|algunos meses|alquiler mensual|renta mensual|por mes(es)?|mensualidad|por (medio|un) ano|todo el ano|temporada larga|estadia larga|long[- ]?term|monthly rental|several months|a few months|for (a|some) months)\b/.test(t);
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -569,6 +592,20 @@ export async function handleQuoteIncoming(
         };
       }
     }
+  }
+
+  // ── Cliente quiere una estadía a LARGO PLAZO (largo plazo / mensual) → caso especial ──
+  // Para rentas largas armamos una propuesta a medida (no la tarifa por noche × N): lo
+  // evalúa César. Si lo pide explícito ("largo plazo", "varios meses"), escalamos ya;
+  // si lo dice por FECHAS (estadía de un mes+), se detecta en gatherQuoteData. Funciona
+  // en cualquier estado. (Caso Vanina: 11 jul → 30 nov.)
+  if (isLongTermRequest(text)) {
+    return {
+      reply:           T.longTermInquiry(lang),
+      escalateToOwner: true,
+      ruleName:        "long_term_inquiry",
+      tokensUsed:      0,
+    };
   }
 
   // ── Cliente con DUDA de legitimidad / miedo a estafa → tranquilizar con PRUEBAS ──
@@ -929,6 +966,20 @@ async function gatherQuoteData(
     depositUsd:    previousData.depositUsd,
     language:      lang,
   };
+
+  // ── Estadía LARGA por fechas (un mes+) → caso especial, NO cotizar por noche ──
+  // Para una renta a largo plazo armamos una propuesta a medida (descuento mensual,
+  // condiciones); la tarifa por noche × 142 no aplica, y la disponibilidad de 4 meses
+  // casi siempre falla en Airbnb. Escalamos a César con un mensaje cálido. (Caso Vanina:
+  // 11 jul → 30 nov.) Se detecta acá, ANTES de auto-asignar propiedad o cotizar.
+  if (mergedData.checkIn && mergedData.checkOut && nightsBetween(mergedData.checkIn, mergedData.checkOut) >= LONG_TERM_NIGHTS) {
+    return {
+      reply:           T.longTermInquiry(lang),
+      escalateToOwner: true,
+      ruleName:        "long_term_inquiry",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
 
   // ── Ciudad sin casa elegida → auto-asignar la propiedad (decisión de César) ──
   // No hacemos elegir cuando no hace falta. La Ceiba tiene una sola casa. En Tela
