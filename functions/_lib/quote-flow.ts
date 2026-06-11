@@ -125,6 +125,40 @@ export function isPhotoRequest(text: string): boolean {
   );
 }
 
+// Redes y web OFICIALES de Estadías Jacarí — los MISMOS del footer del sitio
+// (src/components/Footer.tsx). Si el cliente pide una, le damos ESE link (César:
+// "si te piden insta hay que darles insta; adicional pueden ir las fotos").
+const SOCIAL = {
+  instagram: "https://www.instagram.com/estadiasjacari",
+  facebook:  "https://www.facebook.com/profile.php?id=100078132980551",
+  web:       "https://estadiasjacari.com",
+} as const;
+
+/**
+ * ¿El cliente pidió una RED social / la web puntual? Devuelve cuáles dar (o null).
+ * "redes"/"perfil" genérico → las tres. Pedir esto NUNCA es out_of_scope.
+ */
+function socialRequested(text: string): { ig: boolean; fb: boolean; web: boolean } | null {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const ig      = /\b(instagram|insta)\b/.test(t);
+  const fb      = /\b(facebook|fb|messenger)\b/.test(t);
+  const web     = /(pagina web|sitio web|website|\bsu sitio\b|\bla web\b|\bsu web\b)/.test(t);
+  const generic = /\b(redes|red social|sus paginas|su perfil|sus perfiles|catalogo)\b/.test(t);
+  if (!ig && !fb && !web && !generic) return null;
+  if (generic && !ig && !fb && !web) return { ig: true, fb: true, web: true };
+  return { ig, fb, web };
+}
+
+/** Arma el mensaje con los links de redes/web que pidió el cliente. */
+function buildSocialReply(sel: { ig: boolean; fb: boolean; web: boolean }, lang: "es" | "en"): string {
+  const lines: string[] = [];
+  if (sel.ig)  lines.push(`📸 Instagram: ${SOCIAL.instagram}`);
+  if (sel.fb)  lines.push(`👍 Facebook: ${SOCIAL.facebook}`);
+  if (sel.web) lines.push(`🌐 ${lang === "en" ? "Website" : "Página web"}: ${SOCIAL.web}`);
+  const intro = lang === "en" ? "Of course! Here you can find us 👇" : "¡Claro! Acá podés encontrarnos 👇";
+  return `${intro}\n${lines.join("\n")}`;
+}
+
 /**
  * Señales CLARAS de que el lead ya NO está interesado: rechazó por precio, se
  * despidió, o postergó. Se usa para NO molestarlo con el "último aviso" antes de
@@ -371,11 +405,38 @@ export async function handleQuoteIncoming(
     };
   }
 
-  // ── Cliente quiere VER el lugar (fotos / "sus redes para ver el lugar") ─────
-  // Pedir fotos —o las redes sociales/Instagram/la página "para ver el lugar"— NO
-  // es out_of_scope: es un pedido caliente. Determinístico, ANTES del LLM, para que
-  // no lo mande a "fuera de alcance" (eso escalaba + pausaba el bot y dejaba morir
-  // el lead — caso Natalia). Si están en pleno pago, recordamos el método al final.
+  // ── Cliente pide una RED / la web (Instagram, Facebook, página) → darle el link ──
+  // Lo que pidió: Instagram → Instagram; Facebook → Facebook; web → la página;
+  // "redes" a secas → las tres. Si además sabemos la propiedad, sumamos fotos.
+  // Determinístico, ANTES del LLM: pedir las redes NUNCA es out_of_scope (caso
+  // Natalia). Funciona aunque no haya estado (los links son fijos).
+  {
+    const social = socialRequested(text);
+    if (social) {
+      const photoSlug = propertyForPhotos(text, existing);
+      const photos = photoSlug ? getPropertyPhotos(photoSlug) : [];
+      const inPayment = existing?.state === "awaiting_payment_method";
+      const parts = [buildSocialReply(social, lang)];
+      if (photoSlug && photos.length > 0) {
+        parts.push(
+          (lang === "en" ? "And here are some photos 📸" : "Y acá te van unas fotos 📸") +
+            T.photosGallery(lang, getGalleryUrl(photoSlug)),
+        );
+      }
+      return {
+        reply:           parts.join("\n\n") + (inPayment ? T.resumePaymentTail(lang) : ""),
+        images:          photos,
+        escalateToOwner: false,
+        ruleName:        "social_links_sent",
+        tokensUsed:      0,
+      };
+    }
+  }
+
+  // ── Cliente quiere VER el lugar (fotos / "mostrame el lugar") ───────────────
+  // Pedir fotos NO es out_of_scope: es un pedido caliente. Determinístico, ANTES
+  // del LLM, para que no lo mande a "fuera de alcance" (eso escalaba + pausaba el
+  // bot y dejaba morir el lead — caso Natalia). En pago, recordamos el método.
   if (isPhotoRequest(text) && existing) {
     const photoSlug = propertyForPhotos(text, existing);
     if (photoSlug) {
