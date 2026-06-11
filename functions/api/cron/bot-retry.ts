@@ -39,7 +39,7 @@ const MAX_ATTEMPTS = 6;
 /** Mismas reglas de handoff que el webhook (mantener en sync). Si el reproceso cae
  *  en una de estas, un humano toma la conversación → pausamos el bot. */
 const HANDOFF_RULES = new Set<string>([
-  "out_of_scope_redirect",
+  // out_of_scope_redirect SACADO (en sync con el webhook, César 2026-06-11): ya no es handoff.
   "existing_guest_escalation",
   "payment_reported",
   "transfer_proof_received",

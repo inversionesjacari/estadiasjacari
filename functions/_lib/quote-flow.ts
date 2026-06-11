@@ -819,21 +819,22 @@ async function gatherQuoteData(
     };
   }
 
-  // ── Fuera de alcance / no resoluble → redirigir al cliente + avisar al owner ─
-  // El bot ya respondió con la redirección (incluye el WhatsApp del equipo).
-  // escalateToOwner=true dispara el email + la etiqueta "escalado" en el inbox.
-  // NO cancelamos el flow: si tenía una cotización en curso, puede retomarla.
+  // ── Fuera de alcance → declinar con amabilidad y REENFOCAR (sin escalar/pausar) ─
+  // El cliente pidió algo que NO ofrecemos: otra zona (Roatán, Copán, México…), un
+  // servicio que no damos, o una configuración que no tenemos (ej. "3 villas separadas
+  // juntas"). Decisión de César (2026-06-11): NO escalar ni pausar el bot — solo decir
+  // con naturalidad que no lo tenemos y reenfocar en nuestras zonas, que el bot siga
+  // atendiendo. Nada de "escribile al equipo" (eso pausaba el bot y mataba el lead).
+  // Mensaje DETERMINÍSTICO en el idioma del cliente (el reply del LLM a veces sale en
+  // el idioma equivocado). Sin 🌴: out_of_scope no tiene zona de playa fija.
   if (botResult.intent === "out_of_scope") {
-    // Mensaje DETERMINÍSTICO en el idioma del cliente (no usamos el reply del
-    // LLM, que a veces sale en el idioma equivocado — ej. español a un cliente
-    // que escribe en inglés).
     const msg =
       lang === "en"
-        ? "For now we only manage properties in La Ceiba, Tela and Tegucigalpa 🙏. For anything outside that, it's best to message our team directly at +504 9764-9035 → https://wa.me/50497649035. If you'd like, I'm happy to help you with one of our properties. 🌴"
-        : "Por ahora solo manejamos propiedades en La Ceiba, Tela y Tegucigalpa 🙏. Para algo fuera de eso, lo mejor es escribirle directo a nuestro equipo al +504 9764-9035 → https://wa.me/50497649035. Si querés, con gusto te ayudo con alguna de nuestras propiedades. 🌴";
+        ? "For now we focus on La Ceiba, Tela and Tegucigalpa, so we don't have that option 🙏. But I'd be glad to help you find something in one of those areas — tell me how many guests and which dates and I'll show you the best fit."
+        : "Por ahora nos enfocamos en La Ceiba, Tela y Tegucigalpa, así que no contamos con esa opción 🙏. Pero con gusto te ayudo a encontrar algo en una de esas zonas — contame para cuántas personas y qué fechas y te muestro lo que mejor les calce.";
     return {
       reply:           msg,
-      escalateToOwner: true,
+      escalateToOwner: false,
       ruleName:        "out_of_scope_redirect",
       tokensUsed:      botResult.tokensUsed,
     };

@@ -36,7 +36,8 @@ import { pauseBot, isBotPaused } from "../_lib/bot-pause";
 // Reglas que significan "un humano toma la conversación" → pausamos el bot para
 // ese número (deja de auto-responder) hasta reactivarlo a mano desde el inbox.
 const HANDOFF_RULES = new Set<string>([
-  "out_of_scope_redirect",      // fuera de alcance / no resoluble
+  // out_of_scope_redirect SACADO (César, 2026-06-11): pedir otra zona/opción que no
+  // tenemos ya NO pausa ni escala — el bot declina, reenfoca y sigue atendiendo solo.
   "existing_guest_escalation",  // huésped existente pide soporte
   "payment_reported",           // cliente dice que ya pagó/transfirió
   "transfer_proof_received",    // mandó comprobante de transferencia
