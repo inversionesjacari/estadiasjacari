@@ -32,6 +32,8 @@ import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
 import { verifyMetaSignature } from "../_lib/meta-signature";
 import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
 import { pauseBot, isBotPaused } from "../_lib/bot-pause";
+import { getState } from "../_lib/quote-state";
+import { processTransferReceipt } from "../_lib/receipt";
 
 // Reglas que significan "un humano toma la conversación" → pausamos el bot para
 // ese número (deja de auto-responder) hasta reactivarlo a mano desde el inbox.
@@ -48,6 +50,7 @@ import type { IcalEnv } from "../_lib/availability";
 
 interface Env extends IcalEnv {
   DB: D1Database;
+  OPENAI_API_KEY?: string; // visión para leer comprobantes de transferencia
   // WhatsApp Cloud API
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
@@ -782,6 +785,41 @@ async function handleMediaMessage(
   // Si un humano ya tomó la conversación (bot en pausa), no respondemos ni
   // escalamos de nuevo: César ya lo está viendo y ahora puede ver el archivo.
   if (await isBotPaused(fromE164, env.DB)) return;
+
+  // ── Comprobante de transferencia (FOTO) en el paso de pago → leer + verificar ──
+  // Si el huésped está esperando confirmar su transferencia y manda una IMAGEN, el bot
+  // la lee con visión, la verifica y —si pasa los chequeos— auto-confirma la reserva
+  // (bloquea el calendario). Dudoso/same-day → escala a César. Otros media o sin estado
+  // de pago caen al manejo genérico de abajo.
+  if (mediaType === "image" && mediaId) {
+    let state = null;
+    try { state = await getState(fromE164, env.DB); } catch { /* ignore */ }
+    if (state?.state === "awaiting_transfer_proof") {
+      const escalateToOwner = async (rule: string) => {
+        try { await env.DB.prepare(`UPDATE whatsapp_messages SET escalated = 1 WHERE meta_message_id = ? AND direction = 'in'`).bind(msg.id).run(); } catch { /* ignore */ }
+        try { await pauseBot(fromE164, rule, env.DB); } catch { /* ignore */ }
+      };
+      try {
+        const res = await processTransferReceipt({ phone: fromE164, mediaId, mediaMime, state, guestName: contactName, env });
+        const send = await sendTextMessage(fromE164, res.replyText, env);
+        try {
+          await env.DB.prepare(
+            `INSERT INTO whatsapp_messages
+               (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+             VALUES (?, 'out', ?, ?, ?, ?, ?, ?)`,
+          ).bind(send.messageId ?? null, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", fromE164, res.replyText, res.ruleName, res.escalate ? 1 : 0, send.ok ? "sent" : "failed").run();
+        } catch { /* best-effort */ }
+        if (res.escalate) await escalateToOwner(res.ruleName);
+        console.log(`Comprobante (${fromE164}): ${res.summary}`);
+      } catch (err) {
+        // Fail-soft: ante CUALQUIER error, nunca confirmar en falso → escalar a César.
+        console.error("processTransferReceipt error:", (err as Error).message);
+        await sendTextMessage(fromE164, "¡Recibido! 🙏 Estamos validando tu comprobante y te confirmamos en un momento.", env);
+        await escalateToOwner("transfer_review");
+      }
+      return;
+    }
+  }
 
   // El bot no interpreta audio/imagen — avisa cálido y escala para que César
   // lo vea en el inbox (clave para comprobantes de pago).

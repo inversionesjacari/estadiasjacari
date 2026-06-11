@@ -83,3 +83,59 @@ export async function callOpenAIJson<T = unknown>(
     return { ok: false, error: `OpenAI fetch error: ${(err as Error).message}`, tokensUsed: 0 };
   }
 }
+
+/**
+ * Igual que callOpenAIJson pero con una IMAGEN (visión). GPT-4o-mini es multimodal:
+ * le pasamos el comprobante de transferencia en base64 y nos devuelve JSON con lo
+ * extraído. `detail: "high"` para leer bien los números chicos (monto, # referencia).
+ * Mismo contrato fail-soft: NUNCA throws.
+ */
+export async function callOpenAIVisionJson<T = unknown>(
+  systemPrompt: string,
+  userPrompt: string,
+  imageBase64: string,
+  mime: string,
+  env: WorkersAIEnv,
+  opts: { maxTokens?: number } = {},
+): Promise<AIJsonResponse<T>> {
+  if (!hasOpenAI(env)) {
+    return { ok: false, error: "OPENAI_API_KEY no configurada", tokensUsed: 0 };
+  }
+  try {
+    const res = await fetch(OPENAI_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0,
+        max_tokens: opts.maxTokens ?? 500,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userPrompt },
+              { type: "image_url", image_url: { url: `data:${mime};base64,${imageBase64}`, detail: "high" } },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const data = (await res.json().catch(() => ({}))) as OpenAIChatResponse;
+    if (!res.ok) {
+      return { ok: false, error: `OpenAI vision error: ${data.error?.message ?? `HTTP ${res.status}`}`, tokensUsed: 0 };
+    }
+    const rawText = data.choices?.[0]?.message?.content ?? "";
+    const tokensUsed = data.usage?.total_tokens ?? 0;
+    const parsed = tryParseJson<T>(rawText);
+    if (parsed !== null) return { ok: true, data: parsed, tokensUsed };
+    return { ok: false, error: `Respuesta no-JSON de OpenAI vision: ${rawText.slice(0, 200)}`, rawText, tokensUsed };
+  } catch (err) {
+    return { ok: false, error: `OpenAI vision fetch error: ${(err as Error).message}`, tokensUsed: 0 };
+  }
+}

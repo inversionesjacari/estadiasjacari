@@ -678,3 +678,49 @@ export function formatCheckinDateForTemplate(
   }
   return human;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Descargar un media ENTRANTE (foto del cliente) por su media_id.
+// 2 pasos de la Graph API: GET /{mediaId} → URL temporal; GET esa URL (con el
+// token) → bytes. Devuelve base64 + mime para mandárselo a un modelo de visión
+// (lectura de comprobantes de transferencia).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function downloadMedia(
+  mediaId: string,
+  env: { WHATSAPP_ACCESS_TOKEN?: string },
+): Promise<{ ok: boolean; base64?: string; mime?: string; error?: string }> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) return { ok: false, error: "Falta WHATSAPP_ACCESS_TOKEN" };
+  try {
+    const metaResp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${mediaId}`,
+      { headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` } },
+      TIMEOUT.CRITICAL,
+    );
+    if (!metaResp.ok) return { ok: false, error: `media meta HTTP ${metaResp.status}` };
+    const meta = (await metaResp.json().catch(() => ({}))) as { url?: string; mime_type?: string };
+    if (!meta.url) return { ok: false, error: "media sin url" };
+
+    const fileResp = await fetchWithTimeout(
+      meta.url,
+      { headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` } },
+      TIMEOUT.CRITICAL,
+    );
+    if (!fileResp.ok) return { ok: false, error: `media file HTTP ${fileResp.status}` };
+    const buf = await fileResp.arrayBuffer();
+    return { ok: true, base64: arrayBufferToBase64(buf), mime: meta.mime_type ?? "image/jpeg" };
+  } catch (err) {
+    return { ok: false, error: `downloadMedia error: ${(err as Error).message}` };
+  }
+}
+
+/** ArrayBuffer → base64 en chunks (evita el stack overflow de String.fromCharCode con buffers grandes). */
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}

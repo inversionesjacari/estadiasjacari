@@ -76,6 +76,31 @@ export const T = {
       ? "Got your payment confirmation. An agent is reviewing it and will confirm your booking shortly. 🙏"
       : "Recibí tu comprobante. Un agente lo revisa y confirma tu reserva en breve. 🙏",
 
+  // Comprobante de DEPÓSITO (50%+) verificado por el bot → fechas confirmadas, pero
+  // la info de check-in queda para el día del ingreso, una vez completado el pago.
+  transferDatesConfirmed: (l: Lang): string =>
+    l === "en"
+      ? "All set! ✅ We received your payment and your dates are *confirmed*. On your check-in day we'll share all the information you need to get in, once the full payment has been received. Thanks for booking with us! 🙏"
+      : "¡Listo! ✅ Recibimos tu pago y tus fechas quedaron *confirmadas*. El día de tu check-in te compartimos toda la información para tu ingreso, una vez recibida la totalidad del pago. ¡Gracias por reservar con nosotros! 🙏",
+
+  // Comprobante por el TOTAL (pago completo) verificado → reserva confirmada.
+  transferFullConfirmed: (l: Lang): string =>
+    l === "en"
+      ? "All set! ✅ We received your full payment and your booking is *confirmed*. On your check-in day we'll send you everything you need to get in. Thanks for choosing us! 🙏"
+      : "¡Listo! ✅ Recibimos tu pago completo y tu reserva quedó *confirmada*. El día de tu check-in te compartimos toda la información para tu ingreso. ¡Gracias por elegirnos! 🙏",
+
+  // El bot no pudo verificar el comprobante con certeza → lo valida una persona.
+  transferReceiptReview: (l: Lang): string =>
+    l === "en"
+      ? "Got it! 🙏 We're verifying your payment and we'll confirm your booking in just a moment."
+      : "¡Recibido! 🙏 Estamos validando tu comprobante y en un momentito te confirmamos la reserva.",
+
+  // El mismo comprobante (misma referencia) ya se había recibido antes.
+  transferReceiptDuplicate: (l: Lang): string =>
+    l === "en"
+      ? "We'd already received this receipt 🙏. If you made another transfer, send me that photo; if it's the same one, you're all set!"
+      : "Este comprobante ya lo habíamos recibido 🙏. Si hiciste otra transferencia, mandame esa foto; si es la misma, ¡ya está todo en orden!",
+
   existingGuest: (l: Lang): string =>
     l === "en"
       ? "Of course! Let me connect you with someone on our team who has access to your booking to help you right away. 🙏"
