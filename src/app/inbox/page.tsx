@@ -1147,12 +1147,12 @@ export default function InboxPage() {
   return (
     <div className="h-screen bg-bg dark:bg-slate-950 flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-4 py-3 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-xl text-primary dark:text-slate-100">Inbox</h1>
-          <p className="text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
+      <header className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h1 className="font-display text-xl text-primary dark:text-slate-100 leading-tight">Inbox</h1>
+          <p className="hidden sm:block text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
         </div>
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex items-center gap-1.5 sm:gap-3 text-sm">
           {/* Avisos: sonido + notificación, configurable por tipo */}
           <div className="relative">
             <button
@@ -1209,22 +1209,25 @@ export default function InboxPage() {
           </button>
           <a
             href="/inbox/operacion"
-            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
+            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+            title="Centro de control"
           >
-            🛰️ Centro de control
+            🛰️<span className="hidden lg:inline"> Centro de control</span>
           </a>
           <a
             href="/inbox/conocimiento"
-            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
+            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+            title="Conocimiento del bot"
           >
-            🤖 Conocimiento del bot
+            🤖<span className="hidden lg:inline"> Conocimiento del bot</span>
           </a>
           <button
             onClick={fetchConversations}
             disabled={loadingConv}
-            className="px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50"
+            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50 whitespace-nowrap"
+            title="Refrescar"
           >
-            {loadingConv ? "..." : "Refrescar"}
+            {loadingConv ? "..." : <><span className="lg:hidden">🔄</span><span className="hidden lg:inline">Refrescar</span></>}
           </button>
           <button
             onClick={handleLogout}
@@ -1238,7 +1241,7 @@ export default function InboxPage() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
-        <aside className="w-80 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 dark:bg-slate-800 overflow-y-auto">
+        <aside className={`${selectedPhone ? "hidden lg:block" : "block"} w-full lg:w-80 lg:shrink-0 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto`}>
           {/* Buscador */}
           <div className="sticky top-0 z-10 bg-white dark:bg-slate-800 px-3 py-2 border-b border-gray-100 dark:border-slate-800">
             <div className="relative">
@@ -1344,7 +1347,7 @@ export default function InboxPage() {
         </aside>
 
         {/* Detalle de conversación */}
-        <main className="flex-1 flex flex-col">
+        <main className={`${selectedPhone ? "flex" : "hidden lg:flex"} flex-1 flex-col min-w-0`}>
           {!selectedPhone ? (
             <div className="flex-1 flex items-center justify-center text-muted dark:text-slate-400">
               Selecciona una conversación
@@ -1358,7 +1361,16 @@ export default function InboxPage() {
                 const paused = conv?.botPaused ?? false;
                 return (
                   <>
-                    <div className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-6 py-3 flex items-center gap-3">
+                    <div className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-4 sm:px-6 py-3 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPhone(null)}
+                        className="lg:hidden -ml-1 shrink-0 px-1.5 py-1 text-2xl leading-none text-primary dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg"
+                        aria-label="Volver a la lista de chats"
+                        title="Volver a los chats"
+                      >
+                        ←
+                      </button>
                       <Avatar name={guestName} phone={selectedPhone} size="lg" />
                       <div className="min-w-0">
                         <h2 className="font-semibold text-primary dark:text-slate-100 leading-tight">
@@ -1379,7 +1391,7 @@ export default function InboxPage() {
                     </div>
                     {/* Barra de estado del bot — ancho completo (verde = activo / ámbar = en pausa) */}
                     <div
-                      className="w-full flex items-center justify-between gap-3 px-6 py-2 border-b"
+                      className="w-full flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-2 border-b"
                       style={paused
                         ? { background: "#fef3c7", borderColor: "#fcd34d" }
                         : { background: "#dcfce7", borderColor: "#86efac" }}
@@ -1421,7 +1433,7 @@ export default function InboxPage() {
               })()}
 
               {/* Mensajes */}
-              <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6 space-y-3">
+              <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
                 {loadingMsgs && messages.length === 0 && (
                   <p className="text-center text-muted dark:text-slate-400 text-sm">Cargando...</p>
                 )}
@@ -1456,7 +1468,7 @@ export default function InboxPage() {
               {/* Composer */}
               <form
                 onSubmit={handleSend}
-                className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 p-4 flex gap-3 items-end relative"
+                className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 p-3 sm:p-4 flex gap-2 sm:gap-3 items-end relative"
               >
                 {/* Emoji picker — popover por categorías, scrolleable */}
                 {emojiOpen && (
@@ -1616,7 +1628,7 @@ export default function InboxPage() {
                 <button
                   type="submit"
                   disabled={sending || (!composeText.trim() && !mediaFile)}
-                  className="bg-primary text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-primary/90 transition disabled:opacity-50 self-end"
+                  className="bg-primary text-white font-semibold px-4 sm:px-6 py-2.5 rounded-lg hover:bg-primary/90 transition disabled:opacity-50 self-end shrink-0"
                 >
                   {sending ? "..." : mediaFile ? "Enviar 📎" : "Enviar"}
                 </button>
