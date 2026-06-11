@@ -108,6 +108,16 @@ export const T = {
       ? "Of course! 📞 You can call or message us at +504 9764-9035. Happy to help with your booking here too!"
       : "¡Claro! 📞 Podés llamarnos o escribirnos al +504 9764-9035. ¡Con gusto te ayudo también por acá con tu reserva!",
 
+  // Cliente con miedo a estafa / duda de legitimidad ("¿son reales?", "¿cómo
+  // confirmo su veracidad?", "¿es seguro pagar?") — la objeción más cara JUSTO
+  // antes de transferir. Se responde con PRUEBAS reales (empresa registrada +
+  // redes con historial + Airbnb con reseñas), cálido y sin ponerse a la
+  // defensiva. El "tail" que retoma el paso de pago lo agrega quote-flow.
+  trustReassurance: (l: Lang): string =>
+    l === "en"
+      ? "Totally understandable to want to make sure before paying 🙏\n\nWe're *Inversiones Jacarí S. de R.L.*, a registered company in Honduras — the transfer goes to the company's bank account, not a personal one. You can also check us out here:\n📸 Instagram: instagram.com/estadiasjacari\n🌐 estadiasjacari.com\n⭐ We're on Airbnb too, with real guest reviews.\n\nAnd you're welcome to call us anytime at +504 9764-9035."
+      : "¡Totalmente entendible querer confirmar antes de transferir! 🙏\n\nSomos *Inversiones Jacarí S. de R.L.*, una empresa registrada en Honduras — la transferencia va a la cuenta de la empresa, no a una personal. También podés vernos acá:\n📸 Instagram: instagram.com/estadiasjacari\n🌐 estadiasjacari.com\n⭐ Estamos en Airbnb, con reseñas reales de huéspedes.\n\nY cuando quieras, podés llamarnos al +504 9764-9035.",
+
   // "Último aviso" antes de cerrar la ventana de 24h — la fecha SIGUE disponible.
   lastCallAlive: (l: Lang, ref: string): string =>
     l === "en"

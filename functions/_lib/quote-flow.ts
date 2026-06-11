@@ -228,6 +228,42 @@ export function isPhoneNumberRequest(text: string): boolean {
   );
 }
 
+/**
+ * Cliente con DUDA de legitimidad / miedo a estafa: "¿son reales?", "¿esto es
+ * estafa?", "¿es confiable?", "¿cómo confirmo su veracidad?", "¿es seguro pagar?".
+ * Es la objeción más cara JUSTO antes de transferir: el cliente tiene la plata
+ * lista y solo le falta confianza. Ignorarla —o, peor, repetir "mandame el
+ * comprobante"— lo hace huir y nos hace ver como la estafa que teme. Se atiende
+ * determinístico en CUALQUIER estado, con pruebas reales (empresa registrada +
+ * redes + Airbnb). NO roba "número de cuenta" (eso es isBankAccountRequest).
+ */
+export function isLegitimacyQuestion(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return (
+    // estafa / fraude / engaño / timo
+    /\b(estafa|estafan|estafar|fraude|fraudulent|timo|enga[nñ]o|enga[nñ]an)\b/.test(t) ||
+    // ¿son reales? / ¿esto es real? / ¿de verdad existen?
+    /\b(son|es|sera|seran) reales?\b/.test(t) ||
+    /\b(esto|esta|este|todo|ustedes) (es|son) (real|reales|cierto|verdad)\b/.test(t) ||
+    /\b(de verdad|realmente) (existen|son reales?|trabajan|alquilan|rentan)\b/.test(t) ||
+    // confiable / de fiar / serios / legítimos
+    /\b(confiable|confiables|de fiar|son serios|es serio|legitim[oa]s?|reales)\b/.test(t) ||
+    /\b(puedo|se puede|podemos) confiar\b/.test(t) ||
+    // veracidad / verificar / "cómo sé que son reales / no es estafa"
+    /\bveracidad\b/.test(t) ||
+    /\bconfirmar (su|la) (veracidad|legitimidad|autenticidad|identidad)\b/.test(t) ||
+    /\bcomo\b.*\b(se que|confirmo|verifico|compruebo|asegur)\b.*\b(real|reales|estafa|confiable|legitim|cierto|fiar|veracidad)\b/.test(t) ||
+    // ¿es seguro pagar / transferir?
+    /\bes seguro\b.*\b(pagar|transferir|deposit|comprar|reservar|enviar|mandar)\b/.test(t) ||
+    // inglés
+    /\b(is|are) (this|you|it|they)( a)? (real|legit|legitimate|trustworthy|scam|safe)\b/.test(t) ||
+    /\b(scam|fraud|legit|trustworthy)\b/.test(t) ||
+    /\bhow (do|can) i (know|be sure|trust|verify)\b/.test(t) ||
+    /\bis it safe to (pay|transfer|send)\b/.test(t) ||
+    /\bcan i trust\b/.test(t)
+  );
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -452,6 +488,38 @@ export async function handleQuoteIncoming(
         };
       }
     }
+  }
+
+  // ── Cliente con DUDA de legitimidad / miedo a estafa → tranquilizar con PRUEBAS ──
+  // "¿son reales?", "¿cómo confirmo su veracidad?", "¿es seguro pagar?" es la objeción
+  // más cara JUSTO antes de transferir: el cliente tiene la plata lista y solo le falta
+  // confianza. El paso de pago/comprobante es 100% determinístico y se TRAGABA estas
+  // preguntas (repetía "mandame el comprobante" — caso Emilio, que parecía una estafa).
+  // Determinístico, ANTES del LLM y en CUALQUIER estado; tras tranquilizar, retomamos
+  // exactamente donde iba (comprobante / método / PayPal / seguir cotizando).
+  if (isLegitimacyQuestion(text)) {
+    let tail: string;
+    if (existing?.state === "awaiting_transfer_proof") {
+      tail = lang === "en"
+        ? "\n\nWhenever you've made the transfer, just send me a photo of the receipt here and I'll confirm your booking. 🙏"
+        : "\n\nCuando hagas la transferencia, mandame la foto del comprobante por acá y te confirmo la reserva. 🙏";
+    } else if (existing?.state === "awaiting_payment_method") {
+      tail = T.resumePaymentTail(lang);
+    } else if (existing?.state === "awaiting_paypal_capture") {
+      tail = lang === "en"
+        ? "\n\nYour PayPal link is still active — once the payment goes through, you're all set. 🙏"
+        : "\n\nTu link de PayPal sigue activo — apenas se procese el pago, queda lista tu reserva. 🙏";
+    } else {
+      tail = lang === "en"
+        ? "\n\nWant to go ahead with your booking?"
+        : "\n\n¿Seguimos con tu reserva?";
+    }
+    return {
+      reply:           T.trustReassurance(lang) + tail,
+      escalateToOwner: false,
+      ruleName:        "legitimacy_reassured",
+      tokensUsed:      0,
+    };
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
