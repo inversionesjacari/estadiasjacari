@@ -25,6 +25,7 @@ import {
   emptyQuoteData,
   isQuoteDataComplete,
   type ConvState,
+  type ConversationStateRow,
 } from "./quote-state";
 import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
@@ -109,13 +110,17 @@ export function isBankAccountRequest(text: string): boolean {
   );
 }
 
-/** Detecta si el huésped pide ver fotos / conocer la propiedad (es/en). */
+/** Detecta si el huésped pide ver fotos / conocer la propiedad (es/en). Incluye
+ *  pedir las REDES SOCIALES / Instagram / la página "para ver el lugar": eso es un
+ *  pedido de fotos, NO algo fuera de alcance (era la causa del escalado de Natalia). */
 export function isPhotoRequest(text: string): boolean {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   return (
-    /\b(foto|fotos|fotograf[ií]a|fotograf[ií]as|im[aá]gen|im[aá]genes)\b/.test(t) ||
-    /(ver|conocer|mostrar|mu[eé]stra|ense[ñn]a).{0,15}(casa|propiedad|lugar|villa|apartamento|depto|cuarto|habitaci)/.test(t) ||
-    /\b(photo|photos|picture|pictures|images?)\b/.test(t) ||
+    /\b(foto|fotos|fotografia|fotografias|imagen|imagenes)\b/.test(t) ||
+    /(ver|conocer|mostrar|muestra|ensena).{0,15}(casa|propiedad|lugar|villa|apartamento|depto|cuarto|habitaci)/.test(t) ||
+    // pide las redes / el perfil / la página "para ver el lugar" → es pedir fotos
+    /\b(redes sociales|red social|instagram|insta|facebook|tiktok|su perfil|su pagina|pagina web|sitio web|catalogo)\b/.test(t) ||
+    /\b(photo|photos|picture|pictures|images?|social media|instagram|facebook)\b/.test(t) ||
     /(see|show).{0,15}(house|place|property|villa|apartment|room)/.test(t)
   );
 }
@@ -238,6 +243,34 @@ function locationFromText(text: string): string | undefined {
   return undefined;
 }
 
+/** Slug de la propiedad nombrada explícitamente en el texto (o undefined). */
+function propertySlugFromText(text: string): PropertySlug | undefined {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/\bcasa\s*brisa\b|\bcasita del mar\b/.test(t))    return "casa-brisa";
+  if (/\bcasa\s*marea\b|\btela beach house\b/.test(t))  return "casa-marea";
+  if (/\bvilla\s*b\s*-?\s*11\b|\bpalma real\b/.test(t)) return "villa-b11-palma-real";
+  if (/\bcentro\s*morazan\b|\bmorazan\b/.test(t))       return "centro-morazan";
+  if (/\bcasa\s*lara\b/.test(t))                        return "casa-lara-townhouse";
+  if (/\bla florida\b/.test(t))                         return "la-florida";
+  return undefined;
+}
+
+/**
+ * Resuelve qué propiedad usar para mandar FOTOS: la nombrada en el texto, la del
+ * contexto, o la representativa de la ciudad (Tela→Casa Brisa, La Ceiba→Villa B11,
+ * fotos casi idénticas entre gemelas). Tegucigalpa (3 casas distintas) o sin
+ * contexto → undefined: que el LLM pregunte de cuál querés ver fotos.
+ */
+function propertyForPhotos(text: string, existing: ConversationStateRow | null): PropertySlug | undefined {
+  return (
+    propertySlugFromText(text) ??
+    existing?.data.property ??
+    (existing?.data.city === "Tela" ? "casa-brisa"
+      : existing?.data.city === "La Ceiba" ? "villa-b11-palma-real"
+      : undefined)
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos públicos
 // ─────────────────────────────────────────────────────────────────────────────
@@ -336,6 +369,28 @@ export async function handleQuoteIncoming(
       ruleName:        "phone_contact_sent",
       tokensUsed:      0,
     };
+  }
+
+  // ── Cliente quiere VER el lugar (fotos / "sus redes para ver el lugar") ─────
+  // Pedir fotos —o las redes sociales/Instagram/la página "para ver el lugar"— NO
+  // es out_of_scope: es un pedido caliente. Determinístico, ANTES del LLM, para que
+  // no lo mande a "fuera de alcance" (eso escalaba + pausaba el bot y dejaba morir
+  // el lead — caso Natalia). Si están en pleno pago, recordamos el método al final.
+  if (isPhotoRequest(text) && existing) {
+    const photoSlug = propertyForPhotos(text, existing);
+    if (photoSlug) {
+      const photos = getPropertyPhotos(photoSlug);
+      if (photos.length > 0) {
+        const inPayment = existing.state === "awaiting_payment_method";
+        return {
+          reply:           T.photosIntro(lang) + T.photosGallery(lang, getGalleryUrl(photoSlug)) + (inPayment ? T.resumePaymentTail(lang) : ""),
+          images:          photos,
+          escalateToOwner: false,
+          ruleName:        inPayment ? "photos_during_payment" : "photos_sent",
+          tokensUsed:      0,
+        };
+      }
+    }
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
