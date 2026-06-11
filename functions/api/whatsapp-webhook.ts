@@ -508,6 +508,13 @@ async function processIncomingMessage(
   //   1. marcar la conversación como escalada → salta a "Pendientes" del inbox.
   //   2. dejar latido del error del LLM → el Centro de Control puede pintarlo rojo.
   //   3. avisarte por email (máx 1 cada 30 min, para no spamear ante una racha).
+  // Silencio INTENCIONAL (no es un glitch): el bot decide no responder a propósito
+  // — ej. un "ok"/"gracias" de cierre cuando ya nos despedimos. NO encolar para
+  // reintento ni pintar el Bot IA en rojo: simplemente no mandamos nada.
+  if (quoteResult?.silent && quoteResult.ruleName === "closing_ack_silent") {
+    return;
+  }
+
   if (quoteResult?.silent) {
     console.error(`Glitch del bot (Workers AI) para ${fromE164} (id ${currentMsgId}) — encolado para auto-recuperación`);
 

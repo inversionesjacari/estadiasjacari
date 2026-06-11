@@ -264,6 +264,40 @@ export function isLegitimacyQuestion(text: string): boolean {
   );
 }
 
+/**
+ * Despedida / cierre CLARO del cliente como mensaje completo ("ya no gracias",
+ * "no gracias", "gracias", "está bien gracias", "adiós", "thanks"). Cierra la
+ * conversación con UNA despedida cálida (no es lo mismo que "gracias, ¿cómo pago?"
+ * — eso lleva más texto y no matchea por el ancla ^…$).
+ */
+export function isFarewell(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return /^((muchas |mil )?gracias|ya no gracias|no,? gracias|ok,? gracias|okay gracias|listo,? gracias|esta bien,? gracias|gracias igualmente|igualmente|adios|nos vemos|hasta luego|hasta pronto|bye|goodbye|thank you|thanks|ty)[.,!\s🙏👍🙂😊]*$/.test(t);
+}
+
+/**
+ * Acuse mínimo / "ok" suelto como mensaje completo ("ok", "vale", "dale",
+ * "listo", "perfecto", "entendido", "👍"). Solo se SILENCIA si viene DESPUÉS de
+ * una despedida (si no, puede significar "ok = sí" y sigue al flujo normal).
+ */
+export function isBareAck(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return /^(ok|okay|okey|oki|oka|vale|dale|listo|perfecto|excelente|entendido|de acuerdo|esta bien|bien|va|sale|ok va|got it|sounds good|alright|👍|👌|🙏|👏|🙂|😊)[.,!\s🙏👍👌🙂😊]*$/.test(t);
+}
+
+/** Última regla saliente del bot para este número (o "" si no hay). Para saber si
+ *  ya nos despedimos y no encimar otra despedida ante un "ok"/"gracias" de cierre. */
+async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
+  try {
+    const r = await db.prepare(
+      `SELECT matched_rule FROM whatsapp_messages WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).bind(phone).first<{ matched_rule: string | null }>();
+    return r?.matched_rule ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -520,6 +554,31 @@ export async function handleQuoteIncoming(
       ruleName:        "legitimacy_reassured",
       tokensUsed:      0,
     };
+  }
+
+  // ── Despedida / acuse de cierre → cerrar cálido UNA vez, sin repetir ───────
+  // El bot repetía la MISMA despedida ante cada "ok"/"gracias" de cierre (caso
+  // Franci: "Ya no gracias" → despedida; "OK" → la MISMA despedida otra vez). Solo
+  // en estados BLANDOS (sin pago en curso, para no cancelar un cobro por un "gracias"):
+  //   · si el cliente se despide y aún no nos despedimos → UNA despedida determinística.
+  //   · si YA nos despedimos (última regla = farewell) y manda otro cierre/"ok" → callar.
+  //   · un "ok" suelto que NO viene tras una despedida cae al flujo normal ("ok" = sí).
+  {
+    const softState =
+      !existing ||
+      existing.state === "awaiting_quote_data" ||
+      existing.state === "quote_provided";
+    if (softState && (isFarewell(text) || isBareAck(text))) {
+      const alreadyClosed = (await getLastOutRule(phone, env.DB)) === "farewell";
+      if (alreadyClosed) {
+        // Ya cerramos: no encimar otra despedida ante un "ok"/"gracias" de cortesía.
+        return { reply: "", silent: true, escalateToOwner: false, ruleName: "closing_ack_silent", tokensUsed: 0 };
+      }
+      if (isFarewell(text)) {
+        return { reply: T.farewell(lang), escalateToOwner: false, ruleName: "farewell", tokensUsed: 0 };
+      }
+      // isBareAck sin despedida previa → sigue al flujo normal (puede ser "ok = sí").
+    }
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────

@@ -119,17 +119,27 @@ export const T = {
       : "¡Totalmente entendible querer confirmar antes de transferir! 🙏\n\nSomos *Inversiones Jacarí S. de R.L.*, una empresa registrada en Honduras — la transferencia va a la cuenta de la empresa, no a una personal. También podés vernos acá:\n📸 Instagram: instagram.com/estadiasjacari\n🌐 estadiasjacari.com\n⭐ Estamos en Airbnb, con reseñas reales de huéspedes.\n\nY cuando quieras, podés llamarnos al +504 9764-9035.",
 
   // "Último aviso" antes de cerrar la ventana de 24h — la fecha SIGUE disponible.
-  lastCallAlive: (l: Lang, ref: string): string =>
+  // 🌴 SOLO para zona de playa (Tela / La Ceiba). Tegucigalpa es ciudad → sin palmera
+  // (era el caso Franci: "sigo teniendo todo listo en Tegucigalpa 🌴").
+  lastCallAlive: (l: Lang, ref: string, beach: boolean): string =>
     l === "en"
-      ? `Hi! 👋 Before our chat closes here, I still have everything ready${ref}. Want to go ahead with the booking? If you'd prefer other dates, I can help too. 🌴`
-      : `¡Hola! 👋 Antes de que se cierre nuestra conversación por acá, sigo teniendo todo listo${ref}. ¿Querés que avancemos con la reserva? Si preferís otras fechas, también te ayudo. 🌴`,
+      ? `Hi! 👋 Before our chat closes here, I still have everything ready${ref}. Want to go ahead with the booking? If you'd prefer other dates, I can help too.${beach ? " 🌴" : ""}`
+      : `¡Hola! 👋 Antes de que se cierre nuestra conversación por acá, sigo teniendo todo listo${ref}. ¿Querés que avancemos con la reserva? Si preferís otras fechas, también te ayudo.${beach ? " 🌴" : ""}`,
 
   // "Último aviso" cuando esas fechas YA NO están (ocupadas o ya pasaron) →
   // no insistir con eso; ponerse a la orden con otras fechas/opciones.
-  lastCallUnavailable: (l: Lang, ref: string): string =>
+  lastCallUnavailable: (l: Lang, ref: string, beach: boolean): string =>
     l === "en"
-      ? `Hi! 👋 Quick heads-up — those dates${ref} are no longer available 😕, but I'd be glad to find you other dates or another option. Want me to? 🌴`
-      : `¡Hola! 👋 Te cuento que esas fechas${ref} ya no están disponibles 😕, pero con gusto te busco otras fechas u otra opción. ¿Te ayudo? 🌴`,
+      ? `Hi! 👋 Quick heads-up — those dates${ref} are no longer available 😕, but I'd be glad to find you other dates or another option. Want me to?${beach ? " 🌴" : ""}`
+      : `¡Hola! 👋 Te cuento que esas fechas${ref} ya no están disponibles 😕, pero con gusto te busco otras fechas u otra opción. ¿Te ayudo?${beach ? " 🌴" : ""}`,
+
+  // Despedida cálida ÚNICA cuando el cliente cierra ("ya no gracias", "no gracias").
+  // Determinística (siempre el mismo texto) → un acuse posterior ("ok") se silencia
+  // en quote-flow en vez de repetir esta frase. Sin 🌴 (aplica a cualquier zona).
+  farewell: (l: Lang): string =>
+    l === "en"
+      ? "Thanks for reaching out! 🙏 I'm here whenever you need anything — have a great day! 😊"
+      : "¡Gracias por escribirnos! 🙏 Aquí estoy cuando gustés. ¡Que tengás un buen día! 😊",
 
   techError: (l: Lang): string =>
     l === "en"

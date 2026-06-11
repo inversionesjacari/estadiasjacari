@@ -321,7 +321,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       } catch { /* best-effort */ }
       const TERMINAL_RULES = new Set([
         "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
-        "transfer_proof_received", "escalar_humano", "call_requested",
+        "transfer_proof_received", "escalar_humano", "call_requested", "farewell",
       ]);
       if (lastOutRule && TERMINAL_RULES.has(lastOutRule)) {
         await markDone();
@@ -354,7 +354,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         }
       }
 
-      const message = stillOk ? T.lastCallAlive(lang, ref) : T.lastCallUnavailable(lang, ref);
+      // 🌴 solo para zona de playa (Tela / La Ceiba); Tegucigalpa es ciudad → sin palmera.
+      const beachSlugs = new Set(["casa-brisa", "casa-marea", "las-gemelas-tela", "villa-b11-palma-real"]);
+      const beach = city === "Tela" || city === "La Ceiba" || (slug ? beachSlugs.has(slug) : false);
+      const message = stillOk ? T.lastCallAlive(lang, ref, beach) : T.lastCallUnavailable(lang, ref, beach);
       if (dryRun) {
         lastCall.push({ phone: row.phone, sent: false, kind: stillOk ? "alive(dry)" : "unavailable(dry)" });
         continue;
