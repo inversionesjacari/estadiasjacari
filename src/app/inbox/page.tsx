@@ -919,6 +919,22 @@ export default function InboxPage() {
     loadMessages(phone);
   }
 
+  // ── Link mágico: abrir directo un chat desde ?c=<teléfono> ──────────────────
+  // Las alertas de WhatsApp al equipo traen un botón "Abrir en inbox" que apunta
+  // a /inbox?c=50488390145. Al entrar (ya con sesión) abrimos ese chat solo y
+  // limpiamos el query para que un refresh no lo vuelva a forzar.
+  const deepLinkedRef = useRef(false);
+  useEffect(() => {
+    if (!authenticated || deepLinkedRef.current || typeof window === "undefined") return;
+    const c = new URLSearchParams(window.location.search).get("c");
+    if (c && /^\d{8,15}$/.test(c)) {
+      deepLinkedRef.current = true;
+      selectConversation(c);
+      try { window.history.replaceState(null, "", "/inbox"); } catch { /* ignore */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated]);
+
   // ── Login ────────────────────────────────────────────────────────────────
   async function handleLogin(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
