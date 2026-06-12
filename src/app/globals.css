@@ -43,3 +43,37 @@
     @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white border border-gray-200 text-sm text-gray-700;
   }
 }
+
+/* ── Inbox: loaders modernos (skeleton shimmer + barra de progreso) ───────── */
+@keyframes jacari-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.jacari-skeleton {
+  background: linear-gradient(90deg, rgba(40, 157, 174, 0.10) 25%, rgba(40, 157, 174, 0.22) 50%, rgba(40, 157, 174, 0.10) 75%);
+  background-size: 200% 100%;
+  animation: jacari-shimmer 1.5s linear infinite;
+}
+.dark .jacari-skeleton {
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.10) 25%, rgba(148, 163, 184, 0.20) 50%, rgba(148, 163, 184, 0.10) 75%);
+  background-size: 200% 100%;
+}
+@keyframes jacari-progress {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+.jacari-progress-bar {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: rgba(40, 157, 174, 0.12);
+}
+.jacari-progress-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #289dae 40%, #d2a436 60%, transparent);
+  animation: jacari-progress 1.1s ease-in-out infinite;
+}

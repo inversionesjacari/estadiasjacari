@@ -15,7 +15,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#003F51",
+  // Coincide con el header del inbox (blanco). En modo noche, el inbox lo cambia
+  // a slate-800 por JS. Evita la "línea" navy entre la barra de estado y el header.
+  themeColor: "#ffffff",
 };
 
 export default function InboxLayout({ children }: { children: React.ReactNode }) {

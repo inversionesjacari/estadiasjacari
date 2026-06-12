@@ -633,6 +633,15 @@ export default function InboxPage() {
     if (typeof document === "undefined") return;
     document.documentElement.classList.toggle("dark", darkMode);
     try { localStorage.setItem("inbox-theme", darkMode ? "dark" : "light"); } catch { /* ignore */ }
+    // La barra de estado del celu (PWA) combina con el header: blanco de día,
+    // slate-800 de noche. Sin esto se ve una "línea" navy arriba que no pega.
+    let meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", "theme-color");
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", darkMode ? "#1e293b" : "#ffffff");
   }, [darkMode]);
 
   // Cargar preferencias de avisos + estado de "visto" desde localStorage (1 vez).
@@ -1320,6 +1329,23 @@ export default function InboxPage() {
             </div>
           </div>
 
+          {/* Loader cool: barra de progreso futurista + filas fantasma con shimmer (solo en la carga inicial; los refrescos automáticos no titilan) */}
+          {conversations.length === 0 && loadingConv && (
+            <>
+              <div className="jacari-progress-bar" />
+              <ul>
+                {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                  <li key={i} className="px-4 py-3 border-b border-gray-100 dark:border-slate-800 flex gap-3 items-center">
+                    <div className="w-10 h-10 rounded-full jacari-skeleton shrink-0" />
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <div className="h-3 jacari-skeleton rounded" style={{ width: `${52 + (i % 3) * 12}%` }} />
+                      <div className="h-2.5 jacari-skeleton rounded" style={{ width: `${72 - (i % 4) * 10}%` }} />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           {conversations.length === 0 && !loadingConv && (
             <div className="p-6 text-center text-muted dark:text-slate-400 text-sm">
               No hay conversaciones todavía.
