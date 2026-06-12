@@ -28,6 +28,8 @@ const TEMPLATE_LANG = "es";
 export interface WhatsAppEnv {
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
+  /** ID del catálogo de WhatsApp (Commerce Manager) para mensajes de producto. */
+  WHATSAPP_CATALOG_ID?: string;
 }
 
 export interface WhatsAppReminderData {
@@ -462,6 +464,121 @@ export async function sendImageMessage(
   }
 
   return { ok: true, messageId };
+}
+
+/**
+ * POST genérico de un mensaje ya armado a /messages. Centraliza el fetch +
+ * parseo + manejo de error (mismo patrón que sendTextMessage). Devuelve el
+ * messageId de Meta o un error legible.
+ */
+async function postWhatsAppMessage(
+  payload: Record<string, unknown>,
+  env: WhatsAppEnv,
+  label: string,
+): Promise<SendTextResult> {
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `${label} timeout/red: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  if (!resp.ok) {
+    return { ok: false, error: `${label} HTTP ${resp.status}: ${bodyText.slice(0, 500)}` };
+  }
+
+  let parsed: { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } };
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: `${label} JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+
+  if (parsed.error) {
+    return {
+      ok: false,
+      error: `${label} Meta error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "desconocido"}`,
+    };
+  }
+
+  const messageId = parsed.messages?.[0]?.id;
+  if (!messageId) {
+    return { ok: false, error: `${label} sin message id: ${bodyText.slice(0, 200)}` };
+  }
+  return { ok: true, messageId };
+}
+
+/**
+ * Envía una TARJETA NATIVA de producto del catálogo de WhatsApp (Single Product
+ * Message): imagen + nombre + precio + botón "Ver", todo dibujado por WhatsApp.
+ * Requiere catálogo conectado al número + el producto cargado con su content ID
+ * (= retailerId). Solo dentro de la ventana de 24h.
+ *
+ * @param toPhone     E.164 sin '+'
+ * @param retailerId  content ID del producto en el catálogo (= slug de la propiedad)
+ * @param bodyText    texto opcional que aparece ARRIBA de la tarjeta
+ * @param footerText  texto opcional al pie (máx 60 chars)
+ */
+export async function sendProductMessage(
+  toPhone: string,
+  retailerId: string,
+  env: WhatsAppEnv,
+  bodyText?: string,
+  footerText?: string,
+): Promise<SendTextResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) {
+    return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
+  }
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) {
+    return { ok: false, error: "Falta env var WHATSAPP_PHONE_NUMBER_ID" };
+  }
+  if (!env.WHATSAPP_CATALOG_ID) {
+    return { ok: false, error: "Falta env var WHATSAPP_CATALOG_ID" };
+  }
+  if (!toPhone || !isValidE164(toPhone)) {
+    return { ok: false, error: `Teléfono inválido: "${toPhone}"` };
+  }
+  if (!retailerId || retailerId.trim().length === 0) {
+    return { ok: false, error: "Falta retailerId (content ID del producto)" };
+  }
+
+  const interactive: Record<string, unknown> = {
+    type: "product",
+    action: {
+      catalog_id: env.WHATSAPP_CATALOG_ID,
+      product_retailer_id: retailerId,
+    },
+  };
+  if (bodyText && bodyText.trim().length > 0) {
+    interactive.body = { text: bodyText.slice(0, 1024) };
+  }
+  if (footerText && footerText.trim().length > 0) {
+    interactive.footer = { text: footerText.slice(0, 60) };
+  }
+
+  return postWhatsAppMessage(
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: toPhone,
+      type: "interactive",
+      interactive,
+    },
+    env,
+    "Send product",
+  );
 }
 
 /**

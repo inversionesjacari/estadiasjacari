@@ -465,6 +465,10 @@ export interface QuoteFlowResult {
   /** Si true: el webhook manda el texto con preview_url activado para que WhatsApp
    *  muestre la miniatura del link (ej. el mapa con el pin de Google Maps). */
   previewUrl?: boolean;
+  /** Si está seteado, el webhook intenta mandar una TARJETA NATIVA de producto
+   *  (catálogo de WhatsApp: catalog_id + retailerId). Si falla (catálogo no listo,
+   *  producto inexistente, env sin catalog_id), cae al `reply` + `images` (fallback). */
+  productCard?: { retailerId: string; body?: string };
   /** Si true: el webhook NO responde nada (glitch técnico → dejar que el bot se
    *  recupere solo en el próximo mensaje, sin mensaje raro ni escalación). */
   silent?: boolean;
@@ -591,6 +595,7 @@ export async function handleQuoteIncoming(
         return {
           reply:           card + (inPayment ? T.resumePaymentTail(lang) : ""),
           images:          photos,
+          productCard:     { retailerId: photoSlug, body: T.photosIntro(lang) + (inPayment ? T.resumePaymentTail(lang) : "") },
           escalateToOwner: false,
           ruleName:        inPayment ? "photos_during_payment" : "photos_sent",
           tokensUsed:      0,
@@ -1072,9 +1077,14 @@ async function gatherQuoteData(
             ? botResult.reply.trim()
             : T.photosIntro(lang)
         }${T.photosGallery(lang, galleryUrl)}`;
+      const pcBody =
+        botResult.reply && botResult.reply.trim().length > 0
+          ? botResult.reply.trim()
+          : T.photosIntro(lang);
       return {
         reply: card,
         images: photos,
+        productCard: { retailerId: mergedData.property, body: pcBody },
         escalateToOwner: false,
         ruleName: "photos_sent",
         tokensUsed: botResult.tokensUsed,
@@ -1216,6 +1226,7 @@ async function gatherQuoteData(
       return {
         reply,
         images:          photos,
+        productCard:     { retailerId: mergedData.property!, body: answered ? answered.trim() : ask },
         escalateToOwner: false,
         ruleName:        "property_card_proactive",
         tokensUsed:      botResult.tokensUsed,

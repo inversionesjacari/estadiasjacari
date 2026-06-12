@@ -24,7 +24,7 @@
 //
 
 import { normalizePhone, isValidE164 } from "../_lib/phone";
-import { sendTextMessage, sendImageMessage } from "../_lib/whatsapp";
+import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
@@ -55,6 +55,7 @@ interface Env extends IcalEnv {
   // WhatsApp Cloud API
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
+  WHATSAPP_CATALOG_ID?: string;
   WHATSAPP_WEBHOOK_VERIFY_TOKEN?: string;
   /**
    * App Secret de la app de Meta (Developers → App → Settings → Basic →
@@ -570,61 +571,99 @@ async function processIncomingMessage(
     // Si el chequeo falla, seguimos y respondemos (mejor responder que callar)
   }
 
-  // ── Enviar respuesta por WhatsApp ──────────────────────────────────────
-  // previewUrl=true solo cuando el quote flow manda una ubicación (link de Google
-  // Maps): así WhatsApp dibuja la miniatura del mapa con el pin debajo del texto.
-  const sendResult = await sendTextMessage(fromE164, replyText, env, quoteResult?.previewUrl ?? false);
-
-  // Loggear el texto del bot PRIMERO, para que en el inbox quede ANTES de las
-  // fotos (mismo orden que las recibe el cliente en WhatsApp).
-  try {
-    await env.DB.prepare(
-      `INSERT INTO whatsapp_messages
-         (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
-       VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
-    )
-      .bind(
-        sendResult.messageId ?? null,
-        reservation?.id ?? null,
-        toE164,
-        fromE164,
-        sendResult.ok ? replyText : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
-        ruleName,
-        escalate ? 1 : 0,
-        sendResult.ok ? "sent" : "failed",
-      )
-      .run();
-  } catch (logErr) {
-    console.error("Error guardando mensaje saliente:", (logErr as Error).message);
-  }
-
-  // Si el quote flow devolvió fotos, enviarlas después del texto (en orden) y
-  // loggear cada una como su propia burbuja de imagen en el inbox (media_url =
-  // URL pública del sitio, no necesita proxy ni token).
-  if (quoteResult?.images && quoteResult.images.length > 0) {
-    for (const imageUrl of quoteResult.images) {
-      const imgResult = await sendImageMessage(fromE164, imageUrl, env);
-      if (!imgResult.ok) {
-        console.error(`Error enviando foto ${imageUrl}:`, imgResult.error);
-      }
+  // ── Tarjeta NATIVA de producto (catálogo de WhatsApp) ──────────────────────
+  // Si el quote flow pidió una tarjeta de producto Y el catálogo está configurado,
+  // la mandamos (imagen + precio + botón "Ver" nativos). Si falla (catálogo no
+  // listo, producto inexistente, env sin catalog_id), caemos al texto + fotos de
+  // siempre (fallback) — el bot NUNCA queda mudo por esto.
+  let productSent = false;
+  if (quoteResult?.productCard && env.WHATSAPP_CATALOG_ID) {
+    const pc = quoteResult.productCard;
+    const prodResult = await sendProductMessage(fromE164, pc.retailerId, env, pc.body);
+    if (prodResult.ok) {
+      productSent = true;
       try {
         await env.DB.prepare(
           `INSERT INTO whatsapp_messages
-             (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status, media_type, media_url, media_mime)
-           VALUES (?, ?, 'out', ?, ?, '', ?, 0, ?, 'image', ?, 'image/jpeg')`,
+             (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+           VALUES (?, ?, 'out', ?, ?, ?, ?, ?, 'sent')`,
         )
           .bind(
-            imgResult.messageId ?? null,
+            prodResult.messageId ?? null,
             reservation?.id ?? null,
             toE164,
             fromE164,
+            pc.body && pc.body.trim().length > 0 ? pc.body : replyText,
             ruleName,
-            imgResult.ok ? "sent" : "failed",
-            imageUrl,
+            escalate ? 1 : 0,
           )
           .run();
       } catch (logErr) {
-        console.error("Error guardando foto saliente:", (logErr as Error).message);
+        console.error("Error guardando producto saliente:", (logErr as Error).message);
+      }
+    } else {
+      console.error(`Producto ${pc.retailerId} no se pudo enviar, fallback a texto:`, prodResult.error);
+    }
+  }
+
+  // ── Enviar respuesta por WhatsApp (texto + fotos) — salvo que ya se haya
+  //    mandado la tarjeta nativa de producto arriba.
+  if (!productSent) {
+    // previewUrl=true solo cuando el quote flow manda una ubicación (link de Google
+    // Maps): así WhatsApp dibuja la miniatura del mapa con el pin debajo del texto.
+    const sendResult = await sendTextMessage(fromE164, replyText, env, quoteResult?.previewUrl ?? false);
+
+    // Loggear el texto del bot PRIMERO, para que en el inbox quede ANTES de las
+    // fotos (mismo orden que las recibe el cliente en WhatsApp).
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_messages
+           (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+         VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          sendResult.messageId ?? null,
+          reservation?.id ?? null,
+          toE164,
+          fromE164,
+          sendResult.ok ? replyText : `[FAILED] ${replyText}\n\nERROR: ${sendResult.error}`,
+          ruleName,
+          escalate ? 1 : 0,
+          sendResult.ok ? "sent" : "failed",
+        )
+        .run();
+    } catch (logErr) {
+      console.error("Error guardando mensaje saliente:", (logErr as Error).message);
+    }
+
+    // Si el quote flow devolvió fotos, enviarlas después del texto (en orden) y
+    // loggear cada una como su propia burbuja de imagen en el inbox (media_url =
+    // URL pública del sitio, no necesita proxy ni token).
+    if (quoteResult?.images && quoteResult.images.length > 0) {
+      for (const imageUrl of quoteResult.images) {
+        const imgResult = await sendImageMessage(fromE164, imageUrl, env);
+        if (!imgResult.ok) {
+          console.error(`Error enviando foto ${imageUrl}:`, imgResult.error);
+        }
+        try {
+          await env.DB.prepare(
+            `INSERT INTO whatsapp_messages
+               (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status, media_type, media_url, media_mime)
+             VALUES (?, ?, 'out', ?, ?, '', ?, 0, ?, 'image', ?, 'image/jpeg')`,
+          )
+            .bind(
+              imgResult.messageId ?? null,
+              reservation?.id ?? null,
+              toE164,
+              fromE164,
+              ruleName,
+              imgResult.ok ? "sent" : "failed",
+              imageUrl,
+            )
+            .run();
+        } catch (logErr) {
+          console.error("Error guardando foto saliente:", (logErr as Error).message);
+        }
       }
     }
   }
