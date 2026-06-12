@@ -503,18 +503,53 @@ function motivoPendiente(rule: string | null | undefined): string {
   }
 }
 
-// Burbujas neón del pull-to-refresh: 16 repartidas por TODO el ancho de la barra,
-// con tamaño/color/delay/duración variados (determinístico → sin saltos en re-render).
-const NEON_BUBBLES = Array.from({ length: 16 }, (_, i) => {
-  const colors = ["#289DAE", "#D2A436", "#5BC9D6", "#E6C566"]; // teal + dorado de la marca (+ tintes claros)
-  return {
-    c: colors[(i * 3) % colors.length],
-    s: 7 + ((i * 5) % 8),                              // 7–14 px
-    x: `${(((i + 0.5) / 16) * 100).toFixed(1)}%`,      // repartidas en todo el ancho
-    d: `${((i * 0.31) % 1.2).toFixed(2)}s`,            // delay escalonado
-    dur: `${(1.1 + ((i * 0.13) % 0.6)).toFixed(2)}s`,  // duración variada (orgánico)
-  };
-});
+// Pull-to-refresh: lluvia de código estilo Matrix (canvas) sobre una franja oscura.
+// Corre el rAF solo mientras está "active" (jalando o actualizando); se limpia al
+// desmontar. Letras teal-verde con cabeza brillante + estela.
+function MatrixRain({ active }: { active: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    const parent = canvas?.parentElement;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !parent || !ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const fs = 12;
+    const chars = "アイウエオカキクケコサシスセソタチツテトナニヌネ0123456789ﾊﾋﾌﾍﾎ".split("");
+    const w = parent.clientWidth || 320;
+    const h = parent.clientHeight || 96;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#070b14";
+    ctx.fillRect(0, 0, w, h);
+    const cols = Math.ceil(w / fs);
+    const drops = Array.from({ length: cols }, () => Math.random() * (h / fs));
+    const rand = () => chars[(Math.random() * chars.length) | 0];
+    let raf = 0;
+    const draw = () => {
+      ctx.fillStyle = "rgba(7, 11, 20, 0.12)"; // estela: cuanto más baja, más larga
+      ctx.fillRect(0, 0, w, h);
+      ctx.font = `${fs}px monospace`;
+      for (let i = 0; i < cols; i++) {
+        const x = i * fs;
+        const y = drops[i] * fs;
+        ctx.fillStyle = "#1aa589"; ctx.fillText(rand(), x, y - fs * 2);
+        ctx.fillStyle = "#2ee6a0"; ctx.fillText(rand(), x, y - fs);
+        ctx.fillStyle = "#eafff6"; ctx.fillText(rand(), x, y); // cabeza brillante
+        if (y > h && Math.random() > 0.975) drops[i] = 0;
+        drops[i] += 0.5;
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+  return <canvas ref={canvasRef} className="block w-full h-full" />;
+}
 
 // Reparte las conversaciones en las 4 categorías de "Pendientes" (lo usan tanto
 // la columna de escritorio como el overlay de celular y el badge del header).
@@ -873,7 +908,7 @@ export default function InboxPage() {
       setPulling(false);
       if (pullRef.current >= 60 && !refreshingRef.current) {
         setRefreshing(true);
-        setPull(72);
+        setPull(96);
         fetchConversations().finally(() => { setRefreshing(false); setPull(0); });
       } else { setPull(0); }
     };
@@ -1392,28 +1427,14 @@ export default function InboxPage() {
             </div>
           </div>
 
-          {/* Pull-to-refresh: burbujas neón que suben con glow (solo celular) */}
+          {/* Pull-to-refresh: lluvia de código estilo Matrix en franja oscura (solo celular) */}
           <div
-            className="lg:hidden flex items-end justify-center overflow-hidden"
-            style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
+            className="lg:hidden overflow-hidden flex items-end"
+            style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease", background: "#070b14" }}
           >
             {(pull > 4 || refreshing) && (
-              <div className="relative w-full" style={{ height: 64, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
-                {NEON_BUBBLES.map((b, i) => (
-                  <span
-                    key={i}
-                    className="neon-bubble"
-                    style={{
-                      left: b.x,
-                      width: b.s,
-                      height: b.s,
-                      background: b.c,
-                      boxShadow: `0 0 6px 1px ${b.c}, 0 0 13px 4px ${b.c}88`,
-                      animationDelay: b.d,
-                      animationDuration: b.dur,
-                    }}
-                  />
-                ))}
+              <div className="w-full" style={{ height: 96 }}>
+                <MatrixRain active={pull > 4 || refreshing} />
               </div>
             )}
           </div>
