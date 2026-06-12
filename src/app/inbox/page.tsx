@@ -503,11 +503,11 @@ function motivoPendiente(rule: string | null | undefined): string {
   }
 }
 
-function PendientesColumn({
-  conversations, onSelect, onDismiss, selectedPhone,
-}: {
-  conversations: Conversation[]; onSelect: (phone: string) => void; onDismiss: (phone: string) => void; selectedPhone: string | null;
-}) {
+// Reparte las conversaciones en las 4 categorías de "Pendientes" (lo usan tanto
+// la columna de escritorio como el overlay de celular y el badge del header).
+function splitPendientes(conversations: Conversation[]): {
+  paused: Conversation[]; escalated: Conversation[]; awaitingPay: Conversation[]; unanswered: Conversation[]; total: number;
+} {
   const paused: Conversation[] = [];
   const escalated: Conversation[] = [];
   const awaitingPay: Conversation[] = [];
@@ -521,16 +521,32 @@ function PendientesColumn({
     // no es accionable (no se puede mandar texto libre) → sale del panel solo.
     else if ((!c.lastOutAt || c.lastAt > c.lastOutAt) && minutesSince(c.lastAt) > 30 && minutesSince(c.lastAt) < 24 * 60) unanswered.push(c);
   }
-  const total = paused.length + escalated.length + awaitingPay.length + unanswered.length;
+  return { paused, escalated, awaitingPay, unanswered, total: paused.length + escalated.length + awaitingPay.length + unanswered.length };
+}
+
+function PendientesColumn({
+  conversations, onSelect, onDismiss, selectedPhone, variant = "sidebar", onClose,
+}: {
+  conversations: Conversation[]; onSelect: (phone: string) => void; onDismiss: (phone: string) => void; selectedPhone: string | null;
+  variant?: "sidebar" | "overlay"; onClose?: () => void;
+}) {
+  const { paused, escalated, awaitingPay, unanswered, total } = splitPendientes(conversations);
 
   return (
-    <aside className="hidden lg:flex flex-col w-72 border-l border-gray-200 dark:border-slate-700 bg-[#fbfcfc] dark:bg-slate-900 overflow-y-auto shrink-0">
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-slate-700 sticky top-0 bg-[#fbfcfc] dark:bg-slate-900 z-10">
-        <h3 className="font-bold text-primary dark:text-slate-100 text-sm flex items-center gap-1.5">
-          📌 Pendientes
-          {total > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{total}</span>}
-        </h3>
-        <p className="text-[11px] text-muted dark:text-slate-400">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
+    <aside className={variant === "overlay"
+      ? "flex flex-col h-full w-full bg-[#fbfcfc] dark:bg-slate-900 overflow-y-auto"
+      : "hidden lg:flex flex-col w-72 border-l border-gray-200 dark:border-slate-700 bg-[#fbfcfc] dark:bg-slate-900 overflow-y-auto shrink-0"}>
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-slate-700 sticky top-0 bg-[#fbfcfc] dark:bg-slate-900 z-10 flex items-start justify-between gap-2">
+        <div>
+          <h3 className="font-bold text-primary dark:text-slate-100 text-sm flex items-center gap-1.5">
+            📌 Pendientes
+            {total > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{total}</span>}
+          </h3>
+          <p className="text-[11px] text-muted dark:text-slate-400">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
+        </div>
+        {variant === "overlay" && onClose && (
+          <button type="button" onClick={onClose} aria-label="Cerrar Pendientes" className="shrink-0 -mt-0.5 px-2 py-1 text-xl leading-none text-muted dark:text-slate-400 hover:text-primary dark:hover:text-slate-100 rounded-lg">✕</button>
+        )}
       </div>
 
       {paused.length > 0 && (
@@ -585,6 +601,7 @@ export default function InboxPage() {
   const [loadingConv, setLoadingConv] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pendientesOpen, setPendientesOpen] = useState(false); // panel Pendientes en celular (overlay)
 
   // ── Avisos, no leídos, buscador y plantillas ───────────────────────────────
   const [notif, setNotif] = useState<NotifSettings>(DEFAULT_NOTIF);
@@ -1144,6 +1161,8 @@ export default function InboxPage() {
     );
   }
 
+  const pendCount = splitPendientes(conversations).total;
+
   return (
     <div className="h-screen bg-bg dark:bg-slate-950 flex flex-col overflow-hidden">
       {/* Header */}
@@ -1153,6 +1172,19 @@ export default function InboxPage() {
           <p className="hidden sm:block text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-3 text-sm">
+          {/* Pendientes — solo en celular (en escritorio está la columna fija a la derecha) */}
+          <button
+            type="button"
+            onClick={() => setPendientesOpen(true)}
+            className="lg:hidden relative px-2.5 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400"
+            aria-label="Pendientes"
+            title="Pendientes"
+          >
+            📌
+            {pendCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] text-[10px] font-bold text-white bg-secondary rounded-full px-1 py-0.5 leading-none">{pendCount}</span>
+            )}
+          </button>
           {/* Avisos: sonido + notificación, configurable por tipo */}
           <div className="relative">
             <button
@@ -1644,6 +1676,20 @@ export default function InboxPage() {
           onDismiss={handleDismiss}
           selectedPhone={selectedPhone}
         />
+
+        {/* Pendientes en celular: overlay a pantalla completa (la columna de arriba es hidden lg:flex) */}
+        {pendientesOpen && (
+          <div className="lg:hidden fixed inset-0 z-30 bg-[#fbfcfc] dark:bg-slate-900 flex flex-col">
+            <PendientesColumn
+              variant="overlay"
+              onClose={() => setPendientesOpen(false)}
+              conversations={conversations}
+              onSelect={(p) => { setPendientesOpen(false); selectConversation(p); }}
+              onDismiss={handleDismiss}
+              selectedPhone={selectedPhone}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
