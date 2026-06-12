@@ -604,6 +604,16 @@ export default function InboxPage() {
   const [pendientesOpen, setPendientesOpen] = useState(false); // panel Pendientes en celular (overlay)
   const [menuOpen, setMenuOpen] = useState(false); // menú ⋯ del header en celular
 
+  // ── Pull-to-refresh (jalar la lista hacia abajo para actualizar) ───────────
+  const [pull, setPull] = useState(0);
+  const [pulling, setPulling] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const listScrollRef = useRef<HTMLElement>(null);
+  const pullRef = useRef(0);
+  const refreshingRef = useRef(false);
+  useEffect(() => { pullRef.current = pull; }, [pull]);
+  useEffect(() => { refreshingRef.current = refreshing; }, [refreshing]);
+
   // ── Avisos, no leídos, buscador y plantillas ───────────────────────────────
   const [notif, setNotif] = useState<NotifSettings>(DEFAULT_NOTIF);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -824,6 +834,45 @@ export default function InboxPage() {
   useEffect(() => {
     if (authenticated) fetchQuickReplies();
   }, [authenticated, fetchQuickReplies]);
+
+  // ── Pull-to-refresh: gesto táctil sobre la lista (listeners nativos non-passive
+  // para poder frenar el rebote de iOS con preventDefault) ───────────────────
+  useEffect(() => {
+    const el = listScrollRef.current;
+    if (!el) return;
+    let startY = 0;
+    let active = false;
+    const onStart = (e: TouchEvent) => {
+      if (el.scrollTop <= 0 && !refreshingRef.current) { startY = e.touches[0].clientY; active = true; setPulling(true); }
+      else { active = false; }
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!active) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 0) { if (e.cancelable) e.preventDefault(); setPull(Math.min(110, dy * 0.5)); }
+      else { setPull(0); }
+    };
+    const onEnd = () => {
+      if (!active) return;
+      active = false;
+      setPulling(false);
+      if (pullRef.current >= 60 && !refreshingRef.current) {
+        setRefreshing(true);
+        setPull(56);
+        fetchConversations().finally(() => { setRefreshing(false); setPull(0); });
+      } else { setPull(0); }
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, [authenticated, fetchConversations]);
 
   // ── Polling cada 10s ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -1304,7 +1353,7 @@ export default function InboxPage() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
-        <aside className={`${selectedPhone ? "hidden lg:block" : "block"} w-full lg:w-80 lg:shrink-0 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto`}>
+        <aside ref={listScrollRef} className={`${selectedPhone ? "hidden lg:block" : "block"} w-full lg:w-80 lg:shrink-0 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto overscroll-y-contain`}>
           {/* Buscador */}
           <div className="sticky top-0 z-10 bg-white dark:bg-slate-800 px-3 py-2 border-b border-gray-100 dark:border-slate-800">
             <div className="relative">
@@ -1329,6 +1378,23 @@ export default function InboxPage() {
             </div>
           </div>
 
+          {/* Pull-to-refresh: spinner con gradiente que se revela al jalar la lista hacia abajo (solo celular) */}
+          <div
+            className="lg:hidden flex items-end justify-center overflow-hidden"
+            style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
+          >
+            <div className="pb-2" style={{ opacity: Math.min(1, pull / 45) }}>
+              <svg className={`w-7 h-7 ${refreshing ? "animate-spin" : ""}`} viewBox="0 0 36 36" style={{ transform: refreshing ? undefined : `rotate(${Math.round(pull * 3)}deg)` }}>
+                <defs>
+                  <linearGradient id="pullGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#289DAE" />
+                    <stop offset="100%" stopColor="#D2A436" />
+                  </linearGradient>
+                </defs>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="url(#pullGrad)" strokeWidth="3.5" strokeLinecap="round" strokeDasharray="66 34" />
+              </svg>
+            </div>
+          </div>
           {/* Loader cool: barra de progreso futurista + filas fantasma con shimmer (solo en la carga inicial; los refrescos automáticos no titilan) */}
           {conversations.length === 0 && loadingConv && (
             <>
