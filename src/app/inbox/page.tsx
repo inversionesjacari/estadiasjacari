@@ -608,9 +608,9 @@ export default function InboxPage() {
   const [pull, setPull] = useState(0);
   const [pulling, setPulling] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const listScrollRef = useRef<HTMLElement>(null);
   const pullRef = useRef(0);
   const refreshingRef = useRef(false);
+  const pullCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => { pullRef.current = pull; }, [pull]);
   useEffect(() => { refreshingRef.current = refreshing; }, [refreshing]);
 
@@ -835,19 +835,21 @@ export default function InboxPage() {
     if (authenticated) fetchQuickReplies();
   }, [authenticated, fetchQuickReplies]);
 
-  // ── Pull-to-refresh: gesto táctil sobre la lista (listeners nativos non-passive
-  // para poder frenar el rebote de iOS con preventDefault) ───────────────────
-  useEffect(() => {
-    const el = listScrollRef.current;
+  // ── Pull-to-refresh: ref-callback que engancha los listeners táctiles cuando
+  // la lista se MONTA (más confiable que un useEffect dependiente del timing del
+  // render). non-passive en touchmove para frenar el rebote de iOS. ──────────
+  const attachPull = useCallback((el: HTMLElement | null) => {
+    if (pullCleanupRef.current) { pullCleanupRef.current(); pullCleanupRef.current = null; }
     if (!el) return;
     let startY = 0;
     let active = false;
     const onStart = (e: TouchEvent) => {
-      if (el.scrollTop <= 0 && !refreshingRef.current) { startY = e.touches[0].clientY; active = true; setPulling(true); }
+      if (el.scrollTop < 2 && !refreshingRef.current) { startY = e.touches[0].clientY; active = true; setPulling(true); }
       else { active = false; }
     };
     const onMove = (e: TouchEvent) => {
       if (!active) return;
+      if (el.scrollTop > 2) { active = false; setPull(0); setPulling(false); return; }
       const dy = e.touches[0].clientY - startY;
       if (dy > 0) { if (e.cancelable) e.preventDefault(); setPull(Math.min(110, dy * 0.5)); }
       else { setPull(0); }
@@ -866,13 +868,13 @@ export default function InboxPage() {
     el.addEventListener("touchmove", onMove, { passive: false });
     el.addEventListener("touchend", onEnd, { passive: true });
     el.addEventListener("touchcancel", onEnd, { passive: true });
-    return () => {
+    pullCleanupRef.current = () => {
       el.removeEventListener("touchstart", onStart);
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
       el.removeEventListener("touchcancel", onEnd);
     };
-  }, [authenticated, fetchConversations]);
+  }, [fetchConversations]);
 
   // ── Polling cada 10s ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -1353,7 +1355,7 @@ export default function InboxPage() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Lista de conversaciones */}
-        <aside ref={listScrollRef} className={`${selectedPhone ? "hidden lg:block" : "block"} w-full lg:w-80 lg:shrink-0 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto overscroll-y-contain`}>
+        <aside ref={attachPull} className={`${selectedPhone ? "hidden lg:block" : "block"} w-full lg:w-80 lg:shrink-0 border-r border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-y-auto overscroll-y-contain`}>
           {/* Buscador */}
           <div className="sticky top-0 z-10 bg-white dark:bg-slate-800 px-3 py-2 border-b border-gray-100 dark:border-slate-800">
             <div className="relative">
