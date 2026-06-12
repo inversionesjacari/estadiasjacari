@@ -1343,7 +1343,6 @@ export default function InboxPage() {
                 <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1">
                   <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
                   <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
-                  <button type="button" onClick={() => { setMenuOpen(false); fetchConversations(); }} disabled={loadingConv} className="block w-full text-left px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-50">🔄 Refrescar</button>
                   <button type="button" onClick={handleLogout} className="block w-full text-left px-4 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-gray-50 dark:hover:bg-slate-700 border-t border-gray-100 dark:border-slate-700">Salir</button>
                 </div>
               </>
@@ -1380,20 +1379,34 @@ export default function InboxPage() {
             </div>
           </div>
 
-          {/* Pull-to-refresh: spinner con gradiente que se revela al jalar la lista hacia abajo (solo celular) */}
+          {/* Pull-to-refresh: anillo que se LLENA al jalar y gira al actualizar, con glow (solo celular) */}
           <div
             className="lg:hidden flex items-end justify-center overflow-hidden"
             style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
           >
-            <div className="pb-2" style={{ opacity: Math.min(1, pull / 45) }}>
-              <svg className={`w-7 h-7 ${refreshing ? "animate-spin" : ""}`} viewBox="0 0 36 36" style={{ transform: refreshing ? undefined : `rotate(${Math.round(pull * 3)}deg)` }}>
+            <div
+              className="pb-2"
+              style={{ opacity: Math.min(1, pull / 32), transform: `scale(${(0.55 + 0.45 * Math.min(1, pull / 60)).toFixed(3)})` }}
+            >
+              <svg
+                className={`w-9 h-9 ${refreshing ? "animate-spin" : ""}`}
+                viewBox="0 0 36 36"
+                style={{ filter: "drop-shadow(0 0 5px rgba(40, 157, 174, 0.45))" }}
+              >
                 <defs>
                   <linearGradient id="pullGrad" x1="0" y1="0" x2="1" y2="1">
                     <stop offset="0%" stopColor="#289DAE" />
+                    <stop offset="55%" stopColor="#5BC9B8" />
                     <stop offset="100%" stopColor="#D2A436" />
                   </linearGradient>
                 </defs>
-                <circle cx="18" cy="18" r="15" fill="none" stroke="url(#pullGrad)" strokeWidth="3.5" strokeLinecap="round" strokeDasharray="66 34" />
+                <circle cx="18" cy="18" r="15" fill="none" strokeWidth="3" className="stroke-gray-200 dark:stroke-slate-700" />
+                <circle
+                  cx="18" cy="18" r="15" fill="none" stroke="url(#pullGrad)" strokeWidth="3.5" strokeLinecap="round"
+                  strokeDasharray={refreshing ? "66 34" : 94.25}
+                  strokeDashoffset={refreshing ? 0 : 94.25 * (1 - Math.min(1, pull / 60))}
+                  transform="rotate(-90 18 18)"
+                />
               </svg>
             </div>
           </div>
