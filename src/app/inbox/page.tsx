@@ -503,14 +503,18 @@ function motivoPendiente(rule: string | null | undefined): string {
   }
 }
 
-// Burbujas neón del pull-to-refresh (color · tamaño px · posición x px · delay).
-const NEON_BUBBLES = [
-  { c: "#22e0e0", s: 10, x: 4,  d: "0s" },
-  { c: "#ffc23d", s: 8,  x: 20, d: "0.28s" },
-  { c: "#ff3db4", s: 13, x: 33, d: "0.55s" },
-  { c: "#22e0e0", s: 8,  x: 50, d: "0.12s" },
-  { c: "#9d6bff", s: 10, x: 60, d: "0.42s" },
-];
+// Burbujas neón del pull-to-refresh: 16 repartidas por TODO el ancho de la barra,
+// con tamaño/color/delay/duración variados (determinístico → sin saltos en re-render).
+const NEON_BUBBLES = Array.from({ length: 16 }, (_, i) => {
+  const colors = ["#22e0e0", "#ffc23d", "#ff3db4", "#9d6bff"];
+  return {
+    c: colors[(i * 3) % colors.length],
+    s: 7 + ((i * 5) % 8),                              // 7–14 px
+    x: `${(((i + 0.5) / 16) * 100).toFixed(1)}%`,      // repartidas en todo el ancho
+    d: `${((i * 0.31) % 1.2).toFixed(2)}s`,            // delay escalonado
+    dur: `${(1.1 + ((i * 0.13) % 0.6)).toFixed(2)}s`,  // duración variada (orgánico)
+  };
+});
 
 // Reparte las conversaciones en las 4 categorías de "Pendientes" (lo usan tanto
 // la columna de escritorio como el overlay de celular y el badge del header).
@@ -1394,7 +1398,7 @@ export default function InboxPage() {
             style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
           >
             {(pull > 4 || refreshing) && (
-              <div className="relative mb-1" style={{ width: 74, height: 44, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
+              <div className="relative w-full mb-1" style={{ height: 46, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
                 {NEON_BUBBLES.map((b, i) => (
                   <span
                     key={i}
@@ -1406,6 +1410,7 @@ export default function InboxPage() {
                       background: b.c,
                       boxShadow: `0 0 6px 1px ${b.c}, 0 0 13px 4px ${b.c}88`,
                       animationDelay: b.d,
+                      animationDuration: b.dur,
                     }}
                   />
                 ))}
