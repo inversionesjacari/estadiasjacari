@@ -506,7 +506,7 @@ function motivoPendiente(rule: string | null | undefined): string {
 // Burbujas neón del pull-to-refresh: 16 repartidas por TODO el ancho de la barra,
 // con tamaño/color/delay/duración variados (determinístico → sin saltos en re-render).
 const NEON_BUBBLES = Array.from({ length: 16 }, (_, i) => {
-  const colors = ["#22e0e0", "#ffc23d", "#ff3db4", "#9d6bff"];
+  const colors = ["#289DAE", "#D2A436", "#5BC9D6", "#E6C566"]; // teal + dorado de la marca (+ tintes claros)
   return {
     c: colors[(i * 3) % colors.length],
     s: 7 + ((i * 5) % 8),                              // 7–14 px
@@ -873,7 +873,7 @@ export default function InboxPage() {
       setPulling(false);
       if (pullRef.current >= 60 && !refreshingRef.current) {
         setRefreshing(true);
-        setPull(56);
+        setPull(72);
         fetchConversations().finally(() => { setRefreshing(false); setPull(0); });
       } else { setPull(0); }
     };
@@ -1398,7 +1398,7 @@ export default function InboxPage() {
             style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
           >
             {(pull > 4 || refreshing) && (
-              <div className="relative w-full mb-1" style={{ height: 46, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
+              <div className="relative w-full" style={{ height: 64, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
                 {NEON_BUBBLES.map((b, i) => (
                   <span
                     key={i}
