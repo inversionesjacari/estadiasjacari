@@ -602,6 +602,7 @@ export default function InboxPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pendientesOpen, setPendientesOpen] = useState(false); // panel Pendientes en celular (overlay)
+  const [menuOpen, setMenuOpen] = useState(false); // menú ⋯ del header en celular
 
   // ── Avisos, no leídos, buscador y plantillas ───────────────────────────────
   const [notif, setNotif] = useState<NotifSettings>(DEFAULT_NOTIF);
@@ -1239,34 +1240,55 @@ export default function InboxPage() {
           >
             {darkMode ? "☀️" : "🌙"}
           </button>
+          {/* Secundarios: inline en escritorio; en celular van al menú ⋯ */}
           <a
             href="/inbox/operacion"
-            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
-            title="Centro de control"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
           >
-            🛰️<span className="hidden lg:inline"> Centro de control</span>
+            🛰️ Centro de control
           </a>
           <a
             href="/inbox/conocimiento"
-            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
-            title="Conocimiento del bot"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
           >
-            🤖<span className="hidden lg:inline"> Conocimiento del bot</span>
+            🤖 Conocimiento del bot
           </a>
           <button
             onClick={fetchConversations}
             disabled={loadingConv}
-            className="px-2.5 sm:px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50 whitespace-nowrap"
-            title="Refrescar"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50 whitespace-nowrap"
           >
-            {loadingConv ? "..." : <><span className="lg:hidden">🔄</span><span className="hidden lg:inline">Refrescar</span></>}
+            {loadingConv ? "..." : "Refrescar"}
           </button>
           <button
             onClick={handleLogout}
-            className="px-3 py-1.5 text-muted dark:text-slate-400 hover:text-primary dark:text-slate-100"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 text-muted dark:text-slate-400 hover:text-primary dark:text-slate-100"
           >
             Salir
           </button>
+          {/* Menú ⋯ — solo celular (en escritorio los botones de arriba van inline) */}
+          <div className="relative lg:hidden">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((o) => !o)}
+              className="px-2.5 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 text-lg leading-none"
+              aria-label="Más opciones"
+              title="Más"
+            >
+              ⋯
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1">
+                  <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
+                  <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
+                  <button type="button" onClick={() => { setMenuOpen(false); fetchConversations(); }} disabled={loadingConv} className="block w-full text-left px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-50">🔄 Refrescar</button>
+                  <button type="button" onClick={handleLogout} className="block w-full text-left px-4 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-gray-50 dark:hover:bg-slate-700 border-t border-gray-100 dark:border-slate-700">Salir</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
