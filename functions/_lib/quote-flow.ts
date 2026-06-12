@@ -1172,6 +1172,57 @@ async function gatherQuoteData(
     };
   }
 
+  // ── Cliente NOMBRA una propiedad nueva (early funnel) → mandar la TARJETA ──
+  // visual (mejores fotos + precio + link) y, si solo mostró interés, pedirle
+  // fechas/huéspedes. Engancha al lead (ej. de un ad de Casa Brisa) con lo que
+  // vino a ver ANTES de pedirle tarea. Dispara una sola vez por propiedad: si
+  // repite la misma no se reenvía; si ya cotizó o está pagando, no aplica.
+  const namedNewProperty =
+    ex.property != null && ex.property !== previousData.property;
+  const earlyFunnel =
+    previousState == null || previousState === "awaiting_quote_data";
+  if (namedNewProperty && earlyFunnel && !isQuoteDataComplete(mergedData)) {
+    const photos = getPropertyPhotos(mergedData.property!);
+    const card = buildPropertyCard(mergedData.property!, lang);
+    if (photos.length > 0 && card) {
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      const needDates = !mergedData.checkIn || !mergedData.checkOut;
+      const needGuests = !mergedData.guests;
+      const ask =
+        lang === "en"
+          ? "To check availability and send you the exact price, just tell me " +
+            (needDates && needGuests
+              ? "your dates and how many guests"
+              : needDates
+                ? "your check-in and check-out dates"
+                : "how many guests there'll be") +
+            " 🗓️"
+          : "Para verificar disponibilidad y pasarte el precio exacto, decime " +
+            (needDates && needGuests
+              ? "las fechas y cuántos serían"
+              : needDates
+                ? "las fechas de llegada y salida"
+                : "cuántos serían en total") +
+            " 🗓️";
+      // Si además hizo una PREGUNTA puntual, respondela primero y sumá la
+      // tarjeta como apoyo; si solo mostró interés, tarjeta + pedido de datos.
+      const answered =
+        botResult.intent === "asking_question" &&
+        botResult.reply &&
+        botResult.reply.trim().length > 0
+          ? botResult.reply.trim() + "\n\n"
+          : "";
+      const reply = answered ? answered + card : card + "\n\n" + ask;
+      return {
+        reply,
+        images:          photos,
+        escalateToOwner: false,
+        ruleName:        "property_card_proactive",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
+  }
+
   // ── Datos incompletos / pregunta suelta — respuesta natural del bot ───────
   // MANTENEMOS "quote_provided" SOLO si ya se había entregado una cotización
   // DISPONIBLE (el estado previo ya era quote_provided) y el cliente solo hizo
