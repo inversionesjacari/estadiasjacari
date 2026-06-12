@@ -503,6 +503,15 @@ function motivoPendiente(rule: string | null | undefined): string {
   }
 }
 
+// Burbujas neón del pull-to-refresh (color · tamaño px · posición x px · delay).
+const NEON_BUBBLES = [
+  { c: "#22e0e0", s: 10, x: 4,  d: "0s" },
+  { c: "#ffc23d", s: 8,  x: 20, d: "0.28s" },
+  { c: "#ff3db4", s: 13, x: 33, d: "0.55s" },
+  { c: "#22e0e0", s: 8,  x: 50, d: "0.12s" },
+  { c: "#9d6bff", s: 10, x: 60, d: "0.42s" },
+];
+
 // Reparte las conversaciones en las 4 categorías de "Pendientes" (lo usan tanto
 // la columna de escritorio como el overlay de celular y el badge del header).
 function splitPendientes(conversations: Conversation[]): {
@@ -1379,36 +1388,29 @@ export default function InboxPage() {
             </div>
           </div>
 
-          {/* Pull-to-refresh: anillo que se LLENA al jalar y gira al actualizar, con glow (solo celular) */}
+          {/* Pull-to-refresh: burbujas neón que suben con glow (solo celular) */}
           <div
             className="lg:hidden flex items-end justify-center overflow-hidden"
             style={{ height: pull, transition: pulling ? "none" : "height 0.25s ease" }}
           >
-            <div
-              className="pb-2"
-              style={{ opacity: Math.min(1, pull / 32), transform: `scale(${(0.55 + 0.45 * Math.min(1, pull / 60)).toFixed(3)})` }}
-            >
-              <svg
-                className={`w-9 h-9 ${refreshing ? "animate-spin" : ""}`}
-                viewBox="0 0 36 36"
-                style={{ filter: "drop-shadow(0 0 5px rgba(40, 157, 174, 0.45))" }}
-              >
-                <defs>
-                  <linearGradient id="pullGrad" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stopColor="#289DAE" />
-                    <stop offset="55%" stopColor="#5BC9B8" />
-                    <stop offset="100%" stopColor="#D2A436" />
-                  </linearGradient>
-                </defs>
-                <circle cx="18" cy="18" r="15" fill="none" strokeWidth="3" className="stroke-gray-200 dark:stroke-slate-700" />
-                <circle
-                  cx="18" cy="18" r="15" fill="none" stroke="url(#pullGrad)" strokeWidth="3.5" strokeLinecap="round"
-                  strokeDasharray={refreshing ? "66 34" : 94.25}
-                  strokeDashoffset={refreshing ? 0 : 94.25 * (1 - Math.min(1, pull / 60))}
-                  transform="rotate(-90 18 18)"
-                />
-              </svg>
-            </div>
+            {(pull > 4 || refreshing) && (
+              <div className="relative mb-1" style={{ width: 74, height: 44, opacity: refreshing ? 1 : Math.min(1, pull / 38) }}>
+                {NEON_BUBBLES.map((b, i) => (
+                  <span
+                    key={i}
+                    className="neon-bubble"
+                    style={{
+                      left: b.x,
+                      width: b.s,
+                      height: b.s,
+                      background: b.c,
+                      boxShadow: `0 0 6px 1px ${b.c}, 0 0 13px 4px ${b.c}88`,
+                      animationDelay: b.d,
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
           {/* Loader cool: barra de progreso futurista + filas fantasma con shimmer (solo en la carga inicial; los refrescos automáticos no titilan) */}
           {conversations.length === 0 && loadingConv && (
