@@ -15,6 +15,7 @@
 //
 
 import { sendViaResend, type ResendEnv, type SendEmailResult } from "./resend";
+import { notifyOwners, type OwnerAlertEnv } from "./owner-alerts";
 import type { ActiveReservation } from "./whatsapp-bot";
 
 const SUPPORT_EMAIL = "hola@estadiasjacari.com";
@@ -47,7 +48,7 @@ export interface EscalationData {
  */
 export async function sendEscalationEmail(
   data: EscalationData,
-  env: ResendEnv,
+  env: ResendEnv & OwnerAlertEnv,
 ): Promise<SendEmailResult> {
   const propertyName = data.reservation
     ? PROPERTY_NAMES[data.reservation.property_slug] || data.reservation.property_slug
@@ -63,10 +64,22 @@ export async function sendEscalationEmail(
   const text = buildText(data, propertyName, guestName, replyToGuestUrl);
   const html = buildHtml(data, propertyName, guestName, replyToGuestUrl, cesarUrl);
 
-  return sendViaResend(
+  const emailResult = await sendViaResend(
     { to: SUPPORT_EMAIL, subject, html, text },
     env,
   );
+
+  // Además del email, avisar por WhatsApp a César + socio (plantilla alerta_jacari,
+  // con botón que abre el inbox en ese chat). Fail-soft: si la plantilla todavía no
+  // está aprobada en Meta, no rompe nada y queda el email como respaldo.
+  await notifyOwners(env, {
+    tipo: data.reason || "Necesita tu atención",
+    cliente: `${guestName} (+${data.guestPhone})`,
+    detalle: data.guestMessage,
+    guestPhone: data.guestPhone,
+  });
+
+  return emailResult;
 }
 
 function buildText(

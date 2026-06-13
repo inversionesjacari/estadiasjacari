@@ -981,16 +981,22 @@ export default function InboxPage() {
     };
   }, [fetchConversations]);
 
-  // ── Polling cada 10s ─────────────────────────────────────────────────────
+  // ── Polling cada 10s — PAUSADO cuando la app está en segundo plano ─────────
+  // (no gastar batería/datos/D1 mientras César no la está mirando; al volver al
+  // frente refresca de inmediato).
   useEffect(() => {
     if (!authenticated) return;
     fetchPendingReservations();
-    const id = setInterval(() => {
+    const tick = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       fetchConversations();
       fetchPendingReservations();
       if (selectedPhone) loadMessages(selectedPhone);
-    }, 10000);
-    return () => clearInterval(id);
+    };
+    const id = setInterval(tick, 10000);
+    const onVis = () => { if (!document.hidden) tick(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated, selectedPhone]);
 
