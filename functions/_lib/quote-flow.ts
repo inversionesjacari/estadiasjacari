@@ -24,6 +24,7 @@ import {
   clearState,
   emptyQuoteData,
   isQuoteDataComplete,
+  missingFields,
   type ConvState,
   type ConversationStateRow,
 } from "./quote-state";
@@ -1243,6 +1244,38 @@ async function gatherQuoteData(
   // completos), un "ok"/"sí" de cortesía posterior NO debe ascender a
   // quote_provided → confirmar → pedir pago de algo que no está disponible.
   // (Bug real: cliente Vania, 10-jun — declinó y el bot le pidió el depósito.)
+  // ── Red de seguridad anti "promesa vacía" ─────────────────────────────────
+  // El LLM a veces dice "voy a verificar la disponibilidad… un momento" cuando le
+  // FALTAN datos para cotizar (típico: dieron "hoy" pero no la salida/noches). Esa
+  // promesa deja al cliente esperando algo que el bot NO puede hacer en segundo
+  // plano → lead frío (caso Jflores). Si detectamos esa promesa Y los datos están
+  // incompletos, la reemplazamos por un pedido DETERMINÍSTICO de lo que falta.
+  const overPromise =
+    /(un momento|dame un|dame unos|d[eé]jame (verific|revis|consult|chequ)|voy a (verific|revis|consult|chequ)|permit[ií]me|enseguida te|ya te confirmo|te confirmo en un|let me (check|verify)|one moment|hold on|give me a moment|i'?ll (check|verify))/i;
+  if (!isQuoteDataComplete(mergedData) && overPromise.test(botResult.reply ?? "")) {
+    const miss = missingFields(mergedData);
+    const parts: string[] = [];
+    if (miss.propiedad) parts.push(lang === "en" ? "which property" : "qué propiedad");
+    if (miss.fechas)
+      parts.push(
+        lang === "en"
+          ? "the check-in and check-out dates (or how many nights)"
+          : "las fechas de llegada y salida (o cuántas noches)",
+      );
+    if (miss.huespedes) parts.push(lang === "en" ? "how many guests" : "cuántos huéspedes");
+    const list = parts.join(lang === "en" ? " and " : " y ");
+    await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+    return {
+      reply:
+        lang === "en"
+          ? `To check availability and send you the exact price, I just need ${list} 🗓️`
+          : `Para verificar disponibilidad y pasarte el precio exacto, solo necesito ${list} 🗓️`,
+      escalateToOwner: false,
+      ruleName:        "ask_missing_after_overpromise",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
   const keepState: ConvState =
     previousState === "quote_provided" && isQuoteDataComplete(mergedData)
       ? "quote_provided"
