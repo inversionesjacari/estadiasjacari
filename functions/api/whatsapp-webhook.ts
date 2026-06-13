@@ -693,6 +693,8 @@ async function processIncomingMessage(
         RESEND_API_KEY: env.RESEND_API_KEY ?? "",
         EMAIL_FROM: env.EMAIL_FROM ?? "",
         EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+        WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+        WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
       },
     );
 
@@ -851,7 +853,29 @@ async function handleMediaMessage(
              VALUES (?, 'out', ?, ?, ?, ?, ?, ?)`,
           ).bind(send.messageId ?? null, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", fromE164, res.replyText, res.ruleName, res.escalate ? 1 : 0, send.ok ? "sent" : "failed").run();
         } catch { /* best-effort */ }
-        if (res.escalate) await escalateToOwner(res.ruleName);
+        if (res.escalate) {
+          await escalateToOwner(res.ruleName);
+          // Push a César + socio (email + WhatsApp) — cubre la reserva 'pending'
+          // creada por un comprobante que no pasó la verificación automática.
+          try {
+            const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
+            await sendEscalationEmail(
+              {
+                guestMessage: res.summary || "Comprobante de transferencia para revisar",
+                guestPhone: fromE164,
+                reservation,
+                reason: "Comprobante de transferencia — verificá el pago y confirmá la reserva",
+              },
+              {
+                RESEND_API_KEY: env.RESEND_API_KEY ?? "",
+                EMAIL_FROM: env.EMAIL_FROM ?? "",
+                EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+                WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+                WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+              },
+            );
+          } catch { /* best-effort */ }
+        }
         console.log(`Comprobante (${fromE164}): ${res.summary}`);
       } catch (err) {
         // Fail-soft: ante CUALQUIER error, nunca confirmar en falso → escalar a César.
@@ -894,6 +918,8 @@ async function handleMediaMessage(
       RESEND_API_KEY: env.RESEND_API_KEY ?? "",
       EMAIL_FROM: env.EMAIL_FROM ?? "",
       EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+      WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+      WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
     },
   );
 }

@@ -191,24 +191,27 @@ export async function processTransferReceipt(args: {
   if (!r.reference) fails.push("sin # de referencia");
 
   if (fails.length > 0) {
-    // NUNCA perder los datos del huésped: aunque la visión o los chequeos fallen, si las
-    // fechas siguen libres creamos la reserva como 'pending' (queda "por verificar":
-    // bloquea las fechas, pero el check-in NO se manda hasta que César la confirme). Así
-    // se acaba el caso "mandó comprobante y nadie guardó sus datos".
+    // Rescatar los datos del huésped SIN habilitar abuso del calendario: creamos la
+    // reserva 'pending' (que bloquea fechas) SOLO si el comprobante apunta plausiblemente
+    // a NUESTRA cuenta (cuenta o titular = jacari). Así rescatamos al huésped real cuya
+    // visión leyó mal el monto/fecha, pero una imagen con destino ajeno NO bloquea
+    // inventario — solo escala. Y solo cerramos el funnel si DE VERDAD se creó la reserva.
     let reservationId: number | null = null;
-    try {
-      const overlap = await env.DB.prepare(
-        `SELECT id FROM reservations WHERE property_slug = ? AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
-      ).bind(property, checkOut, checkIn).first();
-      if (!overlap) {
-        reservationId = await createTransferReservation({
-          env, property, checkIn, checkOut, guestName, phone, status: "pending",
-          amountUsd: quote.depositUSD, guests, raw: r,
-          orderId: `transfer:${r.reference ?? `${phone}:${checkIn}`}`,
-        });
-        try { await clearState(phone, env.DB); } catch { /* best-effort */ }
-      }
-    } catch { /* best-effort: si algo falla, igual escalamos con los datos abajo */ }
+    if (accountOk || nameOk) {
+      try {
+        const overlap = await env.DB.prepare(
+          `SELECT id FROM reservations WHERE property_slug = ? AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
+        ).bind(property, checkOut, checkIn).first();
+        if (!overlap) {
+          reservationId = await createTransferReservation({
+            env, property, checkIn, checkOut, guestName, phone, status: "pending",
+            amountUsd: quote.depositUSD, guests, raw: r,
+            orderId: `transfer:${r.reference ?? `${phone}:${checkIn}`}`,
+          });
+          if (reservationId) { try { await clearState(phone, env.DB); } catch { /* best-effort */ } }
+        }
+      } catch { /* best-effort: si algo falla, igual escalamos con los datos abajo */ }
+    }
     await logReceipt(env, { phone, r, property, checkIn, checkOut, expectedHnl, decision: reservationId ? "pending_review" : "escalated", reason: fails.join("; "), reservationId });
     return { ...escalateReview(`Chequeos fallaron${reservationId ? ` → reserva PENDIENTE #${reservationId} (por verificar)` : ""}: ${fails.join("; ")}`), tokensUsed: read.tokensUsed };
   }
@@ -232,20 +235,20 @@ export async function processTransferReceipt(args: {
   let reservationId: number | null = null;
 
   try {
-    const ins = await env.DB.prepare(
-      `INSERT OR IGNORE INTO reservations
-         (property_slug, check_in, check_out, guest_name, guest_email, guest_phone,
-          guest_phone_normalized, paypal_order_id, amount_usd, source, status, raw_payload, guest_count)
-       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'whatsapp_transfer', ?, ?, ?)`,
-    ).bind(
-      property, checkIn, checkOut, guestName, phone, phone, orderId,
-      amountUsd || null, status, JSON.stringify(r), guests,
-    ).run();
-    reservationId = (ins.meta?.last_row_id as number) ?? null;
+    reservationId = await createTransferReservation({
+      env, property, checkIn, checkOut, guestName, phone, status, amountUsd, guests, raw: r, orderId,
+    });
   } catch (err) {
     // Si la reserva no se pudo crear, NO confirmemos en falso → escalar.
     await logReceipt(env, { phone, r, property, checkIn, checkOut, expectedHnl, decision: "escalated", reason: `INSERT reserva falló: ${(err as Error).message}`, reservationId: null });
     return { ...escalateReview(`No se pudo crear la reserva: ${(err as Error).message}`), tokensUsed: read.tokensUsed };
+  }
+
+  if (!reservationId) {
+    // INSERT OR IGNORE ignorado: el orderId (referencia) ya se procesó → reenvío del
+    // mismo comprobante. NO re-confirmar ni duplicar; tratar como ya recibido.
+    await logReceipt(env, { phone, r, property, checkIn, checkOut, expectedHnl, decision: "escalated", reason: `comprobante ya procesado (orderId ${orderId})`, reservationId: null });
+    return { ...escalateReview(`Comprobante ya procesado antes (ref ${r.reference})`, true), tokensUsed: read.tokensUsed };
   }
 
   await logReceipt(env, { phone, r, property, checkIn, checkOut, expectedHnl, decision: "auto_confirmed", reason: paidFull ? "pago total" : "depósito", reservationId });
@@ -277,7 +280,11 @@ async function createTransferReservation(args: {
     args.property, args.checkIn, args.checkOut, args.guestName, args.phone, args.phone,
     args.orderId, args.amountUsd || null, args.status, JSON.stringify(args.raw), args.guests,
   ).run();
-  return (ins.meta?.last_row_id as number) ?? null;
+  // INSERT OR IGNORE: si paypal_order_id (UNIQUE) ya existía, changes=0 y last_row_id
+  // NO es confiable (arrastra el rowid de otro insert). Solo hubo creación si changes>0.
+  if ((ins.meta?.changes ?? 0) === 0) return null;
+  const id = ins.meta?.last_row_id;
+  return typeof id === "number" && id > 0 ? id : null;
 }
 
 /** Guarda el comprobante en transfer_receipts (auditoría + anti-reuso). Best-effort. */

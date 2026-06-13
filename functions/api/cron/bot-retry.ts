@@ -173,7 +173,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       if (result.escalateToOwner) {
         await sendEscalationEmail(
           { guestMessage: String(lastIn.body), guestPhone: phone, reservation, reason: `Quote flow (reintento): ${result.ruleName}` },
-          { RESEND_API_KEY: env.RESEND_API_KEY ?? "", EMAIL_FROM: env.EMAIL_FROM ?? "", EMAIL_REPLY_TO: env.EMAIL_REPLY_TO },
+          { RESEND_API_KEY: env.RESEND_API_KEY ?? "", EMAIL_FROM: env.EMAIL_FROM ?? "", EMAIL_REPLY_TO: env.EMAIL_REPLY_TO, WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID },
         ).catch(() => {});
       }
       await del(phone);
@@ -197,7 +197,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           reservation,
           reason: "⚠️ El bot intentó recuperarse varias veces pero el LLM (Workers AI) sigue sin responder. El cliente quedó sin respuesta — atendelo a mano. El modelo de IA está fallando de forma sostenida.",
         },
-        { RESEND_API_KEY: env.RESEND_API_KEY ?? "", EMAIL_FROM: env.EMAIL_FROM ?? "", EMAIL_REPLY_TO: env.EMAIL_REPLY_TO },
+        { RESEND_API_KEY: env.RESEND_API_KEY ?? "", EMAIL_FROM: env.EMAIL_FROM ?? "", EMAIL_REPLY_TO: env.EMAIL_REPLY_TO, WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID },
       ).catch(() => {});
       await del(phone);
       results.push({ phone, escalated: true, attempts });

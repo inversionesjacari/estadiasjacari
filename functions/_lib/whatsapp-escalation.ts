@@ -64,20 +64,19 @@ export async function sendEscalationEmail(
   const text = buildText(data, propertyName, guestName, replyToGuestUrl);
   const html = buildHtml(data, propertyName, guestName, replyToGuestUrl, cesarUrl);
 
-  const emailResult = await sendViaResend(
-    { to: SUPPORT_EMAIL, subject, html, text },
-    env,
-  );
-
-  // Además del email, avisar por WhatsApp a César + socio (plantilla alerta_jacari,
-  // con botón que abre el inbox en ese chat). Fail-soft: si la plantilla todavía no
-  // está aprobada en Meta, no rompe nada y queda el email como respaldo.
-  await notifyOwners(env, {
-    tipo: data.reason || "Necesita tu atención",
-    cliente: `${guestName} (+${data.guestPhone})`,
-    detalle: data.guestMessage,
-    guestPhone: data.guestPhone,
-  });
+  // Email + aviso por WhatsApp (plantilla alerta_jacari, con botón que abre el inbox
+  // en ese chat) EN PARALELO, para no sumar latencia serial a la respuesta del webhook.
+  // Fail-soft: si la plantilla aún no está aprobada en Meta, no rompe nada y queda el
+  // email como respaldo.
+  const [emailResult] = await Promise.all([
+    sendViaResend({ to: SUPPORT_EMAIL, subject, html, text }, env),
+    notifyOwners(env, {
+      tipo: data.reason || "Necesita tu atención",
+      cliente: `${guestName} (+${data.guestPhone})`,
+      detalle: data.guestMessage,
+      guestPhone: data.guestPhone,
+    }),
+  ]);
 
   return emailResult;
 }
