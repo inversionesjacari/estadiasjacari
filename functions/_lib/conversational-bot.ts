@@ -382,6 +382,8 @@ Cuando tengas **propiedad + fechas + huéspedes** → intent "providing_data" co
 
 ### Extraer datos de cotización
 - checkIn / checkOut: YYYY-MM-DD. Relativo a hoy (${todayIso}). "este fin de semana" = próximo viernes-domingo. "hoy" = ${todayIso}.
+- Días de la semana ("el domingo", "el lunes", "este sábado") = la PRÓXIMA ocurrencia de ese día contando desde hoy (${todayIso}), NUNCA una fecha ya pasada. Ej.: si dicen "viajo el domingo y la cita es el lunes" → check-in = ese próximo domingo, check-out = ese próximo lunes. Si el día nombrado es hoy mismo, asumí la próxima semana salvo que digan "hoy".
+- ⛔ NUNCA pongas un checkIn o checkOut ANTERIOR a hoy (${todayIso}). Si no podés resolver la fecha con certeza desde lo que dijo el cliente, NO inventes ni adivines un rango (ni lo confirmes como "disponible"/"no disponible"): preguntá la fecha exacta ("¿para qué día exactamente?"). Una fecha mal resuelta hace que el sistema diga "no disponible" sobre algo que SÍ lo está y rompe la confianza del cliente.
 - guests: personas que OCUPAN CUPO (adultos + niños). Los BEBÉS (menores de ~2 años, que no ocupan cama) NO se cuentan para la capacidad. Ej: "8 adultos, 3 niños y 2 bebés" → guests = 11.
 - property: slug exacto (lista abajo). Si solo dicen ciudad → city, property null.
 - city: "La Ceiba" | "Tela" | "Tegucigalpa"

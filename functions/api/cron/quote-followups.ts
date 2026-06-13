@@ -145,6 +145,32 @@ function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boo
     : `¡Hola de nuevo! 👋 ¿Seguimos${ref}? Contame ${join(missing)} y te muestro opciones. ¡Sin apuro! 🌴`;
 }
 
+// Reglas "terminales": el bot ya cerró / derivó / cobró esta conversación. Ni el
+// followup de "armemos cotización" ni el último aviso deben insistirle a alguien que
+// se despidió, pagó y confirmó, o fue escalado. (Caso Sandra, 12-jun: pagó y su
+// reserva quedó confirmada, y el followup le dijo "contame personas y fechas" → la
+// hizo dudar de su propia reserva: "¿se supone que ya reservé?".)
+const TERMINAL_RULES = new Set([
+  "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
+  "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
+  "escalar_humano", "call_requested", "farewell",
+]);
+
+/** Última regla REAL del bot para este número (ignora los propios followups). */
+async function lastRealOutRule(phone: string, db: D1Database): Promise<string> {
+  try {
+    const r = await db.prepare(
+      `SELECT matched_rule FROM whatsapp_messages
+         WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL
+           AND matched_rule NOT IN ('auto_followup','last_call','last_call_redirect')
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).bind(phone).first<{ matched_rule: string | null }>();
+    return r?.matched_rule ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
@@ -196,6 +222,44 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         /* data corrupto — seguir con {} */
       }
     }
+
+    // No insistir con "armemos una cotización" a quien el bot ya cerró/derivó/cobró.
+    // Este cron selecciona por estado del embudo, pero tras pagar (transfer_confirmed_*,
+    // estado limpiado) un mensaje suelto del cliente RE-ABRE un awaiting_quote_data vacío
+    // que el cron tomaba → "contame personas y fechas" a alguien que YA reservó, y lo hace
+    // dudar de su reserva (caso Sandra, 12-jun). Guard simétrico al del último aviso:
+    // saltamos si la última regla real fue terminal O si ya tiene una reserva activa/futura.
+    const lastOutRule = await lastRealOutRule(row.phone, env.DB);
+    let hasActiveReservation = false;
+    try {
+      const rv = await env.DB.prepare(
+        `SELECT 1 FROM reservations
+           WHERE (guest_phone_normalized = ? OR guest_phone = ?)
+             AND status IN ('pending','confirmed')
+             AND check_out >= date('now','-1 day')
+           LIMIT 1`,
+      ).bind(row.phone, row.phone).first();
+      hasActiveReservation = !!rv;
+    } catch { /* best-effort: ante error NO bloqueamos el followup */ }
+    if ((lastOutRule && TERMINAL_RULES.has(lastOutRule)) || hasActiveReservation) {
+      // Retirarlo del ciclo de followup (no re-evaluarlo cada tick).
+      if (!dryRun) {
+        try {
+          await env.DB.prepare(
+            `UPDATE conversation_state SET followup_sent_at = datetime('now') WHERE phone = ?`,
+          ).bind(row.phone).run();
+        } catch { /* best-effort */ }
+      }
+      const skipReason = lastOutRule && TERMINAL_RULES.has(lastOutRule) ? `skip_${lastOutRule}` : "skip_active_reservation";
+      results.push({
+        phone: row.phone,
+        state: row.state,
+        sent: false,
+        error: dryRun ? `${skipReason} (dry)` : skipReason,
+      });
+      continue;
+    }
+
     const message = buildFollowupMessage(row.state, data);
 
     if (dryRun) {
@@ -309,20 +373,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       // El último aviso es para cotizaciones tibias, no para leads que el bot ya
       // derivó (preguntó por algo que no ofrecemos, pidió humano, reportó pago…).
       // Buscamos la última regla "real" del bot, ignorando los propios followups.
-      let lastOutRule = "";
-      try {
-        const r = await env.DB.prepare(
-          `SELECT matched_rule FROM whatsapp_messages
-             WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL
-               AND matched_rule NOT IN ('auto_followup','last_call','last_call_redirect')
-             ORDER BY created_at DESC, id DESC LIMIT 1`,
-        ).bind(row.phone).first<{ matched_rule: string | null }>();
-        lastOutRule = r?.matched_rule ?? "";
-      } catch { /* best-effort */ }
-      const TERMINAL_RULES = new Set([
-        "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
-        "transfer_proof_received", "escalar_humano", "call_requested", "farewell",
-      ]);
+      const lastOutRule = await lastRealOutRule(row.phone, env.DB);
       if (lastOutRule && TERMINAL_RULES.has(lastOutRule)) {
         await markDone();
         lastCall.push({ phone: row.phone, sent: false, kind: `skip_${lastOutRule}` });

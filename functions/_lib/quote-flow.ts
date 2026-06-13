@@ -376,6 +376,30 @@ export function isLocationRequest(text: string): boolean {
   return /\b(ubicacion|ubicados?|ubicada|donde (estan|esta|queda|quedan|se encuentra|ubicad)|como llegar|direccion|el mapa|un mapa|en maps|google maps|location|where (are|is)|address)\b/.test(t);
 }
 
+/**
+ * Cliente pregunta por el HORARIO de check-in / check-out ("a qué hora puedo
+ * entrar/llegar", "hora de entrada/salida", "horario", "entradas y salidas",
+ * "check-in time"). El dato es FIJO y conocido (3 PM / 11 AM, todas las
+ * propiedades), pero los pasos determinísticos de pago se TRAGABAN la pregunta
+ * (caso Sandra, 12-jun: la repitió 3 veces eligiendo método y esperando el
+ * comprobante, y el bot repitió el guion de pago ignorándola). NO roba "a qué
+ * CUENTA" (isBankAccountRequest) ni "cuántas personas".
+ */
+export function isCheckinTimeRequest(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return (
+    /\b(check[ -]?in|check[ -]?out|checkin|checkout)\b/.test(t) ||
+    /\bhorarios?\b/.test(t) ||
+    /\b(entradas? y salidas?|entrada y salida)\b/.test(t) ||
+    /\bhora (de |del )?(entrada|salida|ingreso|llegada|check)/.test(t) ||
+    // "a/qué hora puedo entrar/llegar/ingresar/salir" (incluye "aque hora" pegado)
+    /\b(a ?que|que|cual|a cual|cuanto|desde que|hasta que) hora\b.*\b(entr|lleg|ingres|sal[ieg]|registr|check)/.test(t) ||
+    /\b(entr|lleg|ingres|sal[ieg]|registr)\w*\b.*\ba ?que hora\b/.test(t) ||
+    /\b(what time|check[ -]?in time|check[ -]?out time|arrival time)\b/.test(t) ||
+    /\bwhat time (can|do|should) i (check ?in|arrive|get in|come in|leave|check ?out)\b/.test(t)
+  );
+}
+
 // Links de Google Maps por propiedad. Tocar el link abre Google Maps en iPhone Y
 // Android (es un URL google.com → nunca cae en Apple Maps), que es lo que la mayoría
 // usa en Honduras. WhatsApp muestra la miniatura del mapa con el pin en la preview.
@@ -649,6 +673,47 @@ export async function handleQuoteIncoming(
       ruleName:        "legitimacy_reassured",
       tokensUsed:      0,
     };
+  }
+
+  // ── Cliente pregunta por el HORARIO de check-in/out DURANTE el pago → responder ──
+  // El horario es un dato FIJO (3 PM / 11 AM, todas las propiedades) que el bot SÍ
+  // contesta mientras junta datos (camino del LLM), pero los pasos de pago son 100%
+  // determinísticos y se TRAGABAN la pregunta: la cliente preguntó 3 veces "a qué hora
+  // puedo entrar" eligiendo método y esperando el comprobante, y el bot repitió el
+  // guion de pago ignorándola (caso Sandra, 12-jun). Igual que ubicación/legitimidad:
+  // respondemos el horario y RETOMAMOS el paso exacto. Solo en los pasos de pago — en
+  // los demás estados el LLM ya lo contesta (y extrae datos si el mensaje los trae).
+  {
+    const inPaymentStep =
+      existing?.state === "awaiting_payment_method" ||
+      existing?.state === "awaiting_transfer_proof" ||
+      existing?.state === "awaiting_paypal_capture";
+    // Si en el MISMO mensaje el cliente además elige método ("transferencia, ¿a qué
+    // hora entro?"), NO le robamos la elección: dejamos que el handler de pago la
+    // procese (la pregunta de horario se contesta sola en el próximo paso). Solo aplica
+    // en awaiting_payment_method, que es donde la elección de método tiene sentido.
+    const carriesPaymentChoice =
+      existing?.state === "awaiting_payment_method" && (isCardChoice(text) || isTransferChoice(text));
+    if (inPaymentStep && isCheckinTimeRequest(text) && !carriesPaymentChoice) {
+      let tail: string;
+      if (existing!.state === "awaiting_transfer_proof") {
+        tail = lang === "en"
+          ? "\n\nWhenever you've made the transfer, send me a photo of the receipt here and I'll confirm your booking. 🙏"
+          : "\n\nCuando hagas la transferencia, mandame la foto del comprobante por acá y te confirmo la reserva. 🙏";
+      } else if (existing!.state === "awaiting_payment_method") {
+        tail = T.resumePaymentTail(lang);
+      } else {
+        tail = lang === "en"
+          ? "\n\nYour PayPal link is still active — once the payment goes through, you're all set. 🙏"
+          : "\n\nTu link de PayPal sigue activo — apenas se procese el pago, queda lista tu reserva. 🙏";
+      }
+      return {
+        reply:           T.checkinSchedule(lang) + tail,
+        escalateToOwner: false,
+        ruleName:        "checkin_schedule_sent",
+        tokensUsed:      0,
+      };
+    }
   }
 
   // ── Despedida / acuse de cierre → cerrar cálido UNA vez, sin repetir ───────

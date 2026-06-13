@@ -132,6 +132,16 @@ export const T = {
       ? "\n\nWhenever you're ready, just tell me *Card* or *Transfer* and we'll continue."
       : "\n\nCuando la veas y estés lista, decime *Tarjeta* o *Transferencia* y seguimos.",
 
+  // Cliente pregunta por el HORARIO de check-in / check-out ("a qué hora puedo
+  // entrar", "entradas y salidas", "horario"). El dato es FIJO (3 PM / 11 AM, todas
+  // las propiedades) pero los pasos determinísticos de pago se TRAGABAN la pregunta
+  // (caso Sandra, 12-jun: la repitió 3 veces eligiendo método / esperando comprobante
+  // y el bot la ignoró). El "tail" que retoma el paso de pago lo agrega quote-flow.
+  checkinSchedule: (l: Lang): string =>
+    l === "en"
+      ? "🕒 Check-in is at *3:00 PM* and check-out at *11:00 AM* (applies to all our stays). Need to come in earlier or leave later? We'll do our best based on availability. On your check-in day I'll send you everything you need to get in."
+      : "🕒 El check-in es a las *3:00 PM* y el check-out a las *11:00 AM* (aplica en todos nuestros alojamientos). ¿Necesitás entrar antes o salir más tarde? Lo vemos según disponibilidad. El día de tu ingreso te paso todas las instrucciones para entrar.",
+
   // Cliente pide un número para llamar → darlo directo y amable (sin disculpas
   // ni recitar las ciudades; eso es para lo que SÍ está fuera de alcance).
   phoneContact: (l: Lang): string =>
