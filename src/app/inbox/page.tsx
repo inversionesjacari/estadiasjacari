@@ -1426,6 +1426,12 @@ export default function InboxPage() {
           >
             🤖 Conocimiento del bot
           </a>
+          <a
+            href="/inbox/registro"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+          >
+            📋 Registro
+          </a>
           <button
             onClick={fetchConversations}
             disabled={loadingConv}
@@ -1456,6 +1462,7 @@ export default function InboxPage() {
                 <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1">
                   <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
                   <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
+                  <a href="/inbox/registro" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📋 Registro</a>
                   <button type="button" onClick={handleLogout} className="block w-full text-left px-4 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-gray-50 dark:hover:bg-slate-700 border-t border-gray-100 dark:border-slate-700">Salir</button>
                 </div>
               </>
