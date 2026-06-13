@@ -115,6 +115,16 @@ export function isConfirmation(text: string): boolean {
   if (/\?/.test(norm) || isDateChangeOrAvailabilityQuestion(text)) {
     return false;
   }
+  // Despedida / cierre cortés → NO es confirmación (era "Ok buen día" → el bot le
+  // pedía pagar a alguien que se despedía). PERO si además hay un "sí" FUERTE
+  // (sí/dale/confirmo/perfecto/claro/de acuerdo), la despedida es solo cortesía y SÍ
+  // confirma ("perfecto, buen día"). "ok"/"ya"/"listo" son débiles: con despedida
+  // pesan como cierre, no como "cobrá".
+  const farewell = /\b(buen dia|buenos dias|adios|hasta luego|hasta pronto|nos vemos|cuidate|que (tengas|tenga|te vaya)|feliz dia|buen finde)\b/.test(norm);
+  const strongYes = /\b(si|claro|por supuesto|confirmo|dale|de acuerdo|perfecto)\b/.test(norm);
+  if (farewell && !strongYes) {
+    return false;
+  }
   return /\b(si|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
 }
 
@@ -198,7 +208,11 @@ export function isNotInterested(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
   return (
     // rechazo por precio
-    /\b(no me conviene|muy caro|esta caro|carisimo|fuera de (mi )?presupuesto|no me alcanza|se (me )?pasa de presupuesto|esta fuera de)\b/.test(t) ||
+    /\b(no me conviene|muy caro|esta caro|carisimo|fuera de (mi )?presupuesto|no me alcanza|esta fuera de)\b/.test(t) ||
+    /\bse (me )?(pasa|va|sale)\b.{0,8}presupuesto\b/.test(t) ||
+    // rechazo directo / no quiere reservar (era el bucle: "no me interesa", "no le e pedido").
+    // Cubre pasado/presente/futuro y el typo "e" por "he": pedido/pedi/pido/pedir/solicité…
+    /\b(no me interesa|ya no me interesa|no me sirve|no quiero (reservar|nada)|no voy a reservar|no (le )?(he |e |voy a |quiero )?(ped\w*|pid[eo]|solicit\w*)|no he (solicitado|reservado))\b/.test(t) ||
     // postergación / "otra vez será"
     /\b(lo pienso|lo voy a pensar|despues (te )?(veo|aviso|escribo|digo)|mas adelante|otra ocasion|por ahora no|no por ahora|sera (en )?otra|en otra ocasion|tal vez (luego|despues|mas adelante))\b/.test(t) ||
     // despedida cortés como mensaje completo (no "gracias, ¿cómo pago?")
@@ -1384,6 +1398,21 @@ async function handlePaymentMethodChoice(
           tokensUsed:      0,
         };
       }
+    }
+    // El cliente RECHAZA / no quiere reservar ("no me interesa", "es muy caro", "no
+    // le he pedido ninguna reserva") → NO repetir el clarify (el bot lo machacaba 3
+    // veces ignorando al cliente). Soltamos el embudo y cerramos cálido, con la
+    // puerta abierta. (Caso real, 13-jun: lead perdido en un bucle de pago.)
+    if (isNotInterested(text)) {
+      await cancelQuoteFlow(phone, env.DB);
+      return {
+        reply: lang === "en"
+          ? "No worries at all! 🙏 We're here whenever you need — if you'd like to book or see another option later, just message me. Have a great day!"
+          : "¡Sin problema! 🙏 Quedamos a la orden — si más adelante querés reservar o ver otra opción, escribime con gusto. ¡Que tengás buen día!",
+        escalateToOwner: false,
+        ruleName:        "payment_declined",
+        tokensUsed:      0,
+      };
     }
     return {
       reply:           T.paymentMethodClarify(lang),
