@@ -3,10 +3,10 @@
 // /inbox/registro — Registro de huéspedes (planilla tipo Excel).
 //
 // Una fila por reserva (confirmada o con depósito/por verificar), pasada o futura:
-// huésped, teléfono, propiedad, fechas, personas, monto, origen y estado de pago.
-// Ordenable por cualquier columna, con buscador + filtros y un botón "Exportar a
-// Excel (CSV)" que baja la planilla con lo que estés viendo. Pensada para llevar el
-// registro y dar seguimiento. Datos en vivo de /api/inbox/reservations-registry.
+// huésped, teléfono, propiedad, fechas, personas y el PAGO en Lempiras (total /
+// pagado / saldo) con su estado real. Ordenable, con buscador + filtros, botón
+// "Exportar a Excel (CSV)", alta manual ("➕ Agregar") y edición del pago por fila
+// ("💲 Pago"). Datos en vivo de /api/inbox/reservations-registry.
 //
 
 import { useEffect, useState, useCallback, useMemo } from "react";
@@ -21,6 +21,8 @@ interface Reservation {
   guest_phone: string | null;
   guest_count: number | null;
   amount_usd: number | null;
+  total_hnl: number | null;
+  paid_hnl: number | null;
   source: string;
   status: string;
   created_at: string;
@@ -54,12 +56,30 @@ function nights(checkIn: string, checkOut: string): number {
   return Math.max(0, Math.round((b - a) / 86400000));
 }
 
-function statusMeta(status: string): { text: string; cls: string } {
-  if (status === "confirmed") return { text: "Pagado", cls: "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" };
-  return { text: "Pendiente", cls: "text-amber-300 border-amber-500/40 bg-amber-500/10" };
+/** Lempiras sin decimales: 2500 → "L 2,500". */
+function fmtL(n: number): string {
+  return `L ${Math.round(n).toLocaleString("es-HN")}`;
 }
 
-type SortKey = "check_in" | "guest_name" | "property" | "amount_usd" | "status" | "created_at" | "source";
+const PAY_GREEN = "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
+const PAY_AMBER = "text-amber-300 border-amber-500/40 bg-amber-500/10";
+const PAY_ROSE = "text-rose-300 border-rose-500/40 bg-rose-500/10";
+
+/** Estado del pago a partir de total/pagado en LPS; si no hay total LPS, cae al status. */
+function paymentBadge(r: Reservation): { text: string; cls: string; saldo: number | null } {
+  if (r.total_hnl != null) {
+    const total = r.total_hnl;
+    const paid = r.paid_hnl ?? 0;
+    const saldo = Math.max(0, total - paid);
+    if (paid >= total) return { text: "Pagado", cls: PAY_GREEN, saldo: 0 };
+    if (paid > 0) return { text: `Depósito · falta ${fmtL(saldo)}`, cls: PAY_AMBER, saldo };
+    return { text: "Sin pago", cls: PAY_ROSE, saldo };
+  }
+  if (r.status === "confirmed") return { text: "Pagado", cls: PAY_GREEN, saldo: null };
+  return { text: "Pendiente", cls: PAY_AMBER, saldo: null };
+}
+
+type SortKey = "check_in" | "guest_name" | "property" | "total" | "paid" | "status" | "created_at" | "source";
 
 const COLUMNS: { key: SortKey | null; label: string; align?: "right" }[] = [
   { key: "guest_name", label: "Huésped" },
@@ -69,7 +89,8 @@ const COLUMNS: { key: SortKey | null; label: string; align?: "right" }[] = [
   { key: "check_in", label: "Entra" },
   { key: null, label: "Sale" },
   { key: null, label: "Noches", align: "right" },
-  { key: "amount_usd", label: "Monto USD", align: "right" },
+  { key: "total", label: "Total", align: "right" },
+  { key: "paid", label: "Pagado", align: "right" },
   { key: "source", label: "Origen" },
   { key: "status", label: "Estado" },
   { key: "created_at", label: "Reservada" },
@@ -78,7 +99,7 @@ const COLUMNS: { key: SortKey | null; label: string; align?: "right" }[] = [
 
 const EMPTY_FORM = {
   guest_name: "", guest_phone: "", property_slug: "",
-  check_in: "", check_out: "", guest_count: "", amount_usd: "", status: "confirmed",
+  check_in: "", check_out: "", guest_count: "", total_hnl: "", paid_hnl: "",
 };
 
 const INPUT_CLS =
@@ -93,10 +114,16 @@ export default function RegistroPage() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("check_in");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // Alta manual
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  // Edición de pago de una reserva existente
+  const [payRes, setPayRes] = useState<Reservation | null>(null);
+  const [payForm, setPayForm] = useState({ total_hnl: "", paid_hnl: "" });
+  const [savingPay, setSavingPay] = useState(false);
+  const [payError, setPayError] = useState("");
 
   const fetchData = useCallback(async (): Promise<void> => {
     try {
@@ -157,7 +184,8 @@ export default function RegistroPage() {
       switch (sortKey) {
         case "guest_name": return (r.guest_name ?? "").toLowerCase();
         case "property": return (getProperty(r.property_slug)?.name ?? r.property_slug).toLowerCase();
-        case "amount_usd": return r.amount_usd ?? -1;
+        case "total": return r.total_hnl ?? r.amount_usd ?? -1;
+        case "paid": return r.paid_hnl ?? -1;
         case "status": return r.status;
         case "source": return r.source;
         case "created_at": return r.created_at;
@@ -174,7 +202,7 @@ export default function RegistroPage() {
   }, [reservations, propFilter, statusFilter, search, sortKey, sortDir]);
 
   const exportCsv = useCallback(() => {
-    const headers = ["Huésped", "Teléfono", "Propiedad", "Ciudad", "Personas", "Entra", "Sale", "Noches", "Monto USD", "Origen", "Estado", "Reservada"];
+    const headers = ["Huésped", "Teléfono", "Propiedad", "Ciudad", "Personas", "Entra", "Sale", "Noches", "Total LPS", "Pagado LPS", "Saldo LPS", "Estado", "Origen", "Reservada"];
     const esc = (v: unknown): string => {
       const s = v == null ? "" : String(v);
       return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -182,6 +210,10 @@ export default function RegistroPage() {
     const lines = [headers.join(",")];
     for (const r of filtered) {
       const prop = getProperty(r.property_slug);
+      const pay = paymentBadge(r);
+      const total = r.total_hnl != null ? Math.round(r.total_hnl) : "";
+      const paid = r.total_hnl != null ? Math.round(r.paid_hnl ?? 0) : "";
+      const saldo = pay.saldo != null ? Math.round(pay.saldo) : "";
       lines.push([
         r.guest_name ?? "",
         r.guest_phone ?? "",
@@ -191,9 +223,11 @@ export default function RegistroPage() {
         r.check_in,
         r.check_out,
         nights(r.check_in, r.check_out),
-        r.amount_usd ?? "",
+        total,
+        paid,
+        saldo,
+        pay.text,
         sourceLabel(r.source),
-        statusMeta(r.status).text,
         (r.created_at ?? "").slice(0, 10),
       ].map(esc).join(","));
     }
@@ -240,8 +274,49 @@ export default function RegistroPage() {
     }
   }, [form, fetchData]);
 
+  const openPay = (r: Reservation) => {
+    setPayRes(r);
+    setPayForm({
+      total_hnl: r.total_hnl != null ? String(Math.round(r.total_hnl)) : "",
+      paid_hnl: r.paid_hnl != null ? String(Math.round(r.paid_hnl)) : "",
+    });
+    setPayError("");
+  };
+
+  const submitPay = useCallback(async (): Promise<void> => {
+    if (!payRes) return;
+    setPayError("");
+    if (!payForm.total_hnl.trim() || Number(payForm.total_hnl) <= 0) { setPayError("Poné el total (en Lempiras)."); return; }
+    setSavingPay(true);
+    try {
+      const resp = await fetch("/api/inbox/reservation-payment", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: payRes.id, total_hnl: payForm.total_hnl, paid_hnl: payForm.paid_hnl }),
+      });
+      if (resp.status === 401) { setAuthed(false); return; }
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (data.ok) {
+        setPayRes(null);
+        fetchData();
+      } else {
+        setPayError(data.error || "No se pudo guardar.");
+      }
+    } catch {
+      setPayError("Error de red.");
+    } finally {
+      setSavingPay(false);
+    }
+  }, [payRes, payForm, fetchData]);
+
   const confirmedCount = reservations.filter((r) => r.status === "confirmed").length;
   const pendingCount = reservations.filter((r) => r.status === "pending").length;
+
+  // Saldo vivo en el modal de pago (para mostrarlo mientras escribe).
+  const payTotal = Number(payForm.total_hnl);
+  const payPaid = Number(payForm.paid_hnl);
+  const paySaldo = Number.isFinite(payTotal) && payTotal > 0 ? Math.max(0, payTotal - (Number.isFinite(payPaid) ? payPaid : 0)) : null;
 
   if (!authed) {
     return (
@@ -347,7 +422,7 @@ export default function RegistroPage() {
               <tbody>
                 {filtered.map((r) => {
                   const prop = getProperty(r.property_slug);
-                  const st = statusMeta(r.status);
+                  const pay = paymentBadge(r);
                   const phoneDigits = r.guest_phone ? r.guest_phone.replace(/\D/g, "") : "";
                   return (
                     <tr key={r.id} className="border-t border-white/5 hover:bg-white/[0.03]">
@@ -364,22 +439,37 @@ export default function RegistroPage() {
                       <td className="px-3 py-2 text-slate-300">{fmtDate(r.check_out)}</td>
                       <td className="px-3 py-2 text-right text-slate-400">{nights(r.check_in, r.check_out)}</td>
                       <td className="px-3 py-2 text-right text-slate-200">
-                        {r.amount_usd != null ? `$${r.amount_usd.toLocaleString("en-US")}` : "—"}
+                        {r.total_hnl != null
+                          ? fmtL(r.total_hnl)
+                          : r.amount_usd != null ? `$${r.amount_usd.toLocaleString("en-US")}` : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right text-slate-200">
+                        {r.total_hnl != null ? fmtL(r.paid_hnl ?? 0) : "—"}
                       </td>
                       <td className="px-3 py-2 text-slate-400">{sourceLabel(r.source)}</td>
                       <td className="px-3 py-2">
-                        <span className={`text-[11px] px-2 py-0.5 rounded-full border ${st.cls}`}>{st.text}</span>
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full border ${pay.cls}`}>{pay.text}</span>
                       </td>
                       <td className="px-3 py-2 text-slate-500">{(r.created_at ?? "").slice(0, 10)}</td>
                       <td className="px-3 py-2">
-                        {phoneDigits ? (
-                          <a
-                            href={`/inbox?c=${phoneDigits}`}
-                            className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10"
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openPay(r)}
+                            className="text-[11px] text-amber-200 border border-amber-400/40 rounded px-1.5 py-0.5 hover:bg-amber-400/10"
+                            title="Cargar / corregir el pago de esta reserva"
                           >
-                            Chat
-                          </a>
-                        ) : null}
+                            💲 Pago
+                          </button>
+                          {phoneDigits ? (
+                            <a
+                              href={`/inbox?c=${phoneDigits}`}
+                              className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10"
+                            >
+                              Chat
+                            </a>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -390,10 +480,11 @@ export default function RegistroPage() {
         )}
 
         <p className="text-[11px] text-slate-600 text-center mt-5">
-          Incluye reservas confirmadas (pagadas) y con depósito/por verificar. El botón exporta lo que estés viendo (con los filtros aplicados).
+          Montos en Lempiras. El estado muestra si está pagada o cuánto falta. El botón exporta lo que estés viendo (con los filtros aplicados).
         </p>
       </main>
 
+      {/* ── Modal: agregar reserva ──────────────────────────────────────────── */}
       {showAdd && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
@@ -433,22 +524,21 @@ export default function RegistroPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mt-3">
+            <div className="grid grid-cols-3 gap-3 mt-3">
               <div>
                 <label className="block text-[12px] text-slate-400 mb-1">Personas</label>
                 <input type="number" min="1" value={form.guest_count} onChange={(e) => setForm((f) => ({ ...f, guest_count: e.target.value }))} placeholder="—" className={INPUT_CLS} />
               </div>
               <div>
-                <label className="block text-[12px] text-slate-400 mb-1">Monto USD</label>
-                <input type="number" min="0" value={form.amount_usd} onChange={(e) => setForm((f) => ({ ...f, amount_usd: e.target.value }))} placeholder="—" className={INPUT_CLS} />
+                <label className="block text-[12px] text-slate-400 mb-1">Total (L)</label>
+                <input type="number" min="0" value={form.total_hnl} onChange={(e) => setForm((f) => ({ ...f, total_hnl: e.target.value }))} placeholder="2500" className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Pagado (L)</label>
+                <input type="number" min="0" value={form.paid_hnl} onChange={(e) => setForm((f) => ({ ...f, paid_hnl: e.target.value }))} placeholder="1250" className={INPUT_CLS} />
               </div>
             </div>
-
-            <label className="block text-[12px] text-slate-400 mb-1 mt-3">Estado del pago</label>
-            <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} className={INPUT_CLS}>
-              <option value="confirmed">Pagado (confirmada)</option>
-              <option value="pending">Pendiente / depósito</option>
-            </select>
+            <p className="text-[11px] text-slate-500 mt-1">Todo en Lempiras. Si Pagado &lt; Total, queda como depósito (falta el saldo).</p>
 
             {formError && <p className="text-[12px] text-rose-300 mt-3">{formError}</p>}
 
@@ -465,6 +555,64 @@ export default function RegistroPage() {
                 type="button"
                 onClick={() => setShowAdd(false)}
                 disabled={saving}
+                className="px-3 py-2 rounded-lg text-sm border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: cargar / corregir pago ───────────────────────────────────── */}
+      {payRes && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => { if (!savingPay) setPayRes(null); }}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0c1322] p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white">💲 Pago de la reserva</h2>
+            <p className="text-[12px] text-slate-400 mb-4">
+              {payRes.guest_name || "Huésped"} · {getProperty(payRes.property_slug)?.name ?? payRes.property_slug} · {fmtDate(payRes.check_in)} → {fmtDate(payRes.check_out)}
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Total (L)</label>
+                <input type="number" min="0" value={payForm.total_hnl} onChange={(e) => setPayForm((f) => ({ ...f, total_hnl: e.target.value }))} placeholder="2500" className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Pagado (L)</label>
+                <input type="number" min="0" value={payForm.paid_hnl} onChange={(e) => setPayForm((f) => ({ ...f, paid_hnl: e.target.value }))} placeholder="1250" className={INPUT_CLS} />
+              </div>
+            </div>
+
+            {paySaldo != null && (
+              <p className="text-[12px] mt-3">
+                {paySaldo > 0
+                  ? <span className="text-amber-300">Falta por pagar: <b>{fmtL(paySaldo)}</b></span>
+                  : <span className="text-emerald-300">✅ Pagado completo</span>}
+              </p>
+            )}
+
+            {payError && <p className="text-[12px] text-rose-300 mt-3">{payError}</p>}
+
+            <div className="flex gap-2 mt-5">
+              <button
+                type="button"
+                onClick={submitPay}
+                disabled={savingPay}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-semibold border border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-50"
+              >
+                {savingPay ? "Guardando…" : "Guardar pago"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPayRes(null)}
+                disabled={savingPay}
                 className="px-3 py-2 rounded-lg text-sm border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-50"
               >
                 Cancelar

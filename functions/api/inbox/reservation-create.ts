@@ -49,19 +49,29 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const check_out = String(body.check_out ?? "").trim();
   const guest_name = String(body.guest_name ?? "").trim();
   const guest_phone_raw = String(body.guest_phone ?? "").trim();
-  const status = String(body.status ?? "confirmed").trim();
 
   // ── Validación ────────────────────────────────────────────────────────────
   if (!SLUGS.has(property_slug)) return json({ ok: false, error: "Elegí una propiedad válida." }, 400);
   if (!ISO_DATE.test(check_in) || !ISO_DATE.test(check_out)) return json({ ok: false, error: "Revisá las fechas (usá el selector)." }, 400);
   if (check_out <= check_in) return json({ ok: false, error: "La salida tiene que ser después de la llegada." }, 400);
   if (!guest_name && !guest_phone_raw) return json({ ok: false, error: "Poné al menos el nombre o el teléfono del huésped." }, 400);
-  if (status !== "confirmed" && status !== "pending") return json({ ok: false, error: "Estado inválido." }, 400);
 
   const guestCountNum = Number(body.guest_count);
   const guest_count = Number.isFinite(guestCountNum) && guestCountNum > 0 ? Math.round(guestCountNum) : null;
-  const amountNum = Number(body.amount_usd);
-  const amount_usd = Number.isFinite(amountNum) && amountNum >= 0 ? amountNum : null;
+
+  // Montos en Lempiras: total = precio de la estadía; paid = lo pagado hasta ahora.
+  const totalNum = Number(body.total_hnl);
+  const total_hnl = Number.isFinite(totalNum) && totalNum > 0 ? totalNum : null;
+  const paidNum = Number(body.paid_hnl);
+  const paid_hnl = Number.isFinite(paidNum) && paidNum >= 0 ? paidNum : 0;
+  if (total_hnl !== null && paid_hnl > total_hnl) {
+    return json({ ok: false, error: "El pagado no puede ser mayor al total." }, 400);
+  }
+  if (paid_hnl > 0 && total_hnl === null) {
+    return json({ ok: false, error: "Poné el total para registrar el pago." }, 400);
+  }
+  // Estado derivado del pago: pagado completo → confirmed; falta saldo → pending.
+  const status = total_hnl !== null && paid_hnl >= total_hnl ? "confirmed" : "pending";
   const guest_phone = guest_phone_raw || null;
   const guest_phone_normalized = guest_phone_raw ? (normalizePhone(guest_phone_raw).e164 || null) : null;
   // Si pusieron teléfono pero no tiene dígitos válidos, avisar (no guardar basura).
@@ -88,14 +98,18 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const res = await env.DB.prepare(
       `INSERT INTO reservations
          (property_slug, check_in, check_out, guest_name, guest_phone, guest_phone_normalized,
-          guest_count, amount_usd, source, status, paypal_order_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+          guest_count, total_hnl, paid_hnl, source, status, paypal_order_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
     ).bind(
       property_slug, check_in, check_out, guest_name || null, guest_phone, guest_phone_normalized,
-      guest_count, amount_usd, status, paypal_order_id,
+      guest_count, total_hnl, paid_hnl, status, paypal_order_id,
     ).run();
     return json({ ok: true, id: res.meta?.last_row_id ?? null });
   } catch (err) {
-    return json({ ok: false, error: `D1: ${(err as Error).message}` }, 500);
+    const msg = (err as Error).message || "";
+    if (/no such column|total_hnl|paid_hnl/i.test(msg)) {
+      return json({ ok: false, error: "Falta aplicar la actualización de la base (columnas de pago en LPS). Pegá en Cloudflare el SQL que te pasé y reintentá." }, 500);
+    }
+    return json({ ok: false, error: `D1: ${msg}` }, 500);
   }
 };
