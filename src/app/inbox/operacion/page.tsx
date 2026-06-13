@@ -15,6 +15,7 @@ const PROPERTY_NAMES: Record<string, string> = {
   "centro-morazan": "Centro Morazán",
   "casa-lara-townhouse": "Casa Lara",
   "la-florida": "La Florida",
+  "las-gemelas-tela": "Las Gemelas (Brisa + Marea)",
 };
 
 const SOURCE_NAMES: Record<string, string> = {
@@ -63,10 +64,21 @@ function pageLabel(path: string): string {
 function sourceLabel(ref: string): string {
   return REFERRER_NAMES[ref] ?? ref.replace(/^www\./, "");
 }
+const MES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+function monthLabel(prefix: string): string {
+  const [y, mo] = prefix.split("-").map(Number);
+  return `${MES_ES[(mo || 1) - 1]} ${y}`;
+}
 
 // Registro de cambios / mejoras del sistema (curado a mano; lo más nuevo arriba).
 // Se muestra al final del Centro de Control como bitácora visible del equipo.
 const CHANGELOG: { date: string; items: string[] }[] = [
+  {
+    date: "13 jun 2026",
+    items: [
+      "Centro de Control: panel nuevo 🏘️ Métricas por propiedad — ocupación % del mes por casa (reservas directas + Airbnb vía iCal) e ingresos directos del mes, con totales. Por fin se ve, de un vistazo, qué propiedades están llenas y cuánto generan en directo.",
+    ],
+  },
   {
     date: "9 jun 2026",
     items: [
@@ -111,6 +123,8 @@ interface Metrics {
   funnel: { awaitingData: number; quoteProvided: number; awaitingPaymentMethod: number; awaitingPaypal: number; awaitingTransfer: number; total: number };
   reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
   revenue: { direct: { today: number; week: number; month: number }; airbnb: { today: number | null; week: number | null; month: number | null } };
+  porPropiedad?: { slug: string; revenueMonth: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
+  mes?: { prefix: string; dias: number };
   health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
@@ -404,6 +418,13 @@ export default function OperacionPage() {
             <MiniList rows={m.reservations.bySource.map((r) => ({ label: SOURCE_NAMES[r.source] ?? r.source, value: r.c }))} empty="Sin reservas en 30 días." />
           </Panel>
         </section>
+
+        {/* Métricas por propiedad — ocupación + ingresos del mes */}
+        {m.porPropiedad && m.porPropiedad.length > 0 && (
+          <Panel title="🏘️ Métricas por propiedad" subtitle={m.mes ? `ocupación (directo + Airbnb) · ingresos directos · ${monthLabel(m.mes.prefix)}` : "este mes"}>
+            <PropertyMetricsTable rows={m.porPropiedad} airbnbStatus={m.health.airbnbStatus} />
+          </Panel>
+        )}
 
         {/* Feed estilo terminal */}
         <Panel title="📋 Actividad reciente">
@@ -701,6 +722,76 @@ function MiniList({ title, rows, empty }: { title?: string; rows: { label: strin
         </ul>
       )}
     </div>
+  );
+}
+
+// Tabla ocupación + ingresos por propiedad del mes. Ocupación con barra de color
+// (verde >=70%, ámbar >=35%, rojo <35%, gris sin dato). ⚠ = iCal de Airbnb no
+// conectado → la ocupación de esa propiedad es solo de reservas directas.
+function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metrics["porPropiedad"]>; airbnbStatus: Metrics["health"]["airbnbStatus"] }) {
+  const fmt$ = (n: number) => `$${n.toLocaleString("en-US")}`;
+  const totalRev = rows.reduce((s, r) => s + r.revenueMonth, 0);
+  const totalResv = rows.reduce((s, r) => s + r.reservasMonth, 0);
+  const occVals = rows.map((r) => r.occupancyPct).filter((p): p is number => p !== null);
+  const avgOcc = occVals.length ? Math.round(occVals.reduce((s, p) => s + p, 0) / occVals.length) : null;
+  const occHexOf = (pct: number | null) => (pct === null ? HEX.gray : pct >= 70 ? HEX.green : pct >= 35 ? HEX.amber : HEX.red);
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+              <th className="text-left font-medium pb-2">Propiedad</th>
+              <th className="text-left font-medium pb-2 w-[42%]">Ocupación</th>
+              <th className="text-right font-medium pb-2">Ingresos directos</th>
+              <th className="text-right font-medium pb-2">Reservas</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const pct = r.occupancyPct;
+              const occHex = occHexOf(pct);
+              return (
+                <tr key={r.slug} className="border-t border-white/5">
+                  <td className="py-2 pr-3 text-slate-200 whitespace-nowrap">
+                    {PROPERTY_NAMES[r.slug] ?? r.slug}
+                    {pct !== null && r.airbnbSync !== "full" && r.airbnbSync !== "n/a" && (
+                      <span title="Ocupación solo de reservas directas: el iCal de Airbnb de esta propiedad no está conectado." className="ml-1.5 text-[10px] text-amber-400/80 cursor-help">⚠</span>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {r.airbnbSync === "n/a" ? (
+                      <span className="text-[11px] text-slate-500 italic">incluida en Brisa + Marea</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden min-w-[60px]">
+                          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct ?? 0}%`, background: occHex, boxShadow: `0 0 8px ${occHex}88` }} />
+                        </div>
+                        <span className="font-mono text-xs font-semibold w-9 text-right" style={{ color: occHex }}>{pct === null ? "—" : `${pct}%`}</span>
+                      </div>
+                    )}
+                  </td>
+                  <td className="py-2 text-right font-mono text-cyan-300 whitespace-nowrap">{fmt$(r.revenueMonth)}</td>
+                  <td className="py-2 text-right font-mono text-slate-300">{r.reservasMonth}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-white/10">
+              <td className="pt-2 font-semibold text-slate-200">Total</td>
+              <td className="pt-2 text-[11px] text-slate-400">{avgOcc === null ? "—" : `prom. ${avgOcc}%`}</td>
+              <td className="pt-2 text-right font-mono font-bold text-cyan-300">{fmt$(totalRev)}</td>
+              <td className="pt-2 text-right font-mono font-semibold text-slate-300">{totalResv}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p className="text-[10px] text-slate-500 mt-3 leading-relaxed">
+        Ocupación = noches ocupadas del mes ÷ días del mes (reservas directas + Airbnb vía iCal). Ingresos = pagos en USD de reservas con <strong className="text-slate-400">llegada este mes</strong> (directo: sitio + bot); por eso este total NO cuadra con la tarjeta “Ingresos” de arriba, que cuenta reservas <em>creadas</em> en los últimos 30 días: son dos lentes distintos. El ingreso total de Airbnb por PayPal va aparte, en esa misma tarjeta. El paquete Las Gemelas aparece como fila propia para el ingreso; su ocupación se refleja en Casa Brisa y Casa Marea.
+        {airbnbStatus !== "full" && <span className="text-amber-400/80"> · ⚠ El iCal de Airbnb no está completo: la ocupación de las propiedades marcadas refleja solo reservas directas.</span>}
+      </p>
+    </>
   );
 }
 

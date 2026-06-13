@@ -15,7 +15,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
-import { getBlockedDates, type IcalEnv } from "../../_lib/availability";
+import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
 
 interface Env extends IcalEnv {
   DB: D1Database;
@@ -63,6 +63,15 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const db = env.DB;
 
+  // Mes calendario actual en Honduras (UTC-6) — base de las métricas por propiedad.
+  const hnNow = new Date(Date.now() - 6 * 3600 * 1000);
+  const mY = hnNow.getUTCFullYear();
+  const mM = hnNow.getUTCMonth();
+  const monthPrefix = `${mY}-${String(mM + 1).padStart(2, "0")}`;
+  const monthStart = `${monthPrefix}-01`;
+  const nextMonthStart = new Date(Date.UTC(mY, mM + 1, 1)).toISOString().slice(0, 10);
+  const daysInMonth = new Date(Date.UTC(mY, mM + 1, 0)).getUTCDate();
+
   const [
     msgsToday, msgsWeek, msgRanges, convRanges, funnelRows,
     resvCounts, resvByProperty, resvBySource, revRanges,
@@ -70,6 +79,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     botCounts, trendRows, feedMsgs, feedResvs,
     webToday, webYesterday, webWeek, webNow, webTopPages, webSources, webTrend, airbnbIncome,
     qaFindings, qaLastRun,
+    revByProperty,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -119,6 +129,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     // QA del bot: hallazgos + última corrida. Fail-soft si las tablas no existen.
     db.prepare(`SELECT id, phone, issue, severity, detail, suggestion, conv_at FROM bot_qa_findings ORDER BY CASE severity WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, conv_at DESC, id`).all<{ id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
+    // Ingresos + conteo por propiedad — reservas con llegada (check_in) en el mes calendario HN.
+    db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COUNT(*) AS reservas FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; reservas: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Salud del LLM del bot: último error registrado por el webhook cuando el bot
@@ -135,6 +147,85 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     if (blocked) airbnbStatus = blocked.airbnbSyncStatus;
   } catch {
     airbnbStatus = "unknown";
+  }
+
+  // ── Métricas por propiedad (ocupación + ingresos del mes calendario HN) ───────
+  // Ocupación = noches ocupadas del mes ÷ días del mes, uniendo reservas directas
+  // (D1, incluso las ya transcurridas) con el iCal de Airbnb. Ingresos = SUM(amount_usd)
+  // de reservas cuya LLEGADA (check_in) cae en el mes.
+  const propSlugs = Object.keys(SLUG_TO_SOURCES);
+
+  // Noches directas (D1) que caen en el mes — incluye las ya transcurridas, que
+  // getBlockedDates omite (filtra check_out >= hoy por ser para disponibilidad).
+  const directRanges = await db
+    .prepare(`SELECT property_slug AS slug, check_in, check_out FROM reservations WHERE status IN ('pending','confirmed') AND check_in < ? AND check_out > ?`)
+    .bind(nextMonthStart, monthStart)
+    .all<{ slug: string; check_in: string; check_out: string }>()
+    .catch(() => ({ results: [] }));
+
+  // El paquete "las-gemelas-tela" ocupa FÍSICAMENTE Casa Brisa + Casa Marea, pero
+  // se guarda como una sola fila con ese slug. Repartimos sus noches a las dos casas
+  // para que su ocupación NO se subestime (el ingreso sí queda una sola vez, en su fila).
+  const GEMELAS_SLUG = "las-gemelas-tela";
+  const GEMELAS_COMPONENTS = ["casa-brisa", "casa-marea"];
+  const directNights: Record<string, Set<string>> = {};
+  for (const r of rowsOf<{ slug: string; check_in: string; check_out: string }>(directRanges)) {
+    const targets = r.slug === GEMELAS_SLUG ? GEMELAS_COMPONENTS : [r.slug];
+    const nights: string[] = [];
+    const cur = new Date(r.check_in + "T00:00:00Z");
+    const end = new Date(r.check_out + "T00:00:00Z");
+    while (cur < end) {
+      const iso = cur.toISOString().slice(0, 10);
+      if (iso >= monthStart && iso < nextMonthStart) nights.push(iso);
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+    for (const t of targets) {
+      const set = (directNights[t] ??= new Set<string>());
+      for (const iso of nights) set.add(iso);
+    }
+  }
+
+  // Ocupación por propiedad: unión (Airbnb iCal ∪ D1) ∩ mes, deduplicada por fecha.
+  const occByProperty: Record<string, { pct: number | null; nights: number; sync: string }> = {};
+  await Promise.all(
+    propSlugs.map(async (slug) => {
+      const set = new Set<string>(directNights[slug] ?? []);
+      let sync = "unavailable";
+      try {
+        const bd = await getBlockedDates(slug, env);
+        if (bd) {
+          sync = bd.airbnbSyncStatus;
+          for (const d of bd.blocked) if (d >= monthStart && d < nextMonthStart) set.add(d);
+        }
+      } catch {
+        /* fail-soft: ocupación solo con lo directo */
+      }
+      occByProperty[slug] = {
+        nights: set.size,
+        pct: daysInMonth > 0 ? Math.round((set.size / daysInMonth) * 100) : null,
+        sync,
+      };
+    }),
+  );
+
+  // Ingresos + conteo por propiedad desde la query D1.
+  const revBySlug = rowsOf<{ slug: string; revenue: number; reservas: number }>(revByProperty);
+  const revMap: Record<string, { revenue: number; reservas: number }> = {};
+  for (const r of revBySlug) revMap[r.slug] = { revenue: r.revenue, reservas: r.reservas };
+
+  const porPropiedad = propSlugs.map((slug) => ({
+    slug,
+    revenueMonth: Math.round(revMap[slug]?.revenue ?? 0),
+    reservasMonth: revMap[slug]?.reservas ?? 0,
+    occupancyPct: occByProperty[slug]?.pct ?? null,
+    nightsBooked: occByProperty[slug]?.nights ?? 0,
+    airbnbSync: occByProperty[slug]?.sync ?? "unknown",
+  }));
+  // Slugs con ingreso que NO son de los 6 canónicos (p.ej. paquete gemelas): no esconder plata.
+  for (const r of revBySlug) {
+    if (!propSlugs.includes(r.slug)) {
+      porPropiedad.push({ slug: r.slug, revenueMonth: Math.round(r.revenue), reservasMonth: r.reservas, occupancyPct: null, nightsBooked: 0, airbnbSync: "n/a" });
+    }
   }
 
   // ── Normalizar ──────────────────────────────────────────────────────────────
@@ -224,6 +315,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         month: aiIncome("month"),
       },
     },
+    // Ocupación + ingresos por propiedad del mes calendario HN (ver bloque arriba).
+    porPropiedad,
+    mes: { prefix: monthPrefix, dias: daysInMonth },
     health: {
       lastInAt: strOf(lastIn, "t"),
       lastOutAt: strOf(lastOut, "t"),
