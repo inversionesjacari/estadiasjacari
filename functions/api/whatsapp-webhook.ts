@@ -27,7 +27,7 @@ import { normalizePhone, isValidE164 } from "../_lib/phone";
 import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
-import { matchBotRule, buildEscalationReply, findActiveReservation } from "../_lib/whatsapp-bot";
+import { matchBotRule, buildEscalationReply, findActiveReservation, type ActiveReservation } from "../_lib/whatsapp-bot";
 import { sendEscalationEmail } from "../_lib/whatsapp-escalation";
 import { verifyMetaSignature } from "../_lib/meta-signature";
 import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
@@ -855,16 +855,28 @@ async function handleMediaMessage(
         } catch { /* best-effort */ }
         if (res.escalate) {
           await escalateToOwner(res.ruleName);
-          // Push a César + socio (email + WhatsApp) — cubre la reserva 'pending'
-          // creada por un comprobante que no pasó la verificación automática.
+          // Push a César + socio (email + WhatsApp). Armamos la reserva con los datos del
+          // ESTADO (property/fechas/huésped) — NO con findActiveReservation, que no encuentra
+          // las reservas 'pending' a futuro → así el aviso lleva los datos reales para verificar.
           try {
-            const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
+            const reservation: ActiveReservation | null =
+              state.data.property && state.data.checkIn && state.data.checkOut
+                ? {
+                    id: 0,
+                    property_slug: state.data.property,
+                    check_in: state.data.checkIn,
+                    check_out: state.data.checkOut,
+                    guest_name: contactName ?? null,
+                    guest_email: null,
+                    guest_phone_normalized: fromE164,
+                  }
+                : null;
             await sendEscalationEmail(
               {
-                guestMessage: res.summary || "Comprobante de transferencia para revisar",
+                guestMessage: "Mandó comprobante de transferencia — verificá el pago en el banco y confirmá la reserva en el inbox.",
                 guestPhone: fromE164,
                 reservation,
-                reason: "Comprobante de transferencia — verificá el pago y confirmá la reserva",
+                reason: "💳 Comprobante de transferencia para verificar",
               },
               {
                 RESEND_API_KEY: env.RESEND_API_KEY ?? "",
