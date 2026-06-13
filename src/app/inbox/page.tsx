@@ -572,13 +572,22 @@ function splitPendientes(conversations: Conversation[]): {
   return { paused, escalated, awaitingPay, unanswered, total: paused.length + escalated.length + awaitingPay.length + unanswered.length };
 }
 
+type PendingReservation = {
+  id: number; property_slug: string; check_in: string; check_out: string;
+  guest_name: string | null; guest_phone: string | null; amount_usd: number | null;
+  source: string; created_at: string;
+};
+
 function PendientesColumn({
   conversations, onSelect, onDismiss, selectedPhone, variant = "sidebar", onClose,
+  pendingReservations, onConfirmReservation,
 }: {
   conversations: Conversation[]; onSelect: (phone: string) => void; onDismiss: (phone: string) => void; selectedPhone: string | null;
   variant?: "sidebar" | "overlay"; onClose?: () => void;
+  pendingReservations: PendingReservation[]; onConfirmReservation: (id: number) => void;
 }) {
   const { paused, escalated, awaitingPay, unanswered, total } = splitPendientes(conversations);
+  const allTotal = total + pendingReservations.length;
 
   return (
     <aside className={variant === "overlay"
@@ -588,14 +597,32 @@ function PendientesColumn({
         <div>
           <h3 className="font-bold text-primary dark:text-slate-100 text-sm flex items-center gap-1.5">
             📌 Pendientes
-            {total > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{total}</span>}
+            {allTotal > 0 && <span className="text-[10px] font-bold text-white bg-secondary rounded-full px-1.5 py-0.5">{allTotal}</span>}
           </h3>
-          <p className="text-[11px] text-muted dark:text-slate-400">{total === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
+          <p className="text-[11px] text-muted dark:text-slate-400">{allTotal === 0 ? "todo al día 🌴" : "lo que requiere tu atención"}</p>
         </div>
         {variant === "overlay" && onClose && (
           <button type="button" onClick={onClose} aria-label="Cerrar Pendientes" className="shrink-0 -mt-0.5 px-2 py-1 text-xl leading-none text-muted dark:text-slate-400 hover:text-primary dark:hover:text-slate-100 rounded-lg">✕</button>
         )}
       </div>
+
+      {pendingReservations.length > 0 && (
+        <PendienteGroup label="✅ Reservas por verificar" count={pendingReservations.length} color="text-emerald-700 dark:text-emerald-400">
+          {pendingReservations.map((r) => (
+            <div key={r.id} className="px-3 py-2.5 border-b border-gray-100 dark:border-slate-800 border-l-4 border-l-emerald-400 bg-emerald-50/60 dark:bg-emerald-950/30">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold text-sm text-primary dark:text-slate-100 truncate">{r.guest_name || (r.guest_phone ? formatPhone(r.guest_phone) : "Huésped")}</span>
+                <span className="text-[10px] text-muted dark:text-slate-400 whitespace-nowrap">{r.check_in}</span>
+              </div>
+              <p className="text-[11px] text-secondary mt-0.5 truncate">{PROPERTY_NAMES[r.property_slug] ?? r.property_slug} · {r.check_in} → {r.check_out}</p>
+              <p className="text-[11px] text-muted dark:text-slate-400 mt-0.5">💳 Transferencia{typeof r.amount_usd === "number" ? ` · ~$${Math.round(r.amount_usd)}` : ""} · verificá el pago en el banco</p>
+              <button type="button" onClick={() => onConfirmReservation(r.id)} className="mt-2 w-full text-[12px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg py-1.5 transition">
+                ✅ Confirmar reserva
+              </button>
+            </div>
+          ))}
+        </PendienteGroup>
+      )}
 
       {paused.length > 0 && (
         <PendienteGroup label="⏸ En pausa · te esperan" count={paused.length} color="text-amber-700 dark:text-amber-400">
@@ -626,7 +653,7 @@ function PendientesColumn({
         </PendienteGroup>
       )}
 
-      {total === 0 && (
+      {allTotal === 0 && (
         <div className="flex-1 flex items-center justify-center px-6 text-center">
           <p className="text-muted dark:text-slate-400 text-sm">No hay nada pendiente.<br />Todo bajo control. 🌴</p>
         </div>
@@ -647,6 +674,7 @@ export default function InboxPage() {
   // caption opcional. El envío real va por /api/inbox/send-media (multipart).
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [loadingConv, setLoadingConv] = useState(false);
+  const [pendingReservations, setPendingReservations] = useState<PendingReservation[]>([]);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pendientesOpen, setPendientesOpen] = useState(false); // panel Pendientes en celular (overlay)
@@ -796,6 +824,35 @@ export default function InboxPage() {
     }
   }, []);
 
+  // Reservas por verificar (transferencias pendientes de confirmar).
+  const fetchPendingReservations = useCallback(async (): Promise<void> => {
+    try {
+      const resp = await fetch("/api/inbox/reservations-pending", { credentials: "include" });
+      if (!resp.ok) return;
+      const data = (await resp.json()) as { ok: boolean; reservations?: PendingReservation[] };
+      if (data.ok) setPendingReservations(data.reservations ?? []);
+    } catch { /* opcional: si falla, el resto del inbox sigue */ }
+  }, []);
+
+  // Confirmar una reserva pendiente → a partir de ahí el cron de check-in le
+  // entrega la info al huésped sola el día de entrada.
+  const confirmReservation = useCallback(async (id: number): Promise<void> => {
+    if (!window.confirm("¿Confirmar esta reserva? El huésped recibirá la info de check-in el día de entrada.")) return;
+    try {
+      const resp = await fetch("/api/inbox/reservation-confirm", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; confirmed?: boolean };
+      if (data.ok) setPendingReservations((prev) => prev.filter((r) => r.id !== id));
+      else window.alert("No se pudo confirmar. Reintentá.");
+    } catch {
+      window.alert("Error de red al confirmar.");
+    }
+  }, []);
+
   // Cargar las respuestas rápidas (plantillas) del operador.
   const fetchQuickReplies = useCallback(async (): Promise<void> => {
     try {
@@ -927,8 +984,10 @@ export default function InboxPage() {
   // ── Polling cada 10s ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!authenticated) return;
+    fetchPendingReservations();
     const id = setInterval(() => {
       fetchConversations();
+      fetchPendingReservations();
       if (selectedPhone) loadMessages(selectedPhone);
     }, 10000);
     return () => clearInterval(id);
@@ -1270,7 +1329,7 @@ export default function InboxPage() {
     );
   }
 
-  const pendCount = splitPendientes(conversations).total;
+  const pendCount = splitPendientes(conversations).total + pendingReservations.length;
 
   return (
     <div className="h-screen bg-bg dark:bg-slate-950 flex flex-col overflow-hidden">
@@ -1832,6 +1891,8 @@ export default function InboxPage() {
           onSelect={selectConversation}
           onDismiss={handleDismiss}
           selectedPhone={selectedPhone}
+          pendingReservations={pendingReservations}
+          onConfirmReservation={confirmReservation}
         />
 
         {/* Pendientes en celular: overlay a pantalla completa (la columna de arriba es hidden lg:flex) */}
@@ -1844,6 +1905,8 @@ export default function InboxPage() {
               onSelect={(p) => { setPendientesOpen(false); selectConversation(p); }}
               onDismiss={handleDismiss}
               selectedPhone={selectedPhone}
+              pendingReservations={pendingReservations}
+              onConfirmReservation={confirmReservation}
             />
           </div>
         )}
