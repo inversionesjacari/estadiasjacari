@@ -10,7 +10,7 @@
 //
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { getProperty } from "@/data/properties";
+import { getProperty, properties } from "@/data/properties";
 
 interface Reservation {
   id: number;
@@ -31,6 +31,7 @@ const SOURCE_LABEL: Record<string, string> = {
   website: "Web",
   whatsapp_bot: "WhatsApp",
   whatsapp_transfer: "Transferencia",
+  manual: "Manual",
 };
 
 function sourceLabel(s: string): string {
@@ -75,6 +76,14 @@ const COLUMNS: { key: SortKey | null; label: string; align?: "right" }[] = [
   { key: null, label: "" },
 ];
 
+const EMPTY_FORM = {
+  guest_name: "", guest_phone: "", property_slug: "",
+  check_in: "", check_out: "", guest_count: "", amount_usd: "", status: "confirmed",
+};
+
+const INPUT_CLS =
+  "w-full px-3 py-2 bg-white/[0.04] border border-white/10 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50";
+
 export default function RegistroPage() {
   const [authed, setAuthed] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -84,6 +93,10 @@ export default function RegistroPage() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("check_in");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
 
   const fetchData = useCallback(async (): Promise<void> => {
     try {
@@ -197,6 +210,36 @@ export default function RegistroPage() {
     URL.revokeObjectURL(url);
   }, [filtered]);
 
+  const submitAdd = useCallback(async (): Promise<void> => {
+    setFormError("");
+    if (!form.property_slug) { setFormError("Elegí una propiedad."); return; }
+    if (!form.check_in || !form.check_out) { setFormError("Poné la llegada y la salida."); return; }
+    if (form.check_out <= form.check_in) { setFormError("La salida tiene que ser después de la llegada."); return; }
+    if (!form.guest_name.trim() && !form.guest_phone.trim()) { setFormError("Poné al menos el nombre o el teléfono."); return; }
+    setSaving(true);
+    try {
+      const resp = await fetch("/api/inbox/reservation-create", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (resp.status === 401) { setAuthed(false); return; }
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (data.ok) {
+        setShowAdd(false);
+        setForm(EMPTY_FORM);
+        fetchData();
+      } else {
+        setFormError(data.error || "No se pudo guardar.");
+      }
+    } catch {
+      setFormError("Error de red.");
+    } finally {
+      setSaving(false);
+    }
+  }, [form, fetchData]);
+
   const confirmedCount = reservations.filter((r) => r.status === "confirmed").length;
   const pendingCount = reservations.filter((r) => r.status === "pending").length;
 
@@ -226,6 +269,14 @@ export default function RegistroPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => { setForm(EMPTY_FORM); setFormError(""); setShowAdd(true); }}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"
+            title="Cargar a mano una reserva (directa, o una que el bot no registró)"
+          >
+            ➕ Agregar
+          </button>
           <button
             type="button"
             onClick={exportCsv}
@@ -342,6 +393,86 @@ export default function RegistroPage() {
           Incluye reservas confirmadas (pagadas) y con depósito/por verificar. El botón exporta lo que estés viendo (con los filtros aplicados).
         </p>
       </main>
+
+      {showAdd && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => { if (!saving) setShowAdd(false); }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0c1322] p-5 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white">➕ Agregar reserva</h2>
+            <p className="text-[12px] text-slate-400 mb-4">
+              Reservas directas, o una que el bot hizo y no quedó registrada. Bloquea el calendario para esas fechas.
+            </p>
+
+            <label className="block text-[12px] text-slate-400 mb-1">Nombre del huésped</label>
+            <input value={form.guest_name} onChange={(e) => setForm((f) => ({ ...f, guest_name: e.target.value }))} placeholder="Ej: Sandra Lagos" className={INPUT_CLS} />
+
+            <label className="block text-[12px] text-slate-400 mb-1 mt-3">Teléfono (WhatsApp)</label>
+            <input value={form.guest_phone} onChange={(e) => setForm((f) => ({ ...f, guest_phone: e.target.value }))} placeholder="Ej: 9621-2568" className={INPUT_CLS} />
+
+            <label className="block text-[12px] text-slate-400 mb-1 mt-3">Propiedad</label>
+            <select value={form.property_slug} onChange={(e) => setForm((f) => ({ ...f, property_slug: e.target.value }))} className={INPUT_CLS}>
+              <option value="">Elegí una propiedad…</option>
+              {properties.map((p) => (
+                <option key={p.slug} value={p.slug}>{p.name}</option>
+              ))}
+            </select>
+
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Llegada</label>
+                <input type="date" value={form.check_in} onChange={(e) => setForm((f) => ({ ...f, check_in: e.target.value }))} className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Salida</label>
+                <input type="date" value={form.check_out} onChange={(e) => setForm((f) => ({ ...f, check_out: e.target.value }))} className={INPUT_CLS} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Personas</label>
+                <input type="number" min="1" value={form.guest_count} onChange={(e) => setForm((f) => ({ ...f, guest_count: e.target.value }))} placeholder="—" className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className="block text-[12px] text-slate-400 mb-1">Monto USD</label>
+                <input type="number" min="0" value={form.amount_usd} onChange={(e) => setForm((f) => ({ ...f, amount_usd: e.target.value }))} placeholder="—" className={INPUT_CLS} />
+              </div>
+            </div>
+
+            <label className="block text-[12px] text-slate-400 mb-1 mt-3">Estado del pago</label>
+            <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} className={INPUT_CLS}>
+              <option value="confirmed">Pagado (confirmada)</option>
+              <option value="pending">Pendiente / depósito</option>
+            </select>
+
+            {formError && <p className="text-[12px] text-rose-300 mt-3">{formError}</p>}
+
+            <div className="flex gap-2 mt-5">
+              <button
+                type="button"
+                onClick={submitAdd}
+                disabled={saving}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-semibold border border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-50"
+              >
+                {saving ? "Guardando…" : "Guardar reserva"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAdd(false)}
+                disabled={saving}
+                className="px-3 py-2 rounded-lg text-sm border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
