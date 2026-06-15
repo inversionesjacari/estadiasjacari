@@ -38,7 +38,7 @@ import {
   buildTransferMessageUSD,
   isUsdRequest,
 } from "./bank-transfer";
-import { getPropertyPhotos, getGalleryUrl } from "./property-photos";
+import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
 import { T, asLang } from "./i18n";
 import type { QuoteData } from "./quote-extractor";
@@ -162,6 +162,16 @@ export function isPhotoRequest(text: string): boolean {
     /\b(photo|photos|picture|pictures|images?|social media|instagram|facebook)\b/.test(t) ||
     /(see|show).{0,15}(house|place|property|villa|apartment|room)/.test(t)
   );
+}
+
+/**
+ * ¿Pide fotos específicamente de las HABITACIONES / dormitorios (no la sala/cocina)?
+ * Cubre el typo común "abitaciones". (Caso real 14-jun: pidió "fotos de las
+ * habitaciones" y el bot le mandó la sala/tarjeta.)
+ */
+export function isBedroomPhotoRequest(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return /\b(habitacion|habitaciones|abitacion|abitaciones|dormitorio|dormitorios|recamara|recamaras|las camas|los cuartos|el cuarto|bedroom|bedrooms)\b/.test(t);
 }
 
 // Redes y web OFICIALES de Estadías Jacarí — los MISMOS del footer del sitio
@@ -625,9 +635,24 @@ export async function handleQuoteIncoming(
   if (isPhotoRequest(text) && existing) {
     const photoSlug = propertyForPhotos(text, existing);
     if (photoSlug) {
+      const inPayment = existing.state === "awaiting_payment_method";
+      // Pidió específicamente las HABITACIONES y tenemos fotos de dormitorios → mandamos
+      // ESAS (no la tarjeta de marketing que abre con la sala). Caso real 14-jun: pidió
+      // "fotos de las habitaciones" y le caía la sala. Si no hay fotos de dormitorios
+      // para esa propiedad (ej. Villa B11), cae a las fotos normales de abajo.
+      const bedroomPhotos = isBedroomPhotoRequest(text) ? getBedroomPhotos(photoSlug) : [];
+      if (bedroomPhotos.length > 0) {
+        const intro = lang === "en" ? "🛏️ Here are the bedrooms 📸" : "🛏️ Acá te van las habitaciones 📸";
+        return {
+          reply:           intro + T.photosGallery(lang, getGalleryUrl(photoSlug)) + (inPayment ? T.resumePaymentTail(lang) : ""),
+          images:          bedroomPhotos,
+          escalateToOwner: false,
+          ruleName:        inPayment ? "bedroom_photos_during_payment" : "bedroom_photos_sent",
+          tokensUsed:      0,
+        };
+      }
       const photos = getPropertyPhotos(photoSlug);
       if (photos.length > 0) {
-        const inPayment = existing.state === "awaiting_payment_method";
         const card =
           buildPropertyCard(photoSlug, lang) ||
           T.photosIntro(lang) + T.photosGallery(lang, getGalleryUrl(photoSlug));
@@ -1145,6 +1170,20 @@ async function gatherQuoteData(
 
   // ── Pide fotos + sabemos la propiedad → enviar fotos + link a galería ─────
   if (botResult.intent === "requesting_photos" && mergedData.property) {
+    // Pidió específicamente las HABITACIONES → fotos de dormitorios (si hay para esa
+    // propiedad; si no —ej. Villa B11— cae a las fotos normales de abajo).
+    const bedroomPhotos = isBedroomPhotoRequest(text) ? getBedroomPhotos(mergedData.property) : [];
+    if (bedroomPhotos.length > 0) {
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      const intro = lang === "en" ? "🛏️ Here are the bedrooms 📸" : "🛏️ Acá te van las habitaciones 📸";
+      return {
+        reply:           intro + T.photosGallery(lang, getGalleryUrl(mergedData.property)),
+        images:          bedroomPhotos,
+        escalateToOwner: false,
+        ruleName:        "bedroom_photos_sent",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
     const photos = getPropertyPhotos(mergedData.property);
     if (photos.length > 0) {
       // Mantener el state con lo que sepamos para seguir el flujo después

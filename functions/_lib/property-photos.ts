@@ -28,17 +28,21 @@ const PHOTOS_TO_SEND = 4;
  * de Villa B11 es la 06, la de Casa Marea la 11 y la de La Florida la 03.
  * Si cambian las fotos en el sitio, actualizar acá también (fuente: properties.ts).
  */
+// `bedrooms` = fotos de DORMITORIOS (las que tienen cama), verificadas a ojo
+// (2026-06-14). Sirven cuando el cliente pide específicamente "fotos de las
+// habitaciones". OJO Villa B11: su set de fotos NO incluye dormitorios todavía
+// (son sala/comedor/cocina/exterior) → `bedrooms: []`; falta subirlas al sitio.
 const PHOTO_CONFIG: Record<
   PropertySlug,
-  { folder: string; ext: string; cover: string[] }
+  { folder: string; ext: string; cover: string[]; bedrooms: string[] }
 > = {
-  "villa-b11-palma-real": { folder: "villa-b11", ext: "jpg", cover: ["06", "15", "01", "02"] },
-  "casa-brisa": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"] },
-  "casa-marea": { folder: "casa-marea", ext: "jpg", cover: ["11", "12", "10", "02"] },
-  "centro-morazan": { folder: "centro-morazan", ext: "jpg", cover: ["01", "02", "03", "04"] },
-  "casa-lara-townhouse": { folder: "casa-lara-townhouse", ext: "jpg", cover: ["01", "02", "03", "04"] },
-  "la-florida": { folder: "la-florida", ext: "jpg", cover: ["03", "05", "02", "04"] },
-  "las-gemelas-tela": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"] }, // gemelas → fotos de Casa Brisa
+  "villa-b11-palma-real": { folder: "villa-b11", ext: "jpg", cover: ["06", "15", "01", "02"], bedrooms: [] },
+  "casa-brisa": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"], bedrooms: ["04", "05"] },
+  "casa-marea": { folder: "casa-marea", ext: "jpg", cover: ["11", "12", "10", "02"], bedrooms: ["14", "02", "15", "07"] },
+  "centro-morazan": { folder: "centro-morazan", ext: "jpg", cover: ["01", "02", "03", "04"], bedrooms: ["01", "09", "08"] },
+  "casa-lara-townhouse": { folder: "casa-lara-townhouse", ext: "jpg", cover: ["01", "02", "03", "04"], bedrooms: ["01", "09"] },
+  "la-florida": { folder: "la-florida", ext: "jpg", cover: ["03", "05", "02", "04"], bedrooms: ["03", "04"] },
+  "las-gemelas-tela": { folder: "casa-brisa", ext: "png", cover: ["01", "02", "03", "04"], bedrooms: ["04", "05"] }, // gemelas → fotos de Casa Brisa
 };
 
 /**
@@ -49,6 +53,20 @@ export function getPropertyPhotos(slug: string): string[] {
   const cfg = PHOTO_CONFIG[slug as PropertySlug];
   if (!cfg) return [];
   return cfg.cover
+    .slice(0, PHOTOS_TO_SEND)
+    .map((n) => `${SITE_BASE}/images/${cfg.folder}/${n}.${cfg.ext}`);
+}
+
+/**
+ * URLs de las fotos de DORMITORIOS de una propiedad (las que tienen cama), para
+ * cuando el cliente pide específicamente "fotos de las habitaciones". Devuelve []
+ * si no tenemos fotos de habitaciones para ese slug (ej. Villa B11) → el caller
+ * cae a las fotos normales.
+ */
+export function getBedroomPhotos(slug: string): string[] {
+  const cfg = PHOTO_CONFIG[slug as PropertySlug];
+  if (!cfg) return [];
+  return cfg.bedrooms
     .slice(0, PHOTOS_TO_SEND)
     .map((n) => `${SITE_BASE}/images/${cfg.folder}/${n}.${cfg.ext}`);
 }
