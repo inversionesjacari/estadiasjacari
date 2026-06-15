@@ -278,6 +278,21 @@ export async function runConversationalBot(
 // Construcción de prompts
 // ─────────────────────────────────────────────────────────────────────────────
 
+const MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const DIAS_SEMANA_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+/**
+ * "2026-06-14" → "sábado 14 de junio de 2026". Le damos al LLM la fecha de hoy con
+ * NOMBRE de mes (no solo ISO) porque razona pésimo comparando meses en YYYY-MM-DD:
+ * daba "17 de julio" por pasado estando en junio. Con "junio" vs "julio" lo compara bien.
+ */
+function fechaEnPalabras(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return `${DIAS_SEMANA_ES[dow]} ${d} de ${MESES_ES[m - 1]} de ${y}`;
+}
+
 function buildSystemPrompt(
   todayIso: string,
   kbText: string,
@@ -285,7 +300,7 @@ function buildSystemPrompt(
 ): string {
   const knownData = summarizeKnownData(previousData);
   return `Eres el asistente virtual de *Estadías Jacarí*, empresa hondureña de alquileres turísticos. Atiendes consultas de clientes potenciales vía WhatsApp.
-Hoy es ${todayIso} (zona horaria Honduras, GMT-6).
+Hoy es ${fechaEnPalabras(todayIso)} (${todayIso}, zona horaria Honduras, GMT-6). Usá ESTA fecha como referencia para TODO cálculo de fechas y meses.
 
 ${kbText}
 
@@ -386,7 +401,9 @@ Cuando tengas **propiedad + fechas + huéspedes** → intent "providing_data" co
 - Si el cliente hace una pregunta durante el flujo, respondéla y luego retomá donde quedaste.
 
 ### Extraer datos de cotización
-- checkIn / checkOut: YYYY-MM-DD. Relativo a hoy (${todayIso}). "este fin de semana" = próximo viernes-domingo. "hoy" = ${todayIso}.
+- checkIn / checkOut: YYYY-MM-DD. Relativo a hoy (${todayIso}). "este fin de semana" = próximo viernes-domingo. "hoy" = ${todayIso}. "mañana" = hoy + 1 día. "pasado mañana" = hoy + 2 días. "en X días" = hoy + X días.
+- 📅 Fecha EXPLÍCITA con mes ("17 de julio", "del 17 al 19 de julio", "5 de agosto"): es una fecha CONCRETA, usala. Año correcto: si ese mes es el de HOY o uno POSTERIOR en el año → ESTE año; si ese mes ya pasó este año → el PRÓXIMO año. Para saber si una fecha es futura o pasada, compará con hoy (${todayIso}): año mayor = futuro; mismo año y mes mayor = futuro; mismo mes y día mayor = futuro.
+- ⛔⛔ JAMÁS le digas a un cliente que su fecha "ya pasó" / "es un día que ya pasó" si en realidad es FUTURA. Una fecha está en el PASADO solo si es ESTRICTAMENTE anterior a hoy (${todayIso}). Error gravísimo a EVITAR: si hoy es junio y el cliente dice "17 de julio", JULIO VIENE DESPUÉS DE JUNIO (es el mes que viene) → la fecha es FUTURA y válida: seguí con ella TAL CUAL, NO la "corrijas" a otro mes ni digas que pasó. Confundir el mes y rechazar una fecha buena espanta al cliente.
 - Días de la semana ("el domingo", "el lunes", "este sábado") = la PRÓXIMA ocurrencia de ese día contando desde hoy (${todayIso}), NUNCA una fecha ya pasada. Ej.: si dicen "viajo el domingo y la cita es el lunes" → check-in = ese próximo domingo, check-out = ese próximo lunes. Si el día nombrado es hoy mismo, asumí la próxima semana salvo que digan "hoy".
 - ⛔ NUNCA pongas un checkIn o checkOut ANTERIOR a hoy (${todayIso}). Si no podés resolver la fecha con certeza desde lo que dijo el cliente, NO inventes ni adivines un rango (ni lo confirmes como "disponible"/"no disponible"): preguntá la fecha exacta ("¿para qué día exactamente?"). Una fecha mal resuelta hace que el sistema diga "no disponible" sobre algo que SÍ lo está y rompe la confianza del cliente.
 - guests: personas que OCUPAN CUPO (adultos + niños). Los BEBÉS (menores de ~2 años, que no ocupan cama) NO se cuentan para la capacidad. Ej: "8 adultos, 3 niños y 2 bebés" → guests = 11.
