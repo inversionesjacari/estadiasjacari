@@ -1415,6 +1415,12 @@ export default function InboxPage() {
           </button>
           {/* Secundarios: inline en escritorio; en celular van al menú ⋯ */}
           <a
+            href="/inbox/reservas"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+          >
+            📅 Reservas
+          </a>
+          <a
             href="/inbox/operacion"
             className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
           >
@@ -1460,6 +1466,7 @@ export default function InboxPage() {
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1">
+                  <a href="/inbox/reservas" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📅 Reservas</a>
                   <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
                   <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
                   <a href="/inbox/registro" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📋 Registro</a>
@@ -1620,6 +1627,10 @@ export default function InboxPage() {
                 const conv = conversations.find((c) => c.phone === selectedPhone);
                 const guestName = conv?.reservation?.guestName ?? conv?.contactName ?? null;
                 const paused = conv?.botPaused ?? false;
+                // Sin conversación en la lista (no hay mensajes) → p.ej. una reserva
+                // de la web por PayPal abierta con el botón "Chat". NO mostrar "Bot
+                // activo" (no hay nada que el bot esté atendiendo): decir la verdad.
+                const noMessages = !conv;
                 return (
                   <>
                     <div className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-4 sm:px-6 py-3 flex items-center gap-3">
@@ -1653,20 +1664,25 @@ export default function InboxPage() {
                     {/* Barra de estado del bot — ancho completo (verde = activo / ámbar = en pausa) */}
                     <div
                       className="w-full flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-2 border-b"
-                      style={paused
-                        ? { background: "#fef3c7", borderColor: "#fcd34d" }
-                        : { background: "#dcfce7", borderColor: "#86efac" }}
+                      style={noMessages
+                        ? { background: "#f1f5f9", borderColor: "#cbd5e1" }
+                        : paused
+                          ? { background: "#fef3c7", borderColor: "#fcd34d" }
+                          : { background: "#dcfce7", borderColor: "#86efac" }}
                     >
                       <span
                         className="flex items-center gap-2 text-[13px] font-bold whitespace-nowrap"
-                        style={{ color: paused ? "#92400e" : "#166534" }}
+                        style={{ color: noMessages ? "#475569" : paused ? "#92400e" : "#166534" }}
                       >
                         <span
-                          className={`w-2.5 h-2.5 rounded-full ${paused ? "" : "animate-pulse"}`}
-                          style={{ background: paused ? "#d97706" : "#16a34a" }}
+                          className={`w-2.5 h-2.5 rounded-full ${noMessages || paused ? "" : "animate-pulse"}`}
+                          style={{ background: noMessages ? "#94a3b8" : paused ? "#d97706" : "#16a34a" }}
                         />
-                        {paused ? "⏸ Bot en pausa · le respondés vos" : "🤖 Bot activo · responde solo"}
+                        {noMessages
+                          ? "💬 Sin mensajes aún · escribile para iniciar"
+                          : paused ? "⏸ Bot en pausa · le respondés vos" : "🤖 Bot activo · responde solo"}
                       </span>
+                      {!noMessages && (
                       <div className="flex items-center gap-2 shrink-0">
                         {!paused && (
                           <button
@@ -1688,6 +1704,7 @@ export default function InboxPage() {
                           {paused ? "Reactivar bot" : "Pausar bot"}
                         </button>
                       </div>
+                      )}
                     </div>
                   </>
                 );

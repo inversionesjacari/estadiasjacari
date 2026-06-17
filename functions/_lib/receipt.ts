@@ -205,7 +205,8 @@ export async function processTransferReceipt(args: {
         if (!overlap) {
           reservationId = await createTransferReservation({
             env, property, checkIn, checkOut, guestName, phone, status: "pending",
-            amountUsd: quote.depositUSD, guests, raw: r,
+            amountUsd: quote.depositUSD, totalHnl: quote.totalHNL,
+            paidHnl: typeof r.amount === "number" ? r.amount : 0, guests, raw: r,
             orderId: `transfer:${r.reference ?? `${phone}:${checkIn}`}`,
           });
           if (reservationId) { try { await clearState(phone, env.DB); } catch { /* best-effort */ } }
@@ -231,12 +232,18 @@ export async function processTransferReceipt(args: {
   const paidFull = typeof r.amount === "number" && r.amount >= quote.totalHNL - 1;
   const status = paidFull ? "confirmed" : "pending";
   const amountUsd = paidFull ? quote.totalUSD : quote.depositUSD;
+  // Contabilidad REAL en Lempiras (lo que el registro muestra): el total de la
+  // cotización + lo que pagó este comprobante. Así una transferencia sale en L con
+  // su depósito/saldo correctos desde el inicio (antes solo guardábamos amount_usd →
+  // el registro la mostraba en $ y como "Pagado" sin contabilizar — caso Sandra).
+  const totalHnl = quote.totalHNL;
+  const paidHnl = typeof r.amount === "number" ? r.amount : (paidFull ? quote.totalHNL : 0);
   const orderId = `transfer:${r.reference ?? `${phone}:${checkIn}`}`;
   let reservationId: number | null = null;
 
   try {
     reservationId = await createTransferReservation({
-      env, property, checkIn, checkOut, guestName, phone, status, amountUsd, guests, raw: r, orderId,
+      env, property, checkIn, checkOut, guestName, phone, status, amountUsd, totalHnl, paidHnl, guests, raw: r, orderId,
     });
   } catch (err) {
     // Si la reserva no se pudo crear, NO confirmemos en falso → escalar.
@@ -269,17 +276,32 @@ export async function processTransferReceipt(args: {
 async function createTransferReservation(args: {
   env: ReceiptEnv; property: string; checkIn: string; checkOut: string;
   guestName: string | null; phone: string; status: string; amountUsd: number | null;
+  totalHnl: number | null; paidHnl: number | null;
   guests: number; raw: unknown; orderId: string;
 }): Promise<number | null> {
-  const ins = await args.env.DB.prepare(
-    `INSERT OR IGNORE INTO reservations
-       (property_slug, check_in, check_out, guest_name, guest_email, guest_phone,
-        guest_phone_normalized, paypal_order_id, amount_usd, source, status, raw_payload, guest_count)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'whatsapp_transfer', ?, ?, ?)`,
-  ).bind(
+  // Intento principal: con la contabilidad en Lempiras (schema 0030, ya aplicado).
+  // Si por algún motivo las columnas LPS no existieran, caemos al INSERT base para
+  // NO perder JAMÁS la reserva del huésped (es la ruta del dinero).
+  const baseCols = `(property_slug, check_in, check_out, guest_name, guest_email, guest_phone,
+        guest_phone_normalized, paypal_order_id, amount_usd, source, status, raw_payload, guest_count`;
+  const baseVals = [
     args.property, args.checkIn, args.checkOut, args.guestName, args.phone, args.phone,
     args.orderId, args.amountUsd || null, args.status, JSON.stringify(args.raw), args.guests,
-  ).run();
+  ];
+  let ins;
+  try {
+    ins = await args.env.DB.prepare(
+      `INSERT OR IGNORE INTO reservations
+         ${baseCols}, total_hnl, paid_hnl)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'whatsapp_transfer', ?, ?, ?, ?, ?)`,
+    ).bind(...baseVals, args.totalHnl, args.paidHnl ?? 0).run();
+  } catch {
+    ins = await args.env.DB.prepare(
+      `INSERT OR IGNORE INTO reservations
+         ${baseCols})
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'whatsapp_transfer', ?, ?, ?)`,
+    ).bind(...baseVals).run();
+  }
   // INSERT OR IGNORE: si paypal_order_id (UNIQUE) ya existía, changes=0 y last_row_id
   // NO es confiable (arrastra el rowid de otro insert). Solo hubo creación si changes>0.
   if ((ins.meta?.changes ?? 0) === 0) return null;

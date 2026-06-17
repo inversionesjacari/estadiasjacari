@@ -80,6 +80,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     webToday, webYesterday, webWeek, webNow, webTopPages, webSources, webTrend, airbnbIncome,
     qaFindings, qaLastRun,
     revByProperty,
+    failuresByIssue, traceByStage, escalationsByRule,
   ] = await Promise.all([
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= ${HN_DAY_START} GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT direction, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY direction`).all<{ direction: string; c: number }>().catch(() => ({ results: [] })),
@@ -131,6 +132,19 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
     // Ingresos + conteo por propiedad — reservas con llegada (check_in) en el mes calendario HN.
     db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COUNT(*) AS reservas FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; reservas: number }>().catch(() => ({ results: [] })),
+    // ── DASHBOARD DE CATEGORÍAS DE FALLO (error analysis) ─────────────────────
+    // Dónde falla el bot, agrupado, para arreglar la categoría más grande primero
+    // (en vez de reaccionar chat por chat). Todo fail-soft.
+    // (A) Hallazgos del QA agrupados por TIPO de problema (snapshot actual; el QA
+    //     reemplaza sus hallazgos en cada corrida). + cuántos son severidad alta.
+    db.prepare(`SELECT COALESCE(issue,'(sin categoría)') AS issue, COUNT(*) AS c, SUM(CASE WHEN severity='alta' THEN 1 ELSE 0 END) AS alta FROM bot_qa_findings GROUP BY issue ORDER BY c DESC, alta DESC LIMIT 10`).all<{ issue: string; c: number; alta: number }>().catch(() => ({ results: [] })),
+    // (B) Trazas técnicas del bot (últimos 7 días) por etapa: LLM_GLITCH (modelo
+    //     falló), THREW (excepción), DATE_PARSER_FIX (el parser corrigió una fecha
+    //     mal razonada por el LLM → mide cuánto trabajo está haciendo la red nueva).
+    db.prepare(`SELECT COALESCE(stage,'(sin etapa)') AS stage, COUNT(*) AS c FROM bot_trace WHERE at >= datetime('now','-7 days') GROUP BY stage ORDER BY c DESC`).all<{ stage: string; c: number }>().catch(() => ({ results: [] })),
+    // (C) Escalaciones / fallos (últimos 7 días) por REGLA determinística que los
+    //     disparó → muestra en qué punto el bot suelta al cliente a un humano.
+    db.prepare(`SELECT COALESCE(NULLIF(matched_rule,''),'(sin regla)') AS rule, COUNT(*) AS c FROM whatsapp_messages WHERE direction='out' AND created_at >= datetime('now','-7 days') AND (escalated=1 OR matched_rule='bot_failed') GROUP BY rule ORDER BY c DESC LIMIT 8`).all<{ rule: string; c: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Salud del LLM del bot: último error registrado por el webhook cuando el bot
@@ -352,6 +366,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         ? { ranAt: strOf(qaLastRun, "ran_at"), analyzed: numOf(qaLastRun, "analyzed"), found: numOf(qaLastRun, "found"), trigger: strOf(qaLastRun, "trigger") }
         : null,
       findings: rowsOf<{ id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string }>(qaFindings),
+    },
+    // Dónde falla el bot, agrupado (error analysis) → arreglar la categoría más
+    // grande primero. byIssue = snapshot del QA; byStage/byRule = últimos 7 días.
+    failures: {
+      byIssue: rowsOf<{ issue: string; c: number; alta: number }>(failuresByIssue),
+      byStage: rowsOf<{ stage: string; c: number }>(traceByStage),
+      byRule: rowsOf<{ rule: string; c: number }>(escalationsByRule),
+      escalationPct,
     },
   });
 };

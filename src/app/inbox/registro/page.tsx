@@ -75,6 +75,12 @@ function paymentBadge(r: Reservation): { text: string; cls: string; saldo: numbe
     if (paid > 0) return { text: `Depósito · falta ${fmtL(saldo)}`, cls: PAY_AMBER, saldo };
     return { text: "Sin pago", cls: PAY_ROSE, saldo };
   }
+  // Transferencia / alta manual SIN contabilidad en Lempiras: NO afirmar "Pagado"
+  // (engañoso — caso Sandra). Pedir cargar el total/pagado real con el botón 💲 Pago.
+  // Las de PayPal (web/airbnb/bot) sí se cobraron de verdad → ahí el status manda.
+  if (r.source === "whatsapp_transfer" || r.source === "manual") {
+    return { text: "Falta cargar pago", cls: PAY_AMBER, saldo: null };
+  }
   if (r.status === "confirmed") return { text: "Pagado", cls: PAY_GREEN, saldo: null };
   return { text: "Pendiente", cls: PAY_AMBER, saldo: null };
 }

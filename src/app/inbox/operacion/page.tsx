@@ -74,6 +74,15 @@ function monthLabel(prefix: string): string {
 // Se muestra al final del Centro de Control como bitácora visible del equipo.
 const CHANGELOG: { date: string; items: string[] }[] = [
   {
+    date: "15 jun 2026",
+    items: [
+      "Bot: las fechas ahora las resuelve CÓDIGO, no la IA — un parser determinístico entiende “mañana”, “17 de julio”, “4 noches” y nunca acepta una fecha pasada (mata la clase de bug que más nos hizo afinar). Blindado con una suite de 47 tests que corre antes de cada deploy.",
+      "Centro de Control: panel nuevo 📊 Categorías de fallo — muestra agrupado dónde falla el bot (tipo de problema del QA, trazas técnicas, y por qué regla escala a humano) para arreglar la categoría más grande primero, en vez de chat por chat.",
+      "Registro de reservas: las reservas por transferencia ahora se guardan en Lempiras (antes salían en $); y una reserva sin el pago cargado deja de decir “Pagado” en falso — muestra “Falta cargar pago” hasta que cargues total y pagado con 💲 Pago.",
+      "Inbox: una reserva de la web sin chat (pagada por PayPal, como un huésped de EE.UU.) ya no muestra “Bot activo” — ahora dice “Sin mensajes aún”, para no confundir.",
+    ],
+  },
+  {
     date: "13 jun 2026",
     items: [
       "Centro de Control: panel nuevo 🏘️ Métricas por propiedad — ocupación % del mes por casa (reservas directas + Airbnb vía iCal) e ingresos directos del mes, con totales. Por fin se ve, de un vistazo, qué propiedades están llenas y cuánto generan en directo.",
@@ -140,7 +149,22 @@ interface Metrics {
     lastRun: { ranAt: string | null; analyzed: number; found: number; trigger: string | null } | null;
     findings: { id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string | null }[];
   };
+  failures?: {
+    byIssue: { issue: string; c: number; alta: number }[];
+    byStage: { stage: string; c: number }[];
+    byRule: { rule: string; c: number }[];
+    escalationPct: number;
+  };
 }
+
+// Etiquetas legibles para las trazas técnicas del bot (bot_trace.stage).
+// DATE_PARSER_FIX es "bueno": mide cuánto está corrigiendo el parser de fechas nuevo.
+const STAGE_META: Record<string, { label: string; hex: string }> = {
+  LLM_GLITCH: { label: "IA falló (glitch)", hex: "#f87171" },
+  THREW: { label: "Excepción", hex: "#ef4444" },
+  PRE_LLM: { label: "Pre-IA", hex: "#94a3b8" },
+  DATE_PARSER_FIX: { label: "Fechas corregidas por el parser", hex: "#34d399" },
+};
 
 // ── Helpers de tiempo / salud ────────────────────────────────────────────────
 function parseUtc(iso: string | null): number {
@@ -490,6 +514,72 @@ export default function OperacionPage() {
                   );
                 })}
               </ul>
+            )}
+          </Panel>
+        )}
+
+        {/* Categorías de fallo — error analysis: dónde falla el bot, agrupado */}
+        {m.failures && (m.failures.byIssue.length > 0 || m.failures.byStage.length > 0 || m.failures.byRule.length > 0) && (
+          <Panel
+            title="📊 Categorías de fallo"
+            subtitle="dónde falla el bot, agrupado — arreglá la categoría más grande primero"
+          >
+            {/* Por tipo de problema (snapshot del QA) */}
+            {m.failures.byIssue.length > 0 && (() => {
+              const max = Math.max(...m.failures!.byIssue.map((x) => x.c), 1);
+              return (
+                <div className="mb-4">
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Por tipo de problema (último QA)</p>
+                  <ul className="space-y-1.5">
+                    {m.failures.byIssue.map((x) => (
+                      <li key={x.issue} className="flex items-center gap-2">
+                        <span className="w-36 shrink-0 truncate text-[12px] text-slate-300" title={x.issue}>{x.issue}</span>
+                        <div className="flex-1 h-3 rounded bg-white/5 overflow-hidden">
+                          <div className="h-full rounded bg-cyan-500/60" style={{ width: `${Math.round((x.c / max) * 100)}%` }} />
+                        </div>
+                        <span className="w-6 text-right text-[12px] font-mono text-slate-200">{x.c}</span>
+                        {x.alta > 0 && <span className="shrink-0 text-[9px] font-bold uppercase rounded px-1 py-0.5" style={{ background: "#7f1d1d", color: "#fecaca" }}>{x.alta} alta</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
+
+            {/* Trazas técnicas (7 días) */}
+            {m.failures.byStage.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Trazas técnicas (7 días)</p>
+                <div className="flex flex-wrap gap-2">
+                  {m.failures.byStage.map((s) => {
+                    const meta = STAGE_META[s.stage] ?? { label: s.stage, hex: "#94a3b8" };
+                    return (
+                      <span key={s.stage} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[12px]">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.hex }} />
+                        <span className="text-slate-300">{meta.label}</span>
+                        <span className="font-mono font-bold text-slate-100">{s.c}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Escalaciones por regla (7 días) */}
+            {m.failures.byRule.length > 0 && (
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
+                  Escaló a humano por regla (7 días) · {m.failures.escalationPct}% de las consultas
+                </p>
+                <ul className="space-y-1">
+                  {m.failures.byRule.map((r) => (
+                    <li key={r.rule} className="flex items-center justify-between gap-2 text-[12px]">
+                      <span className="font-mono text-slate-400 truncate" title={r.rule}>{r.rule}</span>
+                      <span className="font-mono font-bold text-amber-300">{r.c}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </Panel>
         )}
