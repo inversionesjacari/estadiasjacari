@@ -11,9 +11,21 @@ import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
 // Fase 5 — WhatsApp Cloud API
 import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../_lib/whatsapp";
 import { normalizePhone, isValidE164 } from "../_lib/phone";
+// Sprint 1 — Templates operativos WhatsApp (limpieza + seguridad + huésped día)
+import {
+  sendCheckinDiaHuesped,
+  sendCheckinDiaLimpieza,
+  sendCheckinDiaSeguridad,
+  formatDateShortEs,
+} from "../_lib/whatsapp-templates";
+import { getCleaningContacts, getSecurityContacts } from "../_lib/property-contacts";
 // Auditoría Sesión 2 — B1 doble booking
 import { refundPayPalCapture } from "../_lib/paypal-refund";
 import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
+// Quote flow (bot WhatsApp con LLM) — para órdenes originadas vía WhatsApp
+import { parseWhatsAppCustomId } from "../_lib/paypal-checkout";
+import { sendTextMessage } from "../_lib/whatsapp";
+import { clearState as clearConversationState } from "../_lib/quote-state";
 
 //
 // POST /api/paypal-webhook
@@ -277,6 +289,128 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     switch (eventType) {
       case "PAYMENT.CAPTURE.COMPLETED": {
         const customId = resource.custom_id ?? "";
+
+        // ── Branch WhatsApp-originated: custom_id empieza con "wa:" ────────
+        // Estas órdenes las crea el quote flow del bot WhatsApp con formato
+        // "wa:<phone>|<slug>|<checkin>|<checkout>|<guests>". Manejo aparte
+        // del flujo del website para no contaminar y no romper retrocompat.
+        const waOrigin = parseWhatsAppCustomId(customId);
+        if (waOrigin) {
+          const amountUsd = parseFloat(resource.amount?.value ?? "0");
+          const givenName = resource.payer?.name?.given_name ?? "";
+          const surname = resource.payer?.name?.surname ?? "";
+          const guestName = `${givenName} ${surname}`.trim() || null;
+          const guestEmailPayer = resource.payer?.email_address ?? null;
+
+          try {
+            // INSERT reserva como confirmed (al igual que el flow del website)
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO reservations
+                 (property_slug, check_in, check_out, guest_name, guest_email,
+                  guest_phone, guest_phone_normalized, paypal_order_id,
+                  amount_usd, source, status, raw_payload, guest_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'whatsapp_bot', 'confirmed', ?, ?)`,
+            )
+              .bind(
+                waOrigin.propertySlug,
+                waOrigin.checkIn,
+                waOrigin.checkOut,
+                guestName,
+                guestEmailPayer,
+                waOrigin.phone,
+                waOrigin.phone,
+                orderId,
+                amountUsd || null,
+                rawBody,
+                waOrigin.guests,
+              )
+              .run();
+          } catch (dbErr) {
+            console.error(
+              "WA-origin: error insertando reserva:",
+              (dbErr as Error).message,
+            );
+          }
+
+          // Cerrar conversation_state del huésped (ya está pagado)
+          try {
+            await clearConversationState(waOrigin.phone, env.DB);
+          } catch {
+            /* best-effort */
+          }
+
+          // Enviar confirmación por WhatsApp
+          try {
+            if (env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+              await sendTextMessage(
+                waOrigin.phone,
+                `✅ ¡Pago confirmado! Tu reserva está lista.
+
+📅 Del ${waOrigin.checkIn} al ${waOrigin.checkOut}
+👥 ${waOrigin.guests} huésped${waOrigin.guests > 1 ? "es" : ""}
+
+📧 Te llegará la confirmación oficial por correo en un momento.
+📋 Un día antes de tu llegada recibirás por este mismo chat las instrucciones de check-in (WiFi, dirección, accesos).
+
+El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
+                env as { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
+              );
+            }
+          } catch (waErr) {
+            console.error(
+              "WA-origin: error enviando confirmación WhatsApp:",
+              (waErr as Error).message,
+            );
+          }
+
+          // Best-effort: si tenemos el email del payer, mandar correo de
+          // confirmación reusando el helper existente
+          if (guestEmailPayer && env.RESEND_API_KEY && env.EMAIL_FROM) {
+            try {
+              const nights = Math.max(
+                0,
+                Math.round(
+                  (new Date(waOrigin.checkOut + "T00:00:00Z").getTime() -
+                    new Date(waOrigin.checkIn + "T00:00:00Z").getTime()) /
+                    (1000 * 60 * 60 * 24),
+                ),
+              );
+              await sendReservationConfirmationEmail(
+                {
+                  guestName: guestName || "huésped",
+                  guestEmail: guestEmailPayer,
+                  guestPhone: waOrigin.phone,
+                  propertyName: waOrigin.propertySlug,
+                  checkInISO: waOrigin.checkIn,
+                  checkOutISO: waOrigin.checkOut,
+                  nights,
+                  amountUsd: amountUsd || 0,
+                  paypalOrderId: orderId,
+                },
+                {
+                  RESEND_API_KEY: env.RESEND_API_KEY,
+                  EMAIL_FROM: env.EMAIL_FROM,
+                  EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
+                },
+              );
+            } catch (emailErr) {
+              console.error(
+                "WA-origin: error enviando email confirmación:",
+                (emailErr as Error).message,
+              );
+            }
+          }
+
+          return logAndReturn(200, {
+            paypalEventId: webhookEvent.id,
+            eventType,
+            orderId,
+            verificationStatus: "SUCCESS",
+            processed: 1,
+          });
+        }
+        // ── Fin branch WhatsApp — sigue flow del website ──────────────────
+
         const parts = customId.split("|");
         // Formato esperado: slug|checkIn|checkOut|email|phone (5 partes).
         // Aceptamos también 4 partes para retrocompatibilidad con orders
@@ -651,6 +785,162 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
                       }
                     } catch (waErr) {
                       checkinMsg += ` · WhatsApp EXCEPCIÓN: ${(waErr as Error).message.slice(0, 150)}`;
+                    }
+                  }
+
+                  // ── Templates operativos staff + huésped día (Sprint 1) ─────
+                  // Mismo-día: además del template checkin_instructions arriba,
+                  // disparar los 3 templates operativos del día de check-in:
+                  //   - checkin_dia_huesped     (al huésped, "estamos a la orden")
+                  //   - checkin_dia_limpieza    (a cada contacto de limpieza)
+                  //   - checkin_dia_seguridad   (a cada contacto de seguridad)
+                  // Todo best-effort. Nunca bloquear ni fallar el webhook.
+                  if (env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+                    const waEnv = {
+                      WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+                      WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+                    };
+                    const opPropertyName =
+                      infoResult.info?.propertyName ||
+                      PROPERTY_NAMES[propertySlug] ||
+                      propertySlug;
+                    const opCity =
+                      ({
+                        "villa-b11-palma-real": "La Ceiba",
+                        "casa-brisa": "Tela",
+                        "casa-marea": "Tela",
+                        "centro-morazan": "Tegucigalpa",
+                        "casa-lara-townhouse": "Tegucigalpa",
+                        "la-florida": "Tegucigalpa",
+                      } as Record<string, string>)[propertySlug] || "Honduras";
+
+                    // ── Template 3: día llegada huésped ──────────────────────
+                    if (guestPhone) {
+                      try {
+                        const { e164: opGuestE164 } = normalizePhone(guestPhone);
+                        if (isValidE164(opGuestE164)) {
+                          const opGuestFirstName = (guestName || "huésped").split(" ")[0];
+                          const opGuestResult = await sendCheckinDiaHuesped(
+                            {
+                              toPhone: opGuestE164,
+                              guestName: opGuestFirstName,
+                              propertyName: opPropertyName,
+                              city: opCity,
+                            },
+                            waEnv,
+                          );
+                          await env.DB.prepare(
+                            `UPDATE reservations
+                                SET wa_arrival_guest_sent_at = ?,
+                                    wa_arrival_guest_error   = ?,
+                                    updated_at               = datetime('now')
+                              WHERE paypal_order_id = ?`,
+                          )
+                            .bind(
+                              opGuestResult.ok ? new Date().toISOString() : null,
+                              opGuestResult.ok ? null : (opGuestResult.error ?? "error desconocido").slice(0, 1000),
+                              orderId,
+                            )
+                            .run();
+                          checkinMsg += opGuestResult.ok
+                            ? ` · WA día-huésped enviado`
+                            : ` · WA día-huésped FALLÓ: ${opGuestResult.error?.slice(0, 100)}`;
+                        }
+                      } catch (opErr) {
+                        checkinMsg += ` · WA día-huésped EXC: ${(opErr as Error).message.slice(0, 100)}`;
+                      }
+                    }
+
+                    // ── Template 4: día llegada limpieza ─────────────────────
+                    try {
+                      const cleaners = await getCleaningContacts(propertySlug, env.DB);
+                      if (cleaners.length > 0) {
+                        const guestCountStr = "1"; // El webhook NO captura guest_count del Paypal; usar default. Mejorar cuando BookingWidget pase guest_count.
+                        const cleaningErrors: string[] = [];
+                        let cleaningAnyOk = false;
+                        for (const c of cleaners) {
+                          if (!isValidE164(c.phoneE164)) {
+                            cleaningErrors.push(`Teléfono inválido: ${c.phoneE164}`);
+                            continue;
+                          }
+                          const cRes = await sendCheckinDiaLimpieza(
+                            {
+                              toPhone: c.phoneE164,
+                              cleanerName: c.name,
+                              propertyName: opPropertyName,
+                              numberOfGuests: guestCountStr,
+                              checkOutDateEs: formatDateShortEs(checkOut),
+                            },
+                            waEnv,
+                          );
+                          if (cRes.ok) cleaningAnyOk = true;
+                          else cleaningErrors.push(`${c.name}: ${cRes.error}`);
+                        }
+                        await env.DB.prepare(
+                          `UPDATE reservations
+                              SET wa_arrival_cleaning_sent_at = ?,
+                                  wa_arrival_cleaning_error   = ?,
+                                  updated_at                  = datetime('now')
+                            WHERE paypal_order_id = ?`,
+                        )
+                          .bind(
+                            cleaningAnyOk ? new Date().toISOString() : null,
+                            cleaningErrors.length > 0 ? cleaningErrors.join(" | ").slice(0, 1000) : null,
+                            orderId,
+                          )
+                          .run();
+                        checkinMsg += cleaningAnyOk
+                          ? ` · WA limpieza (${cleaners.length} contactos)`
+                          : ` · WA limpieza FALLÓ`;
+                      }
+                    } catch (opErr) {
+                      checkinMsg += ` · WA limpieza EXC: ${(opErr as Error).message.slice(0, 100)}`;
+                    }
+
+                    // ── Template 5: día llegada seguridad ────────────────────
+                    try {
+                      const guards = await getSecurityContacts(propertySlug, env.DB);
+                      if (guards.length > 0) {
+                        const guestFullName = guestName || "Huésped sin nombre";
+                        const guestCountStr = "1"; // Igual que arriba, default.
+                        const secErrors: string[] = [];
+                        let secAnyOk = false;
+                        for (const g of guards) {
+                          if (!isValidE164(g.phoneE164)) {
+                            secErrors.push(`Teléfono inválido: ${g.phoneE164}`);
+                            continue;
+                          }
+                          const sRes = await sendCheckinDiaSeguridad(
+                            {
+                              toPhone: g.phoneE164,
+                              propertyName: opPropertyName,
+                              guestFullName,
+                              numberOfGuests: guestCountStr,
+                            },
+                            waEnv,
+                          );
+                          if (sRes.ok) secAnyOk = true;
+                          else secErrors.push(`${g.name}: ${sRes.error}`);
+                        }
+                        await env.DB.prepare(
+                          `UPDATE reservations
+                              SET wa_arrival_security_sent_at = ?,
+                                  wa_arrival_security_error   = ?,
+                                  updated_at                  = datetime('now')
+                            WHERE paypal_order_id = ?`,
+                        )
+                          .bind(
+                            secAnyOk ? new Date().toISOString() : null,
+                            secErrors.length > 0 ? secErrors.join(" | ").slice(0, 1000) : null,
+                            orderId,
+                          )
+                          .run();
+                        checkinMsg += secAnyOk
+                          ? ` · WA seguridad (${guards.length} contactos)`
+                          : ` · WA seguridad FALLÓ`;
+                      }
+                    } catch (opErr) {
+                      checkinMsg += ` · WA seguridad EXC: ${(opErr as Error).message.slice(0, 100)}`;
                     }
                   }
                 } else {
