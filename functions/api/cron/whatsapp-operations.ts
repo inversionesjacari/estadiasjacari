@@ -241,7 +241,6 @@ async function runMorningStaff(
   for (const r of reservations) {
     const propertyName = PROPERTY_NAMES[r.property_slug] || r.property_slug;
     const guestFullName = r.guest_name || "Huésped sin nombre";
-    const guestCount = String(r.guest_count ?? 1);
     const checkOutEs = formatDateShortEs(r.check_out);
 
     // ── Limpieza ──────────────────────────────────────────────────
@@ -278,7 +277,6 @@ async function runMorningStaff(
               toPhone: c.phoneE164,
               cleanerName: c.name,
               propertyName,
-              numberOfGuests: guestCount,
               checkOutDateEs: checkOutEs,
             },
             waEnv,
@@ -335,9 +333,8 @@ async function runMorningStaff(
           const res = await sendCheckinDiaSeguridad(
             {
               toPhone: g.phoneE164,
-              propertyName,
               guestFullName,
-              numberOfGuests: guestCount,
+              checkOutDateEs: checkOutEs,
             },
             waEnv,
           );

@@ -855,7 +855,6 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                     try {
                       const cleaners = await getCleaningContacts(propertySlug, env.DB);
                       if (cleaners.length > 0) {
-                        const guestCountStr = "1"; // El webhook NO captura guest_count del Paypal; usar default. Mejorar cuando BookingWidget pase guest_count.
                         const cleaningErrors: string[] = [];
                         let cleaningAnyOk = false;
                         for (const c of cleaners) {
@@ -868,7 +867,6 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                               toPhone: c.phoneE164,
                               cleanerName: c.name,
                               propertyName: opPropertyName,
-                              numberOfGuests: guestCountStr,
                               checkOutDateEs: formatDateShortEs(checkOut),
                             },
                             waEnv,
@@ -902,7 +900,6 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                       const guards = await getSecurityContacts(propertySlug, env.DB);
                       if (guards.length > 0) {
                         const guestFullName = guestName || "Huésped sin nombre";
-                        const guestCountStr = "1"; // Igual que arriba, default.
                         const secErrors: string[] = [];
                         let secAnyOk = false;
                         for (const g of guards) {
@@ -913,9 +910,8 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                           const sRes = await sendCheckinDiaSeguridad(
                             {
                               toPhone: g.phoneE164,
-                              propertyName: opPropertyName,
                               guestFullName,
-                              numberOfGuests: guestCountStr,
+                              checkOutDateEs: formatDateShortEs(checkOut),
                             },
                             waEnv,
                           );

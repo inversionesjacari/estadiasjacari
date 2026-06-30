@@ -335,7 +335,6 @@ async function runStaffTemplate(
             toPhone: c.phoneE164,
             cleanerName: c.name,
             propertyName,
-            numberOfGuests: String(r.guest_count ?? 1),
             checkOutDateEs: formatDateShortEs(r.check_out),
           },
           waEnv,
@@ -354,9 +353,8 @@ async function runStaffTemplate(
         await sendCheckinDiaSeguridad(
           {
             toPhone: c.phoneE164,
-            propertyName,
             guestFullName: r.guest_name || "Huésped sin nombre",
-            numberOfGuests: String(r.guest_count ?? 1),
+            checkOutDateEs: formatDateShortEs(r.check_out),
           },
           waEnv,
         ),

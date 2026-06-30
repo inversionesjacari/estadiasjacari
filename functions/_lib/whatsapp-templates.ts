@@ -232,14 +232,12 @@ export function sendCheckinDiaHuesped(
  * Variables:
  *   {{1}} = nombre del personal de limpieza
  *   {{2}} = nombre de la propiedad
- *   {{3}} = número de huéspedes (ej. "4")
- *   {{4}} = fecha de checkout en español (ej. "1 de junio")
+ *   {{3}} = fecha de salida en español (ej. "1 de junio")
  */
 export interface CheckinDiaLimpiezaData {
   toPhone: string;
   cleanerName: string;
   propertyName: string;
-  numberOfGuests: string;
   checkOutDateEs: string;
 }
 
@@ -250,7 +248,7 @@ export function sendCheckinDiaLimpieza(
   return sendTextTemplate(
     "checkin_dia_limpieza",
     data.toPhone,
-    [data.cleanerName, data.propertyName, data.numberOfGuests, data.checkOutDateEs],
+    [data.cleanerName, data.propertyName, data.checkOutDateEs],
     env,
   );
 }
@@ -261,16 +259,17 @@ export function sendCheckinDiaLimpieza(
  * Trigger: cron 7 AM HN del día del check-in. Se envía a cada contacto activo
  * de la propiedad con role='security'.
  *
+ * El guardia cubre varias propiedades con un mismo número y no distingue casa;
+ * por eso el mensaje solo lleva el titular del grupo + la fecha de salida.
+ *
  * Variables:
- *   {{1}} = nombre de la propiedad
- *   {{2}} = nombre completo del titular de la reserva
- *   {{3}} = número de personas que ingresan
+ *   {{1}} = nombre completo del titular de la reserva
+ *   {{2}} = fecha de salida en español (ej. "2 de junio")
  */
 export interface CheckinDiaSeguridadData {
   toPhone: string;
-  propertyName: string;
   guestFullName: string;
-  numberOfGuests: string;
+  checkOutDateEs: string;
 }
 
 export function sendCheckinDiaSeguridad(
@@ -280,7 +279,7 @@ export function sendCheckinDiaSeguridad(
   return sendTextTemplate(
     "checkin_dia_seguridad",
     data.toPhone,
-    [data.propertyName, data.guestFullName, data.numberOfGuests],
+    [data.guestFullName, data.checkOutDateEs],
     env,
   );
 }
