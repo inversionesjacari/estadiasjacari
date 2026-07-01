@@ -29,11 +29,40 @@ export const AIRBNB_LISTING_TO_SLUG: Record<string, string> = {
   // "Villa B11 — Hotel Palma Real, La Ceiba": "villa-b11-palma-real",
   // "Casa Brisa - Honduras Shores": "casa-brisa",
   // "Casa Marea - Honduras Shores": "casa-marea",
-  // "Las Gemelas de Tela - HSP": "casa-brisa", // o "casa-marea" o crear "las-gemelas"
+  // "Las Gemelas de Tela - HSP": "las-gemelas-tela",
   // "Modern & Comfortable 1 BedRoom Apt": "centro-morazan",
   // "Casa Lara Townhouse - Tegucigalpa": "casa-lara-townhouse",
   // "La Florida - Tegucigalpa": "la-florida",
+  //
+  // Slugs VÁLIDOS (deben coincidir EXACTO con los del sitio, ver quote-builder.ts):
+  //   villa-b11-palma-real · casa-brisa · casa-marea · las-gemelas-tela
+  //   centro-morazan · casa-lara-townhouse · la-florida
 };
+
+/**
+ * Normaliza un nombre de listing para comparar de forma TOLERANTE al formato:
+ * minúsculas, guiones unificados (– — → -), espacios colapsados y recortados.
+ * Así un espacio de más, una capitalización distinta o un em-dash vs guion NO
+ * rompen el match (era el riesgo #1 del parser: match exacto que falla por un
+ * detalle invisible). NO quita acentos (podrían distinguir dos listings reales).
+ */
+export function normalizeListingName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[–—]/g, "-")       // en/em dash → guion normal
+    .replace(/\s*-\s*/g, " - ")   // espaciado uniforme alrededor de guiones
+    .replace(/\s+/g, " ")          // colapsar espacios múltiples
+    .trim();
+}
+
+// Índice normalizado derivado del mapa canónico (arriba). Se reconstruye en cada
+// import; el mapa es la fuente de verdad, este solo lo hace tolerante al formato.
+const NORMALIZED_LISTING_INDEX: Record<string, string> = Object.fromEntries(
+  Object.entries(AIRBNB_LISTING_TO_SLUG).map(([name, slug]) => [
+    normalizeListingName(name),
+    slug,
+  ]),
+);
 
 export interface AirbnbReservationPayload {
   /** Nombre EXACTO del listing como aparece en Airbnb. */
@@ -112,8 +141,10 @@ export function validateAirbnbReservation(raw: unknown): ValidationResult {
 
   if (errors.length) return { ok: false, errors };
 
-  // Map listing → slug
-  const slug = AIRBNB_LISTING_TO_SLUG[listingName];
+  // Map listing → slug (tolerante al formato: espacios/mayúsculas/guiones)
+  const slug =
+    AIRBNB_LISTING_TO_SLUG[listingName] ??
+    NORMALIZED_LISTING_INDEX[normalizeListingName(listingName)];
   if (!slug) {
     return {
       ok: false,
