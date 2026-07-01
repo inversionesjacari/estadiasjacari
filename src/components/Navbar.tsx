@@ -39,7 +39,7 @@ export default function Navbar() {
         </Link>
 
         <nav className="hidden md:flex items-center gap-3">
-          <Link href="/#propiedades" className="btn-outline !py-2.5 !px-5 text-sm">
+          <Link href="/propiedades" className="btn-outline !py-2.5 !px-5 text-sm">
             Propiedades
           </Link>
           <Link href="/#contacto" className="btn-primary !py-2.5 !px-5 text-sm">
@@ -79,7 +79,7 @@ export default function Navbar() {
         <div className="md:hidden bg-white border-t border-gray-100">
           <div className="px-4 py-4 flex flex-col gap-3">
             <Link
-              href="/#propiedades"
+              href="/propiedades"
               onClick={() => setOpen(false)}
               className="btn-outline w-full text-sm"
             >
