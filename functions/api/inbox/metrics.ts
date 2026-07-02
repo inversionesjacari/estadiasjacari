@@ -63,10 +63,19 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const db = env.DB;
 
-  // Mes calendario actual en Honduras (UTC-6) — base de las métricas por propiedad.
+  // Mes a mostrar: ?month=YYYY-MM (default = mes calendario actual en Honduras,
+  // UTC-6). Es la base de Reservas/Ingresos/por-propiedad, TODO por CHECK-IN
+  // (cuándo ocurre la estadía) — no por created_at, para que el backfill de
+  // Airbnb no meta el histórico en "hoy".
+  const url = new URL(request.url);
+  const monthParam = url.searchParams.get("month");
   const hnNow = new Date(Date.now() - 6 * 3600 * 1000);
-  const mY = hnNow.getUTCFullYear();
-  const mM = hnNow.getUTCMonth();
+  let mY = hnNow.getUTCFullYear();
+  let mM = hnNow.getUTCMonth();
+  if (monthParam && /^\d{4}-\d{2}$/.test(monthParam)) {
+    const [py, pm] = monthParam.split("-").map(Number);
+    if (py >= 2020 && py <= 2100 && pm >= 1 && pm <= 12) { mY = py; mM = pm - 1; }
+  }
   const monthPrefix = `${mY}-${String(mM + 1).padStart(2, "0")}`;
   const monthStart = `${monthPrefix}-01`;
   const nextMonthStart = new Date(Date.UTC(mY, mM + 1, 1)).toISOString().slice(0, 10);
@@ -131,7 +140,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT id, phone, issue, severity, detail, suggestion, conv_at FROM bot_qa_findings ORDER BY CASE severity WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, conv_at DESC, id`).all<{ id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
     // Ingresos + conteo por propiedad — reservas con llegada (check_in) en el mes calendario HN.
-    db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COUNT(*) AS reservas FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; reservas: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COALESCE(SUM(total_hnl),0) AS revenueHnl, COUNT(*) AS reservas FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; revenueHnl: number; reservas: number }>().catch(() => ({ results: [] })),
     // ── DASHBOARD DE CATEGORÍAS DE FALLO (error analysis) ─────────────────────
     // Dónde falla el bot, agrupado, para arreglar la categoría más grande primero
     // (en vez de reaccionar chat por chat). Todo fail-soft.
@@ -146,6 +155,26 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     //     disparó → muestra en qué punto el bot suelta al cliente a un humano.
     db.prepare(`SELECT COALESCE(NULLIF(matched_rule,''),'(sin regla)') AS rule, COUNT(*) AS c FROM whatsapp_messages WHERE direction='out' AND created_at >= datetime('now','-7 days') AND (escalated=1 OR matched_rule='bot_failed') GROUP BY rule ORDER BY c DESC LIMIT 8`).all<{ rule: string; c: number }>().catch(() => ({ results: [] })),
   ]);
+
+  // Ingreso del mes seleccionado por CHECK-IN, separado por moneda (USD vs HNL) +
+  // desglose Airbnb vs directo. Nunca mezcla monedas en un solo total.
+  const revMonthRow = await db
+    .prepare(`SELECT
+        COALESCE(SUM(amount_usd),0) AS usd,
+        COALESCE(SUM(total_hnl),0) AS hnl,
+        COALESCE(SUM(CASE WHEN source='airbnb' THEN amount_usd ELSE 0 END),0) AS usdAirbnb,
+        COUNT(*) AS reservas
+      FROM reservations
+      WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ?`)
+    .bind(monthStart, nextMonthStart)
+    .first<{ usd: number; hnl: number; usdAirbnb: number; reservas: number }>()
+    .catch(() => ({ usd: 0, hnl: 0, usdAirbnb: 0, reservas: 0 }));
+
+  // Meses con reservas (por check_in) para el selector, más reciente primero.
+  const availMonthsRows = await db
+    .prepare(`SELECT DISTINCT substr(check_in,1,7) AS m FROM reservations WHERE status IN ('pending','confirmed') AND check_in IS NOT NULL AND check_in <> '' ORDER BY m DESC`)
+    .all<{ m: string }>()
+    .catch(() => ({ results: [] }));
 
   // Salud del LLM del bot: último error registrado por el webhook cuando el bot
   // cae en bot_glitch_silent (Workers AI falló). Alimenta el semáforo rojo del Bot IA.
@@ -223,13 +252,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   );
 
   // Ingresos + conteo por propiedad desde la query D1.
-  const revBySlug = rowsOf<{ slug: string; revenue: number; reservas: number }>(revByProperty);
-  const revMap: Record<string, { revenue: number; reservas: number }> = {};
-  for (const r of revBySlug) revMap[r.slug] = { revenue: r.revenue, reservas: r.reservas };
+  const revBySlug = rowsOf<{ slug: string; revenue: number; revenueHnl: number; reservas: number }>(revByProperty);
+  const revMap: Record<string, { revenue: number; revenueHnl: number; reservas: number }> = {};
+  for (const r of revBySlug) revMap[r.slug] = { revenue: r.revenue, revenueHnl: r.revenueHnl, reservas: r.reservas };
 
   const porPropiedad = propSlugs.map((slug) => ({
     slug,
     revenueMonth: Math.round(revMap[slug]?.revenue ?? 0),
+    revenueHnlMonth: Math.round(revMap[slug]?.revenueHnl ?? 0),
     reservasMonth: revMap[slug]?.reservas ?? 0,
     occupancyPct: occByProperty[slug]?.pct ?? null,
     nightsBooked: occByProperty[slug]?.nights ?? 0,
@@ -238,7 +268,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // Slugs con ingreso que NO son de los 6 canónicos (p.ej. paquete gemelas): no esconder plata.
   for (const r of revBySlug) {
     if (!propSlugs.includes(r.slug)) {
-      porPropiedad.push({ slug: r.slug, revenueMonth: Math.round(r.revenue), reservasMonth: r.reservas, occupancyPct: null, nightsBooked: 0, airbnbSync: "n/a" });
+      porPropiedad.push({ slug: r.slug, revenueMonth: Math.round(r.revenue), revenueHnlMonth: Math.round(r.revenueHnl), reservasMonth: r.reservas, occupancyPct: null, nightsBooked: 0, airbnbSync: "n/a" });
     }
   }
 
@@ -329,9 +359,23 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         month: aiIncome("month"),
       },
     },
-    // Ocupación + ingresos por propiedad del mes calendario HN (ver bloque arriba).
+    // Ocupación + ingresos por propiedad del mes seleccionado (ver bloque arriba).
     porPropiedad,
     mes: { prefix: monthPrefix, dias: daysInMonth },
+    // Ingreso del mes seleccionado, monedas SEPARADAS (nunca sumadas).
+    revenueMonth: {
+      usd: Math.round(numOf(revMonthRow, "usd")),
+      hnl: Math.round(numOf(revMonthRow, "hnl")),
+      usdAirbnb: Math.round(numOf(revMonthRow, "usdAirbnb")),
+      usdDirect: Math.round(numOf(revMonthRow, "usd") - numOf(revMonthRow, "usdAirbnb")),
+      reservas: numOf(revMonthRow, "reservas"),
+    },
+    // Meses con reservas (por check_in) para el selector; se asegura el actual.
+    availableMonths: (() => {
+      const list = rowsOf<{ m: string }>(availMonthsRows).map((r) => r.m).filter(Boolean);
+      if (!list.includes(monthPrefix)) list.push(monthPrefix);
+      return [...new Set(list)].sort().reverse();
+    })(),
     health: {
       lastInAt: strOf(lastIn, "t"),
       lastOutAt: strOf(lastOut, "t"),

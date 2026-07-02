@@ -5,7 +5,7 @@
 // Lee /api/inbox/metrics cada 10s. Protegido con la cookie de sesión del inbox.
 //
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import { BRAND_PATHS, BRAND_FILL, GOOGLE_G, JACARI_PATH, ROBOT_PATH } from "./brand-logos";
 
 const PROPERTY_NAMES: Record<string, string> = {
@@ -69,6 +69,14 @@ function monthLabel(prefix: string): string {
   const [y, mo] = prefix.split("-").map(Number);
   return `${MES_ES[(mo || 1) - 1]} ${y}`;
 }
+// Desplaza un prefijo YYYY-MM por delta meses (para el selector ‹ ›).
+function shiftMonth(prefix: string, delta: number): string {
+  const [y, mo] = prefix.split("-").map(Number);
+  const d = new Date(Date.UTC(y || 2026, (mo || 1) - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+const fmtUsd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+const fmtHnl = (n: number) => `L ${Math.round(n).toLocaleString("en-US")}`;
 
 // Registro de cambios / mejoras del sistema (curado a mano; lo más nuevo arriba).
 // Se muestra al final del Centro de Control como bitácora visible del equipo.
@@ -132,7 +140,10 @@ interface Metrics {
   funnel: { awaitingData: number; quoteProvided: number; awaitingPaymentMethod: number; awaitingPaypal: number; awaitingTransfer: number; total: number };
   reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
   revenue: { direct: { today: number; week: number; month: number }; airbnb: { today: number | null; week: number | null; month: number | null } };
-  porPropiedad?: { slug: string; revenueMonth: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
+  // Ingreso del mes seleccionado, monedas separadas (por check-in). Es lo que muestra la KPI.
+  revenueMonth?: { usd: number; hnl: number; usdAirbnb: number; usdDirect: number; reservas: number };
+  availableMonths?: string[];
+  porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
   health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
@@ -241,10 +252,12 @@ export default function OperacionPage() {
   const [clock, setClock] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [runningQa, setRunningQa] = useState(false);
+  // Mes seleccionado (null = mes actual). Solo afecta Reservas/Ingresos/por-propiedad.
+  const [month, setMonth] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/inbox/metrics");
+      const res = await fetch(`/api/inbox/metrics${month ? `?month=${month}` : ""}`);
       if (res.status === 401) { setAuthed(false); return; }
       const data = (await res.json()) as Metrics & { ok: boolean };
       if (data.ok) {
@@ -254,7 +267,7 @@ export default function OperacionPage() {
         setTimeout(() => setPulse(false), 700);
       }
     } catch { /* keep previous */ }
-  }, []);
+  }, [month]);
 
   // Dispara el análisis de QA del bot (botón "Analizar ahora") y recarga.
   const runQa = useCallback(async () => {
@@ -309,15 +322,10 @@ export default function OperacionPage() {
 
   const m = metrics;
 
-  // Ingresos: si ya hay datos de Airbnb (cron corrió), mostramos el TOTAL
-  // (directo + Airbnb) y el desglose en el footer; si no, solo lo directo.
-  const rev = m.revenue;
-  const hasAirbnb = rev.airbnb.month !== null;
-  const sumRev = (d: number, a: number | null) => d + (a ?? 0);
-  const fmt$ = (n: number) => `$${n.toLocaleString("en-US")}`;
-  const incomeFooter = hasAirbnb
-    ? `30d: directo ${fmt$(rev.direct.month)} · Airbnb ${fmt$(rev.airbnb.month ?? 0)}`
-    : "directo · Airbnb al activar PayPal";
+  // Reservas + ingresos del MES seleccionado, por check-in. Ingreso con monedas
+  // SEPARADAS (nunca sumadas). El mes lo maneja el selector del header.
+  const rm = m.revenueMonth ?? { usd: 0, hnl: 0, usdAirbnb: 0, usdDirect: 0, reservas: 0 };
+  const curMonthPrefix = m.mes?.prefix ?? "";
 
   return (
     <div className="min-h-screen bg-[#070b16] text-slate-200" style={{ backgroundImage: "radial-gradient(circle at 20% 0%, rgba(34,211,238,0.06), transparent 40%), radial-gradient(circle at 90% 10%, rgba(45,212,191,0.05), transparent 35%)" }}>
@@ -337,12 +345,25 @@ export default function OperacionPage() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5 space-y-5">
-        {/* KPIs — cada card con hoy / 7 días / 30 días */}
+        {/* Selector de mes — controla Reservas, Ingresos y las métricas por propiedad */}
+        <section className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setMonth(shiftMonth(curMonthPrefix, -1))} className="w-8 h-8 rounded-lg border border-white/15 text-slate-300 hover:bg-white/5 flex items-center justify-center" aria-label="Mes anterior">‹</button>
+            <span className="text-sm font-semibold text-white min-w-[8.5rem] text-center capitalize">{monthLabel(curMonthPrefix)}</span>
+            <button onClick={() => setMonth(shiftMonth(curMonthPrefix, +1))} className="w-8 h-8 rounded-lg border border-white/15 text-slate-300 hover:bg-white/5 flex items-center justify-center" aria-label="Mes siguiente">›</button>
+            {month && <button onClick={() => setMonth(null)} className="ml-1 text-xs text-cyan-400 hover:text-cyan-300 px-2 py-1">↩ mes actual</button>}
+          </div>
+          <span className="text-[11px] text-slate-500">Reservas e ingresos = llegadas (check-in) del mes</span>
+        </section>
+
+        {/* KPIs — Mensajes/Conversaciones: actividad reciente · Reservas/Ingresos: mes seleccionado */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi icon="📨" label="Mensajes" hoy={m.messages.today} week={m.messages.week} month={m.messages.month} glow={HEX.cyan} />
           <Kpi icon="💬" label="Conversaciones" hoy={m.conversations.today} week={m.conversations.week} month={m.conversations.month} glow="#a78bfa" />
-          <Kpi icon="🏠" label="Reservas" hoy={m.reservations.today} week={m.reservations.week} month={m.reservations.month} glow={HEX.green} />
-          <Kpi icon="💰" label="Ingresos" hoy={sumRev(rev.direct.today, rev.airbnb.today)} week={sumRev(rev.direct.week, rev.airbnb.week)} month={sumRev(rev.direct.month, rev.airbnb.month)} prefix="$" glow={HEX.amber} footer={incomeFooter} />
+          <MonthKpi icon="🏠" label="Reservas" sub="llegadas del mes" glow={HEX.green}>
+            <div className="font-mono font-bold text-3xl leading-none" style={{ color: HEX.green, textShadow: `0 0 14px ${HEX.green}55` }}>{rm.reservas.toLocaleString("en-US")}</div>
+          </MonthKpi>
+          <MoneyKpi usd={rm.usd} hnl={rm.hnl} usdDirect={rm.usdDirect} usdAirbnb={rm.usdAirbnb} glow={HEX.amber} />
         </section>
 
         {/* Diagrama protagonista */}
@@ -445,7 +466,7 @@ export default function OperacionPage() {
 
         {/* Métricas por propiedad — ocupación + ingresos del mes */}
         {m.porPropiedad && m.porPropiedad.length > 0 && (
-          <Panel title="🏘️ Métricas por propiedad" subtitle={m.mes ? `ocupación (directo + Airbnb) · ingresos directos · ${monthLabel(m.mes.prefix)}` : "este mes"}>
+          <Panel title="🏘️ Métricas por propiedad" subtitle={m.mes ? `ocupación (directo + Airbnb) · ingresos del mes · ${monthLabel(m.mes.prefix)}` : "este mes"}>
             <PropertyMetricsTable rows={m.porPropiedad} airbnbStatus={m.health.airbnbStatus} />
           </Panel>
         )}
@@ -621,6 +642,45 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
         {subtitle && <span className="text-[11px] text-slate-400">{subtitle}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// Card de una métrica del MES seleccionado (un valor grande, sin hoy/7d/30d).
+function MonthKpi({ icon, label, sub, glow, children }: { icon: string; label: string; sub?: string; glow: string; children: ReactNode }) {
+  return (
+    <div className="relative rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur p-4 overflow-hidden">
+      <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-20 blur-2xl" style={{ background: glow }} />
+      <div className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-200">
+        <span className="text-[15px]">{icon}</span>{label}
+      </div>
+      <div className="text-[10px] text-slate-500 mb-3 mt-0.5">{sub ?? " "}</div>
+      {children}
+    </div>
+  );
+}
+
+// Card de Ingresos del mes: USD y HNL SEPARADOS (nunca sumados) + desglose directo/Airbnb.
+function MoneyKpi({ usd, hnl, usdDirect, usdAirbnb, glow }: { usd: number; hnl: number; usdDirect: number; usdAirbnb: number; glow: string }) {
+  const au = useCountUp(usd);
+  return (
+    <div className="relative rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur p-4 overflow-hidden">
+      <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-20 blur-2xl" style={{ background: glow }} />
+      <div className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-200">
+        <span className="text-[15px]">💰</span>Ingresos
+      </div>
+      <div className="text-[10px] text-slate-500 mb-2 mt-0.5">del mes · por check-in</div>
+      <div className="flex items-baseline gap-1.5 flex-wrap">
+        <span className="font-mono font-bold text-2xl leading-none" style={{ color: glow, textShadow: `0 0 14px ${glow}55` }}>{fmtUsd(au)}</span>
+        <span className="text-[11px] text-slate-500">USD</span>
+      </div>
+      {hnl > 0 && (
+        <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
+          <span className="font-mono font-bold text-lg leading-none text-slate-200">{fmtHnl(hnl)}</span>
+          <span className="text-[11px] text-slate-500">HNL</span>
+        </div>
+      )}
+      <div className="text-[10px] text-slate-500 mt-2.5 pt-1.5 border-t border-white/5">directo {fmtUsd(usdDirect)} · Airbnb {fmtUsd(usdAirbnb)}</div>
     </div>
   );
 }
@@ -821,6 +881,7 @@ function MiniList({ title, rows, empty }: { title?: string; rows: { label: strin
 function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metrics["porPropiedad"]>; airbnbStatus: Metrics["health"]["airbnbStatus"] }) {
   const fmt$ = (n: number) => `$${n.toLocaleString("en-US")}`;
   const totalRev = rows.reduce((s, r) => s + r.revenueMonth, 0);
+  const totalHnl = rows.reduce((s, r) => s + (r.revenueHnlMonth ?? 0), 0);
   const totalResv = rows.reduce((s, r) => s + r.reservasMonth, 0);
   const occVals = rows.map((r) => r.occupancyPct).filter((p): p is number => p !== null);
   const avgOcc = occVals.length ? Math.round(occVals.reduce((s, p) => s + p, 0) / occVals.length) : null;
@@ -833,7 +894,7 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
             <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
               <th className="text-left font-medium pb-2">Propiedad</th>
               <th className="text-left font-medium pb-2 w-[42%]">Ocupación</th>
-              <th className="text-right font-medium pb-2">Ingresos directos</th>
+              <th className="text-right font-medium pb-2">Ingresos del mes</th>
               <th className="text-right font-medium pb-2">Reservas</th>
             </tr>
           </thead>
@@ -861,7 +922,10 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
                       </div>
                     )}
                   </td>
-                  <td className="py-2 text-right font-mono text-cyan-300 whitespace-nowrap">{fmt$(r.revenueMonth)}</td>
+                  <td className="py-2 text-right font-mono whitespace-nowrap">
+                    <div className="text-cyan-300">{fmt$(r.revenueMonth)}</div>
+                    {(r.revenueHnlMonth ?? 0) > 0 && <div className="text-[11px] text-emerald-300/80">{`L ${Math.round(r.revenueHnlMonth ?? 0).toLocaleString("en-US")}`}</div>}
+                  </td>
                   <td className="py-2 text-right font-mono text-slate-300">{r.reservasMonth}</td>
                 </tr>
               );
@@ -871,14 +935,17 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
             <tr className="border-t border-white/10">
               <td className="pt-2 font-semibold text-slate-200">Total</td>
               <td className="pt-2 text-[11px] text-slate-400">{avgOcc === null ? "—" : `prom. ${avgOcc}%`}</td>
-              <td className="pt-2 text-right font-mono font-bold text-cyan-300">{fmt$(totalRev)}</td>
+              <td className="pt-2 text-right font-mono whitespace-nowrap">
+                <div className="font-bold text-cyan-300">{fmt$(totalRev)}</div>
+                {totalHnl > 0 && <div className="text-[11px] text-emerald-300/80">{`L ${Math.round(totalHnl).toLocaleString("en-US")}`}</div>}
+              </td>
               <td className="pt-2 text-right font-mono font-semibold text-slate-300">{totalResv}</td>
             </tr>
           </tfoot>
         </table>
       </div>
       <p className="text-[10px] text-slate-500 mt-3 leading-relaxed">
-        Ocupación = noches ocupadas del mes ÷ días del mes (reservas directas + Airbnb vía iCal). Ingresos = pagos en USD de reservas con <strong className="text-slate-400">llegada este mes</strong> (directo: sitio + bot); por eso este total NO cuadra con la tarjeta “Ingresos” de arriba, que cuenta reservas <em>creadas</em> en los últimos 30 días: son dos lentes distintos. El ingreso total de Airbnb por PayPal va aparte, en esa misma tarjeta. El paquete Las Gemelas aparece como fila propia para el ingreso; su ocupación se refleja en Casa Brisa y Casa Marea.
+        Ocupación = noches ocupadas del mes ÷ días del mes (reservas directas + Airbnb vía iCal). Ingresos = de reservas con <strong className="text-slate-400">llegada (check-in) este mes</strong> — directo + Airbnb, con USD y HNL (Lempiras) por separado, nunca sumados. Este total cuadra con la tarjeta “Ingresos” de arriba (mismo lente). El paquete Las Gemelas aparece como fila propia para el ingreso; su ocupación se refleja en Casa Brisa y Casa Marea.
         {airbnbStatus !== "full" && <span className="text-amber-400/80"> · ⚠ El iCal de Airbnb no está completo: la ocupación de las propiedades marcadas refleja solo reservas directas.</span>}
       </p>
     </>
