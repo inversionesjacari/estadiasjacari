@@ -15,28 +15,38 @@
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
 
-// Mapeo nombre exacto del listing en Airbnb → slug nuestro.
-// César debe completar esta tabla con los nombres EXACTOS de sus 7 listings
-// (los puede ver en airbnb.com/hosting). Si Airbnb cambia el nombre del
-// listing, hay que actualizar aquí también o el parser fallará al match.
+// Mapeo nombre EXACTO del listing en Airbnb → slug interno de atribución.
+// Confirmado por César con captura de airbnb.com/hosting (2026-07-01). Estos son
+// los ÚNICOS 5 listings que generan ingreso y deben respaldarse. Si Airbnb cambia
+// el título de un listing, hay que actualizar aquí o el parser fallará al match
+// (devuelve error claro "no está mapeado", no rompe nada).
 //
-// Hint: el correo del 2026-05-29 que pasó César decía:
-//   - "Modern & Comfortable 1 BedRoom Apt" → probablemente centro-morazan
-//   - "Business Stay-5 Star Location-Torre Morazan-Views" → centro-morazan también?
-// César debe confirmarlo.
+// La comparación es tolerante al formato (ver NORMALIZED_LISTING_INDEX abajo):
+// mayúsculas, espacios y guiones no rompen el match. Los dos "Paraíso Playero"
+// se distinguen por el sufijo ", Honduras" (match exacto/normalizado, NO prefijo).
+//
+// Nota sobre `la-florida-1b`: César maneja La Florida como DOS unidades separadas
+// en su contabilidad (1A y 1B). El sitio solo tiene el slug `la-florida` (= 1A),
+// así que `la-florida-1b` es un slug de ATRIBUCIÓN: vive en la tabla reservations
+// como etiqueta para no colapsar 1A+1B en el respaldo. No es una propiedad web
+// completa (sin precio/foto/disponibilidad) — es intencional para el histórico.
 export const AIRBNB_LISTING_TO_SLUG: Record<string, string> = {
-  // Pendiente de completar con nombres EXACTOS. Ejemplo:
-  // "Villa B11 — Hotel Palma Real, La Ceiba": "villa-b11-palma-real",
-  // "Casa Brisa - Honduras Shores": "casa-brisa",
-  // "Casa Marea - Honduras Shores": "casa-marea",
-  // "Las Gemelas de Tela - HSP": "las-gemelas-tela",
-  // "Modern & Comfortable 1 BedRoom Apt": "centro-morazan",
-  // "Casa Lara Townhouse - Tegucigalpa": "casa-lara-townhouse",
-  // "La Florida - Tegucigalpa": "la-florida",
+  "Paraíso Playero: TelaBeachouse": "las-gemelas-tela",             // "Casa principal" (Tela) → Las Gemelas de Tela
+  "Paraíso Playero: TelaBeachouse, Honduras": "casa-marea",         // (Tela) → Casa Marea / Paraíso Playero
+  "La Casita del Mar": "casa-brisa",                                // (Tela) → Casa Brisa
+  "Modern & Comfortable 1 BedRoom Apt": "la-florida",               // (Tegucigalpa) → La Florida 1A
+  "Centrico- 2 Habitaciones - Comodo - Seguridad": "la-florida-1b", // (Tegucigalpa) → La Florida 1B (slug de atribución)
+  "Business Stay-5 Star Location-Torre Morazan-Views": "centro-morazan", // (Tegucigalpa) → Centro Morazán
+  "Casa 2 Hab - Hotel Palma Real-Piscina-Playa": "villa-b11-palma-real", // (La Ceiba) → Villa B11 en Hotel Palma Real
   //
-  // Slugs VÁLIDOS (deben coincidir EXACTO con los del sitio, ver quote-builder.ts):
-  //   villa-b11-palma-real · casa-brisa · casa-marea · las-gemelas-tela
-  //   centro-morazan · casa-lara-townhouse · la-florida
+  // Slugs de propiedad web válidos (quote-builder.ts): villa-b11-palma-real ·
+  // casa-brisa · casa-marea · las-gemelas-tela · centro-morazan ·
+  // casa-lara-townhouse · la-florida. `la-florida-1b` es solo de atribución.
+  //
+  // FUERA a propósito (no generan ingreso propio / no son de Jacarí): Casa en
+  // Querètaro, Modern 2BR Apartment, Depto 2 hab (La Pradera), Casa Céntrica con
+  // Gran Jardín, Modern & Luxurious 2 BedRoom, Townhouse-centrico, Lujosa Suite
+  // Valle de Ángeles, Paraíso Playero2 (San Juan, sin publicar).
 };
 
 /**

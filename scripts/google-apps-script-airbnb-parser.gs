@@ -35,18 +35,37 @@
  *      - Interval: Every 5 minutes
  *      - Save → autorizar permisos de Gmail al script
  *
- *   6. En Gmail:
- *      - Crear los 4 labels: "Airbnb-Reservation", "Airbnb-Reservation-Processed",
- *                            "Airbnb-Message", "Airbnb-Message-Processed"
- *      - Crear 2 filters automáticos:
- *        a) From: automated@airbnb.com  Subject: "Nueva reservación"
- *           → Apply label: Airbnb-Reservation
- *        b) From: automated@airbnb.com  Subject: "Reservación para"
- *           → Apply label: Airbnb-Message
+ *   6. Labels en Gmail:
+ *      - El script usa el label "Airbnb-Reservations" (el que César YA tiene, con
+ *        los correos de reservas). Los labels "-Processed" y "-Failed" los CREA
+ *        el script solo — no hay que crear nada a mano.
+ *      - (Opcional, para nuevos emails automáticos) crear un filtro:
+ *        From: automated@airbnb.com  Asunto: "Nueva reservación confirmada"
+ *          → Aplicar label: Airbnb-Reservations
  *
  *   7. Probar manual:
- *      - Apps Script → Run function: processNewEmails → ver logs (Cmd+Enter)
- *      - Debería procesar emails con el label correspondiente y POSTear.
+ *      - Apps Script → seleccionar función "processReservations" (menú de arriba)
+ *        → botón ▷ Run → ver el Execution log abajo.
+ *      - Debería procesar los correos etiquetados y POSTear al endpoint.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * BACKFILL HISTÓRICO (respaldo desde enero 2026)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   El mismo processReservations() carga el histórico:
+ *
+ *   1. En Gmail, buscar las confirmaciones viejas, ej:
+ *        from:automated@airbnb.com "Nueva reservación confirmada" after:2026/1/1
+ *   2. Seleccionarlas todas → aplicar el label "Airbnb-Reservations".
+ *      (César ya tiene 49 etiquetadas al 2026-07-01.)
+ *   3. Apps Script → función "processReservations" → ▷ Run. Procesa ~300 por
+ *      corrida; si quedan, volver a correr (idempotente: NO duplica).
+ *   4. En el Execution log, al final: "processReservations FIN: X OK, Y con problema".
+ *   5. Los que fallen quedan en "Airbnb-Reservations-Failed". Abrirlos: casi
+ *      siempre es un listing con nombre no mapeado — pasarle a Claude el nombre
+ *      EXACTO del email para agregarlo a AIRBNB_LISTING_TO_SLUG.
+ *
+ *   Fechas: el año se infiere de la FECHA DEL EMAIL (no de hoy), así que un email
+ *   de enero fecha en 2026 aunque el backfill se corra en julio. (Ver parseDateLine.)
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -62,10 +81,27 @@ const ENDPOINT_MESSAGE     = 'https://estadiasjacari.pages.dev/api/inbound/airbn
 const AIRBNB_INBOUND_SECRET = 'PEGAR_AQUI_VALOR_GENERADO_CON_OPENSSL';
 
 // Labels que el script revisa.
-const LABEL_RESERVATION_PENDING = 'Airbnb-Reservation';
-const LABEL_RESERVATION_DONE    = 'Airbnb-Reservation-Processed';
-const LABEL_MESSAGE_PENDING     = 'Airbnb-Message';
-const LABEL_MESSAGE_DONE        = 'Airbnb-Message-Processed';
+// PENDING: el label que YA usa César en Gmail (captura 2026-07-01 → "Airbnb-Reservations",
+// en plural, con 49 correos). Se resuelve por candidatos para tolerar singular/plural.
+// DONE y FAILED se crean solos si no existen (César no crea nada a mano).
+const LABEL_RESERVATION_PENDING_CANDIDATES = ['Airbnb-Reservations', 'Airbnb-Reservation'];
+const LABEL_RESERVATION_DONE    = 'Airbnb-Reservations-Processed';
+const LABEL_RESERVATION_FAILED  = 'Airbnb-Reservations-Failed'; // no parseó o el endpoint lo rechazó → revisión manual
+const LABEL_MESSAGE_PENDING_CANDIDATES = ['Airbnb-Messages', 'Airbnb-Message'];
+const LABEL_MESSAGE_DONE        = 'Airbnb-Messages-Processed';
+
+/** Devuelve el primer label existente de la lista de candidatos, o null. */
+function resolveExistingLabel(candidates) {
+  for (const n of candidates) {
+    const l = GmailApp.getUserLabelByName(n);
+    if (l) return l;
+  }
+  return null;
+}
+/** Label por nombre, creándolo si no existe. */
+function ensureLabel(name) {
+  return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN — corre cada 5 min por el trigger time-based
@@ -89,43 +125,67 @@ function processNewEmails() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function processReservations() {
-  const label = GmailApp.getUserLabelByName(LABEL_RESERVATION_PENDING);
+  const label = resolveExistingLabel(LABEL_RESERVATION_PENDING_CANDIDATES);
   if (!label) {
-    console.warn(`Label "${LABEL_RESERVATION_PENDING}" no existe. Créalo en Gmail.`);
+    console.warn(`No existe ninguno de estos labels: ${LABEL_RESERVATION_PENDING_CANDIDATES.join(', ')}. Aplicá "Airbnb-Reservations" a los correos de reservas.`);
     return;
   }
-  const doneLabel = GmailApp.getUserLabelByName(LABEL_RESERVATION_DONE);
-  if (!doneLabel) {
-    console.warn(`Label "${LABEL_RESERVATION_DONE}" no existe. Créalo en Gmail.`);
-    return;
-  }
+  console.log(`Usando label pendiente: "${label.getName()}"`);
+  // DONE y FAILED se crean solos (César no crea labels a mano).
+  const doneLabel = ensureLabel(LABEL_RESERVATION_DONE);
+  const failedLabel = ensureLabel(LABEL_RESERVATION_FAILED);
 
-  const threads = label.getThreads(0, 20);
-  console.log(`processReservations: ${threads.length} threads con label "${LABEL_RESERVATION_PENDING}"`);
+  // Procesa en lotes hasta agotar el label o llegar al límite de seguridad.
+  // El mismo código sirve para el trigger de 5 min (pocos threads nuevos) y para
+  // el BACKFILL histórico (cientos de emails ya etiquetados): el endpoint es
+  // idempotente (INSERT OR IGNORE por confirmationCode), así que re-correr no
+  // duplica. MAX_BATCHES evita pasar el límite de 6 min de ejecución de Apps Script.
+  const BATCH = 20;
+  const MAX_BATCHES = 15; // ~300 emails por corrida; volver a correr si quedan
+  let processed = 0, failed = 0;
 
-  for (const thread of threads) {
-    const messages = thread.getMessages();
-    // Tomar el último mensaje del thread (el más reciente)
-    const msg = messages[messages.length - 1];
-    const body = msg.getPlainBody();
-    const subject = msg.getSubject();
+  for (let b = 0; b < MAX_BATCHES; b++) {
+    // Siempre desde 0: al mover los OK al label Done, la "ventana" avanza sola.
+    const threads = label.getThreads(0, BATCH);
+    if (threads.length === 0) break;
+    console.log(`processReservations lote ${b + 1}: ${threads.length} threads pendientes`);
 
-    const parsed = parseReservationEmail(subject, body);
-    if (!parsed) {
-      console.warn(`No se pudo parsear thread "${subject}" — dejar para revisión manual`);
-      continue;
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      // Tomar el último mensaje del thread (el más reciente)
+      const msg = messages[messages.length - 1];
+      const body = msg.getPlainBody();
+      const subject = msg.getSubject();
+      // Fecha del email como referencia de AÑO (clave para backfill histórico:
+      // un email de enero no debe fecharse en el año siguiente).
+      const refDate = msg.getDate();
+
+      const parsed = parseReservationEmail(subject, body, refDate);
+      if (!parsed) {
+        console.warn(`No se pudo parsear thread "${subject}" → ${LABEL_RESERVATION_FAILED}`);
+        label.removeFromThread(thread);
+        failedLabel.addToThread(thread);
+        failed++;
+        continue;
+      }
+
+      const result = postToEndpoint(ENDPOINT_RESERVATION, parsed);
+      if (result.ok) {
+        console.log(`Reserva ${parsed.confirmationCode} (${parsed.checkIn}) OK: ${result.response.slice(0, 160)}`);
+        label.removeFromThread(thread);
+        doneLabel.addToThread(thread);
+        processed++;
+      } else {
+        console.error(`Falló reserva ${parsed.confirmationCode} — listing "${parsed.listingName}": ${result.error}`);
+        // Mapeo faltante o rechazo del endpoint: mover a Failed para no atascar
+        // el backfill. Queda parkeado y visible; re-etiquetar a pending para reintentar.
+        label.removeFromThread(thread);
+        failedLabel.addToThread(thread);
+        failed++;
+      }
     }
-
-    const result = postToEndpoint(ENDPOINT_RESERVATION, parsed);
-    if (result.ok) {
-      console.log(`Reserva ${parsed.confirmationCode} procesada: ${result.response}`);
-      label.removeFromThread(thread);
-      doneLabel.addToThread(thread);
-    } else {
-      console.error(`Falló reserva ${parsed.confirmationCode}: ${result.error}`);
-      // Dejar el label para reintentar en la próxima corrida
-    }
   }
+  console.log(`processReservations FIN: ${processed} OK, ${failed} con problema (revisar logs).`);
 }
 
 /**
@@ -154,7 +214,11 @@ function processReservations() {
  *
  * Si Airbnb cambia el formato del email, hay que ajustar los regex.
  */
-function parseReservationEmail(subject, body) {
+function parseReservationEmail(subject, body, refDate) {
+  // refDate = fecha en que Airbnb envió el email (msg.getDate()). Se usa como
+  // referencia de año para las fechas del cuerpo. Si no se pasa, cae a hoy
+  // (comportamiento viejo, correcto para tiempo real pero MAL para backfill).
+  refDate = refDate instanceof Date ? refDate : new Date();
   // Confirmation code (HM + 6-10 caracteres alfanuméricos)
   const codeMatch = body.match(/(?:Código de confirmación|Confirmation code)\s*[:\n\r]+\s*([A-Z0-9]{6,12})/i);
   if (!codeMatch) {
@@ -199,15 +263,15 @@ function parseReservationEmail(subject, body) {
     return null;
   }
 
-  // Check-in date
-  const checkIn = parseDateLine(body, 'Check-in');
+  // Check-in date (año referido a la fecha del email, no a hoy)
+  const checkIn = parseDateLine(body, 'Check-in', refDate);
   if (!checkIn) {
     console.warn('parseReservationEmail: no se encontró check-in');
     return null;
   }
 
   // Check-out date
-  const checkOut = parseDateLine(body, 'Check-out');
+  const checkOut = parseDateLine(body, 'Check-out', refDate);
   if (!checkOut) {
     console.warn('parseReservationEmail: no se encontró check-out');
     return null;
@@ -248,10 +312,13 @@ function parseReservationEmail(subject, body) {
 
 /**
  * Parsea fechas estilo "vie, 29 may" o "lun, 1 jun" del cuerpo del email
- * y devuelve YYYY-MM-DD asumiendo año actual o siguiente (la fecha siempre
- * está en el futuro cuando llega el email de confirmación).
+ * y devuelve YYYY-MM-DD. El email de confirmación se envía POCO ANTES de la
+ * estadía, así que el año se infiere respecto a `refDate` (fecha del email):
+ * si la fecha cae >30 días ANTES del email, es que cruzó al año siguiente
+ * (ej. email de dic para estadía de ene). Usar refDate en vez de hoy es lo que
+ * hace correcto el BACKFILL: un email de enero 2026 fecha en 2026, no en 2027.
  */
-function parseDateLine(body, label) {
+function parseDateLine(body, label, refDate) {
   const re = new RegExp(`${label}\\s*[\\n\\r]+\\s*(?:[a-zñé]+,\\s*)?(\\d{1,2})\\s+([a-zé]{3,9})`, 'i');
   const m = body.match(re);
   if (!m) return null;
@@ -264,12 +331,11 @@ function parseDateLine(body, label) {
   const month = monthMap[monthStr];
   if (!month) return null;
 
-  // Año: si el mes ya pasó este año, asumir el siguiente
-  const today = new Date();
-  let year = today.getFullYear();
+  const ref = refDate instanceof Date ? refDate : new Date();
+  let year = ref.getFullYear();
   const candidate = new Date(year, month - 1, day);
-  // Si la fecha es más de 30 días en el pasado, asumir próximo año
-  if (candidate.getTime() < today.getTime() - 30 * 86400000) {
+  // Si la fecha cae >30 días antes del email, la estadía es del año siguiente.
+  if (candidate.getTime() < ref.getTime() - 30 * 86400000) {
     year += 1;
   }
 
@@ -281,16 +347,13 @@ function parseDateLine(body, label) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function processMessages() {
-  const label = GmailApp.getUserLabelByName(LABEL_MESSAGE_PENDING);
+  const label = resolveExistingLabel(LABEL_MESSAGE_PENDING_CANDIDATES);
   if (!label) {
-    console.warn(`Label "${LABEL_MESSAGE_PENDING}" no existe.`);
+    // Opcional: solo aplica si César etiqueta mensajes de huéspedes. Silencioso.
+    console.log(`Sin label de mensajes (${LABEL_MESSAGE_PENDING_CANDIDATES.join('/')}); nada que hacer.`);
     return;
   }
-  const doneLabel = GmailApp.getUserLabelByName(LABEL_MESSAGE_DONE);
-  if (!doneLabel) {
-    console.warn(`Label "${LABEL_MESSAGE_DONE}" no existe.`);
-    return;
-  }
+  const doneLabel = ensureLabel(LABEL_MESSAGE_DONE);
 
   const threads = label.getThreads(0, 20);
   console.log(`processMessages: ${threads.length} threads con label "${LABEL_MESSAGE_PENDING}"`);
@@ -411,19 +474,19 @@ function postToEndpoint(url, payload) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function debugLatestReservationEmail() {
-  const label = GmailApp.getUserLabelByName(LABEL_RESERVATION_PENDING);
-  if (!label) { console.log('Label no existe'); return; }
+  const label = resolveExistingLabel(LABEL_RESERVATION_PENDING_CANDIDATES);
+  if (!label) { console.log('Label de reservas no existe'); return; }
   const threads = label.getThreads(0, 1);
   if (threads.length === 0) { console.log('Sin emails pending'); return; }
   const msg = threads[0].getMessages()[0];
-  const parsed = parseReservationEmail(msg.getSubject(), msg.getPlainBody());
-  console.log('SUBJECT:', msg.getSubject());
+  const parsed = parseReservationEmail(msg.getSubject(), msg.getPlainBody(), msg.getDate());
+  console.log('SUBJECT:', msg.getSubject(), '| EMAIL DATE:', msg.getDate());
   console.log('PARSED:', JSON.stringify(parsed, null, 2));
 }
 
 function debugLatestMessageEmail() {
-  const label = GmailApp.getUserLabelByName(LABEL_MESSAGE_PENDING);
-  if (!label) { console.log('Label no existe'); return; }
+  const label = resolveExistingLabel(LABEL_MESSAGE_PENDING_CANDIDATES);
+  if (!label) { console.log('Label de mensajes no existe'); return; }
   const threads = label.getThreads(0, 1);
   if (threads.length === 0) { console.log('Sin emails pending'); return; }
   const msg = threads[0].getMessages()[0];

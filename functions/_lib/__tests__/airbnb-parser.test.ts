@@ -75,8 +75,55 @@ describe("validateAirbnbReservation — shape (independiente del mapa)", () => {
   });
 
   it("un listing no mapeado da error de mapeo (no de shape)", () => {
-    // Con el mapa vacío, un payload por lo demás válido falla SOLO por el mapeo.
+    // "Cualquier Cosa" no está en el mapa → falla SOLO por el mapeo, no por shape.
     const r = validateAirbnbReservation(base);
+    expect(r.ok).toBe(false);
+    expect(r.errors?.some((e) => e.includes("no está mapeado"))).toBe(true);
+  });
+});
+
+describe("validateAirbnbReservation — mapeo real de listings (confirmado 2026-07-01)", () => {
+  const base = {
+    confirmationCode: "HMXQAHMJ4P",
+    guestName: "Wander Canelo",
+    checkIn: "2026-06-15",
+    checkOut: "2026-06-17",
+    guestCount: 2,
+  };
+  const cases: Array<[string, string]> = [
+    ["Paraíso Playero: TelaBeachouse", "las-gemelas-tela"],
+    ["Paraíso Playero: TelaBeachouse, Honduras", "casa-marea"],
+    ["La Casita del Mar", "casa-brisa"],
+    ["Modern & Comfortable 1 BedRoom Apt", "la-florida"],
+    ["Centrico- 2 Habitaciones - Comodo - Seguridad", "la-florida-1b"],
+    ["Business Stay-5 Star Location-Torre Morazan-Views", "centro-morazan"],
+    ["Casa 2 Hab - Hotel Palma Real-Piscina-Playa", "villa-b11-palma-real"],
+  ];
+
+  it.each(cases)('mapea "%s" → %s', (listingName, slug) => {
+    const r = validateAirbnbReservation({ ...base, listingName });
+    expect(r.ok).toBe(true);
+    expect(r.slug).toBe(slug);
+  });
+
+  it("los dos Paraíso Playero NO colisionan (el sufijo ', Honduras' los separa)", () => {
+    const gemelas = validateAirbnbReservation({ ...base, listingName: "Paraíso Playero: TelaBeachouse" });
+    const marea = validateAirbnbReservation({ ...base, listingName: "Paraíso Playero: TelaBeachouse, Honduras" });
+    expect(gemelas.slug).toBe("las-gemelas-tela");
+    expect(marea.slug).toBe("casa-marea");
+    expect(gemelas.slug).not.toBe(marea.slug);
+  });
+
+  it("tolera variaciones de formato del email (espacios/mayúsculas/guion)", () => {
+    // Airbnb a veces manda el título con espaciado o dash distinto.
+    const r1 = validateAirbnbReservation({ ...base, listingName: "  la casita DEL mar  " });
+    expect(r1.slug).toBe("casa-brisa");
+    const r2 = validateAirbnbReservation({ ...base, listingName: "Centrico-2 Habitaciones-Comodo-Seguridad" });
+    expect(r2.slug).toBe("la-florida-1b");
+  });
+
+  it("un listing que quedó FUERA a propósito no matchea (queda para revisión)", () => {
+    const r = validateAirbnbReservation({ ...base, listingName: "Casa en Querètaro" });
     expect(r.ok).toBe(false);
     expect(r.errors?.some((e) => e.includes("no está mapeado"))).toBe(true);
   });
