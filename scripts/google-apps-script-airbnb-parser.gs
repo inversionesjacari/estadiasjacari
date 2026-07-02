@@ -173,6 +173,7 @@ function processReservations() {
       if (result.ok) {
         console.log(`Reserva ${parsed.confirmationCode} (${parsed.checkIn}) OK: ${result.response.slice(0, 160)}`);
         label.removeFromThread(thread);
+        failedLabel.removeFromThread(thread); // si venía de un reintento, limpiar Failed
         doneLabel.addToThread(thread);
         processed++;
       } else {
@@ -189,157 +190,210 @@ function processReservations() {
 }
 
 /**
- * Parsea el cuerpo plano del email de confirmación de Airbnb.
- * Estructura típica del email (a 2026-05):
+ * Parsea el cuerpo PLANO del email de confirmación de Airbnb (host).
+ * Formato REAL confirmado con un email de 2026 (Estadías Jacarí):
  *
- *   Subject: ¡Nueva reservación confirmada! Wander Jeremias llega el 29 may.
+ *   Subject: "Reservación confirmada: <Nombre completo> llega el 29 jun."
+ *            (o "¡Nueva reservación confirmada! <Nombre> llega el ...")
  *
- *   Body contains:
- *     Wander Jeremias Canelo Espinal
- *     ...
- *     Modern & Comfortable 1 BedRoom Apt
- *     Vivienda o apartamento entero
- *     Check-in
- *     vie, 29 may
- *     2:00 p.m.
- *     Check-out
- *     lun, 1 jun
- *     11:00 a.m.
- *     Viajeros
- *     2 adultos
- *     Código de confirmación
- *     HMXQAHMJ4P
- *     ...
- *     $89.01
+ *   Body (los ENCABEZADOS vienen en MAYÚSCULAS y con mucho whitespace):
+ *     https://www.airbnb.com.hn/rooms/952839282667005627?c=...   <- ancla
+ *     PARAÍSO PLAYERO: TELABEACHOUSE, HONDURAS                    <- listing
+ *     Vivienda o apartamento entero                              <- tipo
+ *     Check-in      Check-out                                    <- encabezado
+ *     lun, 29 jun   mar, 30 jun                                  <- ¡2 fechas EN 1 LÍNEA!
+ *     3:00 p.m.     11:00 a.m.
+ *     VIAJEROS
+ *     4 adultos, 1 niño
+ *     CÓDIGO DE CONFIRMACIÓN
+ *     HMW98PBAJD
+ *     EL HUÉSPED PAGÓ ... TOTAL (USD)   $125.53                  <- lo que pagó el huésped
+ *     COBRO AL ANFITRIÓN ... GANAS   $106.70                     <- lo que RECIBE César (=ingreso)
  *
- * Si Airbnb cambia el formato del email, hay que ajustar los regex.
+ * Decisión: amountUsd = GANAS (payout al anfitrión), NO el total del huésped,
+ * porque el respaldo es de INGRESO real. Si Airbnb cambia el formato, ajustar
+ * las anclas de abajo (usá debugDumpRawEmail para ver el cuerpo crudo).
  */
 function parseReservationEmail(subject, body, refDate) {
-  // refDate = fecha en que Airbnb envió el email (msg.getDate()). Se usa como
-  // referencia de año para las fechas del cuerpo. Si no se pasa, cae a hoy
-  // (comportamiento viejo, correcto para tiempo real pero MAL para backfill).
+  // refDate = fecha en que Airbnb envió el email (msg.getDate()); referencia de
+  // AÑO para fechas del cuerpo (clave para backfill histórico correcto).
   refDate = refDate instanceof Date ? refDate : new Date();
-  // Confirmation code (HM + 6-10 caracteres alfanuméricos)
-  const codeMatch = body.match(/(?:Código de confirmación|Confirmation code)\s*[:\n\r]+\s*([A-Z0-9]{6,12})/i);
-  if (!codeMatch) {
+  // Trabajamos con líneas RECORTADAS: el cuerpo trae padding gigante.
+  const lines = String(body || '').split('\n').map((l) => l.trim());
+  const clean = lines.join('\n');
+
+  // 1) Código de confirmación (Airbnb siempre empieza con "HM")
+  const confirmationCode = extractConfirmationCode(lines);
+  if (!confirmationCode) {
     console.warn('parseReservationEmail: no se encontró código de confirmación');
     return null;
   }
 
-  // Guest name — la línea que aparece justo antes de "Identidad verificada" o de los detalles
-  // Estrategia: buscar el nombre del subject (ej. "Wander Jeremias") + extender hasta encontrar
-  // la línea completa en el body.
-  let guestName = '';
-  const subjectNameMatch = subject.match(/!\s*([A-Za-záéíóúñÑÁÉÍÓÚ' ]+?)\s+llega/i);
-  if (subjectNameMatch) {
-    const firstNames = subjectNameMatch[1].trim();
-    // Buscar línea completa en el body que empiece con esos primeros nombres
-    const bodyLine = body.split('\n').find((line) => {
-      const trimmed = line.trim();
-      return trimmed.startsWith(firstNames) && trimmed.length > firstNames.length;
-    });
-    guestName = (bodyLine || firstNames).trim();
-  } else {
-    // Fallback: buscar línea antes de "Identidad verificada"
-    const idIdx = body.indexOf('Identidad verificada');
-    if (idIdx > 0) {
-      const before = body.slice(0, idIdx).trim().split('\n');
-      guestName = (before[before.length - 1] || '').trim();
-    }
-  }
+  // 2) Nombre del huésped — del ASUNTO ("...confirmada[:!] NOMBRE llega..."),
+  //    con fallback al encabezado del cuerpo.
+  const guestName = extractGuestName(subject) || extractGuestName(clean);
   if (!guestName) {
     console.warn('parseReservationEmail: no se encontró nombre del huésped');
     return null;
   }
 
-  // Listing name — línea después del nombre, antes de "Vivienda" o "Apartment" o "Casa"
-  let listingName = '';
-  const typeMatch = body.match(/\n([^\n]+)\n(?:Vivienda|Apartment|Casa|Entire)/);
-  if (typeMatch) {
-    listingName = typeMatch[1].trim();
-  }
+  // 3) Listing name — primera línea de texto tras la URL de /rooms/ (o antes del tipo)
+  const listingName = extractListingName(lines);
   if (!listingName) {
     console.warn('parseReservationEmail: no se encontró listing name');
     return null;
   }
 
-  // Check-in date (año referido a la fecha del email, no a hoy)
-  const checkIn = parseDateLine(body, 'Check-in', refDate);
-  if (!checkIn) {
-    console.warn('parseReservationEmail: no se encontró check-in');
+  // 4) Fechas check-in / check-out
+  const dates = parseCheckInOut(lines, refDate);
+  if (!dates) {
+    console.warn('parseReservationEmail: no se encontraron fechas check-in/out');
     return null;
   }
 
-  // Check-out date
-  const checkOut = parseDateLine(body, 'Check-out', refDate);
-  if (!checkOut) {
-    console.warn('parseReservationEmail: no se encontró check-out');
-    return null;
-  }
+  // 5) Viajeros (adultos + niños + bebés)
+  const guestCount = parseGuestCount(lines) || 1;
 
-  // Guest count (ej. "2 adultos", "4 adultos · 1 niño")
-  let guestCount = 1;
-  const guestsMatch = body.match(/Viajeros\s*[\n\r]+\s*(\d+)\s+adultos?(?:[^\n]*?(\d+)\s+(?:niño|niños))?/i);
-  if (guestsMatch) {
-    guestCount = parseInt(guestsMatch[1], 10) + (guestsMatch[2] ? parseInt(guestsMatch[2], 10) : 0);
-  }
-
-  // Amount USD — primer "$XX.XX" después de "Total (USD)"
+  // 6) Monto — GANAS (payout al anfitrión = ingreso real de César)
   let amountUsd;
-  const totalMatch = body.match(/Total\s*\(USD\)\s*[\n\r]+\s*\$([\d,]+\.?\d*)/i);
-  if (totalMatch) {
-    amountUsd = parseFloat(totalMatch[1].replace(/,/g, ''));
-  }
+  const ganasMatch = clean.match(/\bGanas\b[\s:]*\$\s*([\d,]+(?:\.\d+)?)/i);
+  if (ganasMatch) amountUsd = parseFloat(ganasMatch[1].replace(/,/g, ''));
 
-  // Guest location — formato típico: "Ciudad, País" debajo del nombre + reseñas
+  // 7) Ubicación del huésped (opcional): línea tras "· N reseñas"
   let guestLocation;
-  const locMatch = body.match(/(?:reseñas?|reviews?)\s*[\n\r]+\s*([A-Za-záéíóúñÑÁÉÍÓÚ ,]+)\s*[\n\r]/i);
-  if (locMatch) {
-    guestLocation = locMatch[1].trim();
-  }
+  const locMatch = clean.match(/(?:rese[ñn]as?|reviews?)\s*\n\s*([A-Za-zÀ-ÿ0-9 .,'’\-]+)/i);
+  if (locMatch) guestLocation = locMatch[1].trim();
 
   return {
     listingName,
-    confirmationCode: codeMatch[1].toUpperCase(),
+    confirmationCode,
     guestName,
-    checkIn,
-    checkOut,
+    checkIn: dates.checkIn,
+    checkOut: dates.checkOut,
     guestCount,
     amountUsd,
     guestLocation,
   };
 }
 
-/**
- * Parsea fechas estilo "vie, 29 may" o "lun, 1 jun" del cuerpo del email
- * y devuelve YYYY-MM-DD. El email de confirmación se envía POCO ANTES de la
- * estadía, así que el año se infiere respecto a `refDate` (fecha del email):
- * si la fecha cae >30 días ANTES del email, es que cruzó al año siguiente
- * (ej. email de dic para estadía de ene). Usar refDate en vez de hoy es lo que
- * hace correcto el BACKFILL: un email de enero 2026 fecha en 2026, no en 2027.
- */
-function parseDateLine(body, label, refDate) {
-  const re = new RegExp(`${label}\\s*[\\n\\r]+\\s*(?:[a-zñé]+,\\s*)?(\\d{1,2})\\s+([a-zé]{3,9})`, 'i');
-  const m = body.match(re);
-  if (!m) return null;
-  const day = parseInt(m[1], 10);
-  const monthStr = m[2].toLowerCase().slice(0, 3);
-  const monthMap = {
-    'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
-    'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12,
-  };
-  const month = monthMap[monthStr];
-  if (!month) return null;
+// ── Helpers de parseo (formato real Airbnb host) ────────────────────────────
 
-  const ref = refDate instanceof Date ? refDate : new Date();
-  let year = ref.getFullYear();
-  const candidate = new Date(year, month - 1, day);
-  // Si la fecha cae >30 días antes del email, la estadía es del año siguiente.
-  if (candidate.getTime() < ref.getTime() - 30 * 86400000) {
-    year += 1;
+const MONTH_MAP = {
+  ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+  jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
+};
+
+/** Nombre del huésped desde "...confirmada[:!] NOMBRE llega...". */
+function extractGuestName(text) {
+  if (!text) return '';
+  const m = String(text).match(/confirmad[ao][:!¡\s]+(.+?)\s+llega\b/i);
+  return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+}
+
+/** Código de confirmación: anclado a la etiqueta, o fallback "HM…" en cualquier lado. */
+function extractConfirmationCode(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    if (/c[oó]digo de confirmaci[oó]n|confirmation code/i.test(lines[i])) {
+      for (let j = i + 1; j < lines.length && j < i + 5; j++) {
+        const mm = lines[j].match(/^([A-Z0-9]{6,12})$/);
+        if (mm) return mm[1].toUpperCase();
+      }
+    }
   }
+  // Fallback: los códigos de Airbnb empiezan con "HM" (aparece también en URLs).
+  const any = lines.join('\n').match(/\bHM[A-Z0-9]{6,10}\b/);
+  return any ? any[0].toUpperCase() : '';
+}
 
+/** Listing: primera línea de texto real tras la URL /rooms/; fallback antes del tipo. */
+function extractListingName(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.indexOf('/rooms/') !== -1 && l.charAt(0) !== '[') {
+      for (let j = i + 1; j < lines.length && j < i + 6; j++) {
+        const t = lines[j];
+        if (!t || t.indexOf('http') === 0 || t.charAt(0) === '[') continue;
+        return t;
+      }
+    }
+  }
+  // Fallback: línea no vacía justo antes de "Vivienda…/Habitación…".
+  for (let i = 0; i < lines.length; i++) {
+    if (/^(vivienda|habitaci[oó]n)\b/i.test(lines[i])) {
+      for (let j = i - 1; j >= 0 && j > i - 5; j--) {
+        const t = lines[j];
+        if (t && t.indexOf('http') !== 0 && t.charAt(0) !== '[') return t;
+      }
+    }
+  }
+  return '';
+}
+
+/** day (num) + monthStr → YYYY-MM-DD, con año inferido de refDate (email). */
+function dayMonthToIso(day, monthStr, refDate) {
+  const month = MONTH_MAP[String(monthStr).toLowerCase().slice(0, 3)];
+  if (!month || !day) return null;
+  let year = refDate.getFullYear();
+  const candidate = new Date(year, month - 1, day);
+  if (candidate.getTime() < refDate.getTime() - 30 * 86400000) year += 1;
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Fechas check-in/out. Formato real: DOS fechas en UNA línea ("lun, 29 jun   mar,
+ * 30 jun"). Fallback al formato vertical viejo (cada fecha bajo su etiqueta).
+ */
+function parseCheckInOut(lines, refDate) {
+  let anchor = 0;
+  for (let i = 0; i < lines.length; i++) { if (/check-?in/i.test(lines[i])) { anchor = i; break; } }
+  const dateRe = /(\d{1,2})\s+([a-záéíóúñ]{3,})/gi;
+  // Caso columnar: primera línea con >=2 fechas.
+  for (let i = anchor; i < lines.length && i < anchor + 10; i++) {
+    dateRe.lastIndex = 0;
+    const found = [];
+    let m;
+    while ((m = dateRe.exec(lines[i])) !== null) found.push(m);
+    if (found.length >= 2) {
+      const ci = dayMonthToIso(parseInt(found[0][1], 10), found[0][2], refDate);
+      const co = dayMonthToIso(parseInt(found[1][1], 10), found[1][2], refDate);
+      if (ci && co && ci < co) return { checkIn: ci, checkOut: co };
+    }
+  }
+  // Caso vertical (formato viejo).
+  const ci = dateAfterLabel(lines, /check-?in/i, refDate);
+  const co = dateAfterLabel(lines, /check-?out/i, refDate);
+  if (ci && co) return { checkIn: ci, checkOut: co };
+  return null;
+}
+
+function dateAfterLabel(lines, labelRe, refDate) {
+  for (let i = 0; i < lines.length; i++) {
+    if (labelRe.test(lines[i])) {
+      for (let j = i + 1; j < lines.length && j < i + 4; j++) {
+        const m = lines[j].match(/(\d{1,2})\s+([a-záéíóúñ]{3,})/i);
+        if (m) { const iso = dayMonthToIso(parseInt(m[1], 10), m[2], refDate); if (iso) return iso; }
+      }
+    }
+  }
+  return null;
+}
+
+/** Viajeros: suma adultos + niños + bebés de la línea bajo "VIAJEROS". */
+function parseGuestCount(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    if (/^viajeros$/i.test(lines[i])) {
+      for (let j = i + 1; j < lines.length && j < i + 4; j++) {
+        const t = lines[j];
+        if (!t) continue;
+        const ad = t.match(/(\d+)\s+adultos?/i);
+        const ni = t.match(/(\d+)\s+ni[ñn][oa]s?/i);
+        const be = t.match(/(\d+)\s+beb[eé]s?/i);
+        const n = (ad ? +ad[1] : 0) + (ni ? +ni[1] : 0) + (be ? +be[1] : 0);
+        if (n > 0) return n;
+      }
+    }
+  }
+  return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
