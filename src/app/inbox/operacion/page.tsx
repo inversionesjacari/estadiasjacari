@@ -20,7 +20,8 @@ const PROPERTY_NAMES: Record<string, string> = {
 
 const SOURCE_NAMES: Record<string, string> = {
   website: "Sitio web",
-  whatsapp_bot: "Bot WhatsApp",
+  whatsapp_bot: "Bot WhatsApp (tarjeta)",
+  whatsapp_transfer: "Transferencia",
   airbnb: "Airbnb",
   airbnb_ical: "Airbnb",
   manual: "Manual",
@@ -143,6 +144,15 @@ interface Metrics {
   // Ingreso del mes seleccionado, monedas separadas (por check-in). Es lo que muestra la KPI.
   revenueMonth?: { usd: number; hnl: number; usdAirbnb: number; usdDirect: number; reservas: number };
   availableMonths?: string[];
+  marketing?: {
+    contacts: number;
+    webViews: number;
+    webUniques: number;
+    sources: { referrer: string; c: number }[];
+    topProperties: { path: string; c: number }[];
+    directBySource: { source: string; confirmed: number; total: number }[];
+    airbnbStays: number;
+  };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
   health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null };
@@ -341,7 +351,10 @@ export default function OperacionPage() {
           </h1>
           <p className="text-[12px] text-slate-400">Estadías Jacarí · {clock}</p>
         </div>
-        <a href="/inbox" className="px-3 py-1.5 border border-white/15 rounded-lg hover:bg-white/5 text-slate-300 text-sm">← Inbox</a>
+        <div className="flex items-center gap-2">
+          <a href="https://app.estadiasjacari.com" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 border border-amber-400/30 bg-amber-400/5 rounded-lg hover:bg-amber-400/10 text-amber-200 text-sm whitespace-nowrap">📒 Contabilidad ↗</a>
+          <a href="/inbox" className="px-3 py-1.5 border border-white/15 rounded-lg hover:bg-white/5 text-slate-300 text-sm">← Inbox</a>
+        </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5 space-y-5">
@@ -365,6 +378,9 @@ export default function OperacionPage() {
           </MonthKpi>
           <MoneyKpi usd={rm.usd} hnl={rm.hnl} usdDirect={rm.usdDirect} usdAirbnb={rm.usdAirbnb} glow={HEX.amber} />
         </section>
+
+        {/* Reporte para marketing / pauta (mes seleccionado) */}
+        {m.marketing && <MarketingReport mk={m.marketing} monthPrefix={curMonthPrefix} />}
 
         {/* Diagrama protagonista */}
         <section className="rounded-2xl border border-cyan-500/20 bg-[#0a1120] p-5 shadow-[0_0_40px_rgba(34,211,238,0.06)]">
@@ -682,6 +698,136 @@ function MoneyKpi({ usd, hnl, usdDirect, usdAirbnb, glow }: { usd: number; hnl: 
       )}
       <div className="text-[10px] text-slate-500 mt-2.5 pt-1.5 border-t border-white/5">directo {fmtUsd(usdDirect)} · Airbnb {fmtUsd(usdAirbnb)}</div>
     </div>
+  );
+}
+
+// Reporte para el equipo de marketing/pauta: alcance, canales, interés y conversión
+// del mes seleccionado, en lenguaje simple + botón para copiar y pegarle a marketing.
+function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketing"]>; monthPrefix: string }) {
+  const [copied, setCopied] = useState(false);
+  const srcTotal = mk.sources.reduce((s, r) => s + r.c, 0) || 1;
+  const directTotal = mk.directBySource.reduce((s, r) => s + r.total, 0);
+  const directConf = mk.directBySource.reduce((s, r) => s + r.confirmed, 0);
+  const web = mk.directBySource.find((r) => r.source === "website");
+  const transfer = mk.directBySource.find((r) => r.source === "whatsapp_transfer");
+
+  const reportText = (() => {
+    const L: string[] = [];
+    L.push(`📣 Reporte de marketing — ${monthLabel(monthPrefix)}`, "Estadías Jacarí", "");
+    L.push("ALCANCE", `• ${mk.webViews} visitas al sitio web (${mk.webUniques} personas distintas)`, `• ${mk.contacts} personas nos escribieron por WhatsApp`, "");
+    if (mk.sources.length) {
+      L.push("DE DÓNDE LLEGAN (canales / pauta)");
+      for (const s of mk.sources) L.push(`• ${sourceLabel(s.referrer)}: ${s.c} (${Math.round((s.c / srcTotal) * 100)}%)`);
+      L.push("");
+    }
+    if (mk.topProperties.length) {
+      L.push("ANUNCIOS MÁS VISTOS");
+      for (const p of mk.topProperties) L.push(`• ${pageLabel(p.path)}: ${p.c} vistas`);
+      L.push("");
+    }
+    L.push("RESULTADOS — reservas directas hechas este mes (pauta + sitio)");
+    if (directTotal === 0) {
+      L.push("• Sin reservas directas este mes");
+    } else {
+      L.push(`• ${directTotal} reservas directas (${directConf} confirmadas)`);
+      for (const r of mk.directBySource) L.push(`   - ${SOURCE_NAMES[r.source] ?? r.source}: ${r.total}${r.confirmed !== r.total ? ` (${r.confirmed} confirmadas)` : ""}`);
+    }
+    if (web && web.total > 0) L.push(`• 🎉 El sitio web generó ${web.total} reserva(s) directa(s)`);
+    if (transfer && transfer.total > 0) L.push(`• 💵 ${transfer.total} reserva(s) pagada(s) por transferencia`);
+    L.push(`• Airbnb: ${mk.airbnbStays} estadía(s) con llegada este mes (canal aparte)`);
+    return L.join("\n");
+  })();
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(reportText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard no disponible */ }
+  };
+
+  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
+    <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3.5">
+      <div className="text-[11px] uppercase tracking-wider text-fuchsia-300/70 font-semibold mb-2">{title}</div>
+      {children}
+    </div>
+  );
+
+  return (
+    <section className="rounded-2xl border border-fuchsia-500/20 bg-[#0f0a18] p-5 shadow-[0_0_40px_rgba(217,70,239,0.05)]">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h2 className="text-lg font-bold text-white tracking-tight">📣 Para marketing · <span className="capitalize">{monthLabel(monthPrefix)}</span></h2>
+          <p className="text-[11px] text-slate-400">Resumen para el equipo de pauta — cambiá el mes con el selector de arriba</p>
+        </div>
+        <button onClick={copy} className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition ${copied ? "border-green-400/40 bg-green-400/10 text-green-300" : "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200 hover:bg-fuchsia-400/20"}`}>
+          {copied ? "✓ Copiado" : "📋 Copiar reporte"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Section title="Alcance">
+          <div className="space-y-1.5 text-sm">
+            <div className="flex justify-between"><span className="text-slate-300">👀 Visitas al sitio</span><span className="font-mono font-semibold text-white">{mk.webViews.toLocaleString("en-US")}</span></div>
+            <div className="flex justify-between"><span className="text-slate-300">🧑 Personas distintas</span><span className="font-mono font-semibold text-white">{mk.webUniques.toLocaleString("en-US")}</span></div>
+            <div className="flex justify-between"><span className="text-slate-300">💬 Nos escribieron</span><span className="font-mono font-semibold text-white">{mk.contacts.toLocaleString("en-US")}</span></div>
+          </div>
+        </Section>
+
+        <Section title="De dónde llegan (canales / pauta)">
+          {mk.sources.length === 0 ? <p className="text-[13px] text-slate-500">Sin datos de tráfico este mes.</p> : (
+            <ul className="space-y-1.5">
+              {mk.sources.map((s, i) => {
+                const name = sourceLabel(s.referrer);
+                const pct = Math.round((s.c / srcTotal) * 100);
+                return (
+                  <li key={i} className="flex items-center gap-2 text-sm">
+                    <span className="w-5 text-center">{SOURCE_ICON[name] ?? "•"}</span>
+                    <span className="text-slate-300 flex-1 truncate">{name}</span>
+                    <span className="font-mono text-xs text-slate-400">{s.c}</span>
+                    <span className="font-mono text-xs font-semibold text-fuchsia-300 w-9 text-right">{pct}%</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Section>
+
+        <Section title="Anuncios más vistos">
+          {mk.topProperties.length === 0 ? <p className="text-[13px] text-slate-500">Sin visitas a propiedades este mes.</p> : (
+            <ul className="space-y-1.5">
+              {mk.topProperties.map((p, i) => (
+                <li key={i} className="flex justify-between text-sm">
+                  <span className="text-slate-300 truncate mr-2">{pageLabel(p.path)}</span>
+                  <span className="font-mono text-xs text-slate-400 whitespace-nowrap">{p.c} vistas</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+
+        <Section title="Resultados — reservas directas (pauta / sitio)">
+          <div className="text-sm space-y-1.5">
+            {directTotal === 0 ? (
+              <p className="text-[13px] text-slate-500">Sin reservas directas este mes.</p>
+            ) : (
+              <>
+                <div className="flex justify-between"><span className="text-slate-300">Reservas directas</span><span className="font-mono font-semibold text-white">{directTotal} <span className="text-slate-500 font-normal">({directConf} confirm.)</span></span></div>
+                {mk.directBySource.map((r, i) => (
+                  <div key={i} className="flex justify-between text-[13px] pl-2">
+                    <span className="text-slate-400">{SOURCE_NAMES[r.source] ?? r.source}</span>
+                    <span className="font-mono text-slate-300">{r.total}</span>
+                  </div>
+                ))}
+              </>
+            )}
+            {web && web.total > 0 && <div className="text-[13px] text-emerald-300/90 pt-1">🎉 El sitio web generó {web.total} reserva{web.total > 1 ? "s" : ""} directa{web.total > 1 ? "s" : ""}</div>}
+            {transfer && transfer.total > 0 && <div className="text-[13px] text-slate-400">💵 {transfer.total} por transferencia</div>}
+            <div className="text-[12px] text-slate-500 pt-1.5 mt-1 border-t border-white/5">Airbnb: <span className="text-slate-400 font-mono">{mk.airbnbStays}</span> estadía{mk.airbnbStays === 1 ? "" : "s"} con llegada este mes (canal aparte)</div>
+          </div>
+        </Section>
+      </div>
+    </section>
   );
 }
 
