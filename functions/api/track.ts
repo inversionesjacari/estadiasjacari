@@ -19,7 +19,16 @@ interface Env {
 interface TrackBody {
   path?: string;
   referrer?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
 }
+
+// Normaliza un UTM: minúsculas, recortado, corto; null si vacío.
+const cleanUtm = (v: unknown): string | null => {
+  const s = typeof v === "string" ? v.trim().toLowerCase().slice(0, 60) : "";
+  return s || null;
+};
 
 const noContent = () => new Response(null, { status: 204 });
 
@@ -51,6 +60,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const path = (body.path ?? "").slice(0, 200);
   if (!path || !path.startsWith("/")) return noContent();
   const referrer = (body.referrer ?? "").slice(0, 120) || null;
+  const utmSource = cleanUtm(body.utmSource);
+  const utmMedium = cleanUtm(body.utmMedium);
+  const utmCampaign = cleanUtm(body.utmCampaign);
 
   // Visitante anónimo: hash de IP+UA+día (NO se guarda la IP).
   const day = new Date().toISOString().slice(0, 10);
@@ -58,9 +70,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   try {
     await env.DB.prepare(
-      `INSERT INTO page_views (path, referrer, visitor) VALUES (?, ?, ?)`,
+      `INSERT INTO page_views (path, referrer, visitor, utm_source, utm_medium, utm_campaign) VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(path, referrer, visitor)
+      .bind(path, referrer, visitor, utmSource, utmMedium, utmCampaign)
       .run();
   } catch {
     // best-effort — nunca rompemos la navegación del visitante

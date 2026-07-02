@@ -131,7 +131,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT COUNT(DISTINCT visitor) AS c FROM page_views WHERE created_at >= datetime('now','-5 minutes')`).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE created_at >= ${HN_DAY_START} GROUP BY path ORDER BY c DESC LIMIT 6`).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
     // Origen del tráfico (7d) incluyendo el directo (sin referrer)
-    db.prepare(`SELECT COALESCE(NULLIF(referrer,''),'(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') GROUP BY COALESCE(NULLIF(referrer,''),'(directo)') ORDER BY c DESC LIMIT 6`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT COALESCE(NULLIF(utm_source,''), NULLIF(referrer,''), '(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= datetime('now','-7 days') GROUP BY 1 ORDER BY c DESC LIMIT 6`).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
     // Tendencia diaria (7d) — vistas y únicos por día HN, alimenta el sparkline
     db.prepare(`SELECT date(created_at,'-6 hours') AS day, COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= datetime('now','-7 days') GROUP BY day ORDER BY day`).all<{ day: string; views: number; uniques: number }>().catch(() => ({ results: [] })),
     // Ingreso Airbnb cacheado (cron paypal-income). Fail-soft si la tabla no existe.
@@ -185,7 +185,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkAirbnbStays] = await Promise.all([
     db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
-    db.prepare(`SELECT COALESCE(NULLIF(referrer,''),'(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY COALESCE(NULLIF(referrer,''),'(directo)') ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT COALESCE(NULLIF(utm_source,''), NULLIF(referrer,''), '(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY 1 ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE path LIKE '/propiedades/%' AND created_at >= ? AND created_at < ? GROUP BY path ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
     // Conversiones DIRECTAS (pauta/sitio) por fecha de RESERVA (created_at) — sin
     // Airbnb (su created_at es del backfill, no real). Es el payoff real de la pauta.

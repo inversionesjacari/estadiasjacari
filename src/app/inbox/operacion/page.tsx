@@ -28,13 +28,15 @@ const SOURCE_NAMES: Record<string, string> = {
 };
 
 const REFERRER_NAMES: Record<string, string> = {
-  "(directo)": "Directo",
+  "(directo)": "Directo / sin origen",
+  // Referrers (document.referrer)
   "instagram.com": "Instagram",
   "l.instagram.com": "Instagram",
   "facebook.com": "Facebook",
   "l.facebook.com": "Facebook",
   "m.facebook.com": "Facebook",
   "lm.facebook.com": "Facebook",
+  "l.wl.co": "WhatsApp",
   "google.com": "Google",
   "www.google.com": "Google",
   "t.co": "X / Twitter",
@@ -45,13 +47,24 @@ const REFERRER_NAMES: Record<string, string> = {
   "tiktok.com": "TikTok",
   "wa.me": "WhatsApp",
   "api.whatsapp.com": "WhatsApp",
+  // UTM sources (los pone la pauta → atribución confiable)
+  instagram: "Instagram",
+  ig: "Instagram",
+  facebook: "Facebook",
+  fb: "Facebook",
+  meta: "Meta (FB/IG)",
+  google: "Google",
+  tiktok: "TikTok",
+  whatsapp: "WhatsApp",
+  email: "Email",
 };
 
 // Emoji por origen para que el panel se lea de un vistazo.
 const SOURCE_ICON: Record<string, string> = {
-  Directo: "🔗", Instagram: "📸", Facebook: "👍", Google: "🔎",
-  "X / Twitter": "𝕏", Bing: "🔎", DuckDuckGo: "🦆", LinkedIn: "💼",
-  YouTube: "▶️", TikTok: "🎵", WhatsApp: "💬",
+  "Directo / sin origen": "❓", Directo: "🔗", Instagram: "📸", Facebook: "👍",
+  "Meta (FB/IG)": "📱", Google: "🔎", "X / Twitter": "𝕏", Bing: "🔎",
+  DuckDuckGo: "🦆", LinkedIn: "💼", YouTube: "▶️", TikTok: "🎵",
+  WhatsApp: "💬", Email: "✉️",
 };
 
 // Nombre legible de una ruta del sitio: "/" → Inicio, /propiedades/<slug> → nombre.
@@ -735,6 +748,8 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
     if (web && web.total > 0) L.push(`• 🎉 El sitio web generó ${web.total} reserva(s) directa(s)`);
     if (transfer && transfer.total > 0) L.push(`• 💵 ${transfer.total} reserva(s) pagada(s) por transferencia`);
     L.push(`• Airbnb: ${mk.airbnbStays} estadía(s) con llegada este mes (canal aparte)`);
+    L.push("", `EMBUDO: ${mk.webViews} visitas al sitio → ${mk.contacts} escribieron por WhatsApp → ${directTotal} reservas directas`);
+    L.push("", "Nota: 'Directo / sin origen' incluye a quienes llegan desde las apps de Instagram/Facebook, que ocultan el origen. Para atribución EXACTA, la pauta debe etiquetar sus links con: ?utm_source=instagram (o facebook) &utm_medium=paid&utm_campaign=NOMBRE.");
     return L.join("\n");
   })();
 
@@ -826,6 +841,20 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
             <div className="text-[12px] text-slate-500 pt-1.5 mt-1 border-t border-white/5">Airbnb: <span className="text-slate-400 font-mono">{mk.airbnbStays}</span> estadía{mk.airbnbStays === 1 ? "" : "s"} con llegada este mes (canal aparte)</div>
           </div>
         </Section>
+      </div>
+
+      {/* Embudo + nota honesta de atribución */}
+      <div className="mt-3 rounded-xl bg-white/[0.02] border border-white/5 p-3.5">
+        <div className="flex items-center gap-2 text-sm flex-wrap">
+          <span className="font-mono font-semibold text-white">{mk.webViews.toLocaleString("en-US")}</span><span className="text-slate-400">visitas</span>
+          <span className="text-slate-600">→</span>
+          <span className="font-mono font-semibold text-white">{mk.contacts.toLocaleString("en-US")}</span><span className="text-slate-400">escribieron</span>
+          <span className="text-slate-600">→</span>
+          <span className="font-mono font-semibold text-emerald-300">{directTotal}</span><span className="text-slate-400">reservas directas</span>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+          ❓ <b className="text-slate-400">Directo / sin origen</b> incluye a quienes llegan desde las apps de Instagram/Facebook (ocultan el origen) — por eso ese número es alto. Para atribución <b className="text-slate-300">exacta</b>, la pauta debe etiquetar sus links: <code className="text-fuchsia-300/80 break-all">?utm_source=instagram&amp;utm_medium=paid&amp;utm_campaign=NOMBRE</code>. Al hacerlo, aparecen acá como Instagram/Facebook reales.
+        </p>
       </div>
     </section>
   );
