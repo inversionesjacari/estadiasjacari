@@ -160,6 +160,25 @@ export default function RegistroPage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
+  // Prefill desde un chat: /inbox/registro?nueva=1&phone=...&name=...&prop=slug
+  // Abre el form de nueva reserva ya con los datos del huésped cargados.
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get("nueva") !== "1") return;
+      setForm((f) => ({
+        ...f,
+        guest_phone: sp.get("phone") ?? f.guest_phone,
+        guest_name: sp.get("name") ?? f.guest_name,
+        property_slug: sp.get("prop") ?? f.property_slug,
+      }));
+      setShowAdd(true);
+      window.history.replaceState({}, "", "/inbox/registro"); // limpiar para no re-abrir al recargar
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));

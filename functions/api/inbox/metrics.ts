@@ -182,14 +182,18 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // created_at (evento); 00:00 HN = 06:00 UTC. Reservas por check_in del mes.
   const monthStartUtc = `${monthStart} 06:00:00`;
   const nextMonthStartUtc = `${nextMonthStart} 06:00:00`;
-  const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkAirbnbStays] = await Promise.all([
+  // Conversiones DIRECTAS = todo lo NO-Airbnb (sitio, bot, transferencia y las
+  // reservas cargadas a mano desde el inbox). Es el payoff de la pauta/atención.
+  const DIRECT_SRC = "('website','whatsapp_bot','whatsapp_transfer','manual')";
+  const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkDirectByProp, mkAirbnbStays] = await Promise.all([
     db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
     db.prepare(`SELECT COALESCE(NULLIF(utm_source,''), NULLIF(referrer,''), '(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY 1 ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE path LIKE '/propiedades/%' AND created_at >= ? AND created_at < ? GROUP BY path ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
-    // Conversiones DIRECTAS (pauta/sitio) por fecha de RESERVA (created_at) — sin
-    // Airbnb (su created_at es del backfill, no real). Es el payoff real de la pauta.
-    db.prepare(`SELECT source, SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS confirmed, COUNT(*) AS total FROM reservations WHERE source IN ('website','whatsapp_bot','whatsapp_transfer') AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY source ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ source: string; confirmed: number; total: number }>().catch(() => ({ results: [] })),
+    // Por CANAL, por fecha de RESERVA (created_at). Airbnb va aparte (su created_at es del backfill).
+    db.prepare(`SELECT source, SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS confirmed, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY source ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ source: string; confirmed: number; total: number }>().catch(() => ({ results: [] })),
+    // Por PROPIEDAD (en qué propiedad se cerró cada reserva directa).
+    db.prepare(`SELECT property_slug AS slug, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY property_slug ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; total: number }>().catch(() => ({ results: [] })),
     // Estadías de Airbnb con llegada en el mes (por check_in) — volumen del canal.
     db.prepare(`SELECT COUNT(*) AS c FROM reservations WHERE source IN ('airbnb','airbnb_ical') AND status IN ('pending','confirmed') AND check_in >= ? AND check_in < ?`).bind(monthStart, nextMonthStart).first<{ c: number }>().catch(() => ({ c: 0 })),
   ]);
@@ -403,6 +407,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       topProperties: rowsOf<{ path: string; c: number }>(mkTopProps),
       // Conversiones directas por fecha de reserva (pauta) + volumen Airbnb (check-in).
       directBySource: rowsOf<{ source: string; confirmed: number; total: number }>(mkDirectResv),
+      directByProperty: rowsOf<{ slug: string; total: number }>(mkDirectByProp),
       airbnbStays: numOf(mkAirbnbStays, "c"),
     },
     health: {

@@ -164,6 +164,7 @@ interface Metrics {
     sources: { referrer: string; c: number }[];
     topProperties: { path: string; c: number }[];
     directBySource: { source: string; confirmed: number; total: number }[];
+    directByProperty: { slug: string; total: number }[];
     airbnbStays: number;
   };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
@@ -724,32 +725,33 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
   const web = mk.directBySource.find((r) => r.source === "website");
   const transfer = mk.directBySource.find((r) => r.source === "whatsapp_transfer");
 
+  // Texto formato WhatsApp (negritas con *asteriscos*), para pegarle a marketing.
   const reportText = (() => {
     const L: string[] = [];
-    L.push(`📣 Reporte de marketing — ${monthLabel(monthPrefix)}`, "Estadías Jacarí", "");
-    L.push("ALCANCE", `• ${mk.webViews} visitas al sitio web (${mk.webUniques} personas distintas)`, `• ${mk.contacts} personas nos escribieron por WhatsApp`, "");
+    L.push(`📊 *Reporte de marketing — ${monthLabel(monthPrefix)}*`, "_Estadías Jacarí_", "");
+    L.push("🌐 *Sitio web*", `• ${mk.webViews} visitas (${mk.webUniques} personas distintas)`, "");
+    L.push("💬 *WhatsApp*", `• Se iniciaron *${mk.contacts}* conversaciones`);
+    if (directTotal === 0) {
+      L.push("• Se cerró en reserva: *0* (aún sin registrar cierres este mes)");
+    } else {
+      L.push(`• De esas, se cerraron *${directTotal}* en reserva:`);
+      for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
+    }
+    L.push("");
     if (mk.sources.length) {
-      L.push("DE DÓNDE LLEGAN (canales / pauta)");
+      L.push("📣 *De dónde llegan*");
       for (const s of mk.sources) L.push(`• ${sourceLabel(s.referrer)}: ${s.c} (${Math.round((s.c / srcTotal) * 100)}%)`);
-      L.push("");
+      L.push("⚠️ Ojo: \"Directo / sin origen\" incluye a quienes vienen de las apps de Instagram/Facebook (ocultan el origen). Es probable que MUCHOS de esos sean de sus ads.", "");
     }
     if (mk.topProperties.length) {
-      L.push("ANUNCIOS MÁS VISTOS");
+      L.push("🏆 *Anuncios más vistos*");
       for (const p of mk.topProperties) L.push(`• ${pageLabel(p.path)}: ${p.c} vistas`);
       L.push("");
     }
-    L.push("RESULTADOS — reservas directas hechas este mes (pauta + sitio)");
-    if (directTotal === 0) {
-      L.push("• Sin reservas directas este mes");
-    } else {
-      L.push(`• ${directTotal} reservas directas (${directConf} confirmadas)`);
-      for (const r of mk.directBySource) L.push(`   - ${SOURCE_NAMES[r.source] ?? r.source}: ${r.total}${r.confirmed !== r.total ? ` (${r.confirmed} confirmadas)` : ""}`);
-    }
-    if (web && web.total > 0) L.push(`• 🎉 El sitio web generó ${web.total} reserva(s) directa(s)`);
-    if (transfer && transfer.total > 0) L.push(`• 💵 ${transfer.total} reserva(s) pagada(s) por transferencia`);
-    L.push(`• Airbnb: ${mk.airbnbStays} estadía(s) con llegada este mes (canal aparte)`);
-    L.push("", `EMBUDO: ${mk.webViews} visitas al sitio → ${mk.contacts} escribieron por WhatsApp → ${directTotal} reservas directas`);
-    L.push("", "Nota: 'Directo / sin origen' incluye a quienes llegan desde las apps de Instagram/Facebook, que ocultan el origen. Para atribución EXACTA, la pauta debe etiquetar sus links con: ?utm_source=instagram (o facebook) &utm_medium=paid&utm_campaign=NOMBRE.");
+    L.push(`_(Airbnb va aparte: ${mk.airbnbStays} estadías con llegada este mes — es su propio canal)_`, "");
+    L.push("✅ *Para saber EXACTO qué ad funciona*, etiqueten los links de sus anuncios así:");
+    L.push("estadiasjacari.com/?utm_source=instagram&utm_medium=paid&utm_campaign=NOMBRE");
+    L.push("(cambien \"instagram\" por \"facebook\" según el canal, y \"NOMBRE\" por el de la campaña). Con eso, el próximo reporte les dice qué campaña trajo cada reserva.");
     return L.join("\n");
   })();
 

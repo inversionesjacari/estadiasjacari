@@ -1684,6 +1684,13 @@ export default function InboxPage() {
                       </span>
                       {!noMessages && (
                       <div className="flex items-center gap-2 shrink-0">
+                        <a
+                          href={`/inbox/registro?nueva=1&phone=${encodeURIComponent(selectedPhone ?? "")}&name=${encodeURIComponent(guestName ?? "")}${conv?.reservation?.propertySlug ? `&prop=${encodeURIComponent(conv.reservation.propertySlug)}` : ""}`}
+                          className="text-[12px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg px-3 py-1 whitespace-nowrap transition"
+                          title="Registrar este chat como reserva — así cuenta como conversión directa en el reporte de marketing"
+                        >
+                          ＋ Reserva
+                        </a>
                         {!paused && (
                           <button
                             type="button"
