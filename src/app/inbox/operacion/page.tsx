@@ -726,32 +726,37 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
   const transfer = mk.directBySource.find((r) => r.source === "whatsapp_transfer");
 
   // Texto formato WhatsApp (negritas con *asteriscos*), para pegarle a marketing.
+  // Honesto sobre atribución: el SITIO se puede atribuir (UTM/referrer); el origen
+  // de los leads de WHATSAPP hoy NO se rastrea (ver el instructivo al final).
   const reportText = (() => {
     const L: string[] = [];
     L.push(`📊 *Reporte de marketing — ${monthLabel(monthPrefix)}*`, "_Estadías Jacarí_", "");
-    L.push("🌐 *Sitio web*", `• ${mk.webViews} visitas (${mk.webUniques} personas distintas)`, "");
-    L.push("💬 *WhatsApp*", `• Se iniciaron *${mk.contacts}* conversaciones`);
-    if (directTotal === 0) {
-      L.push("• Se cerró en reserva: *0* (aún sin registrar cierres este mes)");
-    } else {
-      L.push(`• De esas, se cerraron *${directTotal}* en reserva:`);
-      for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
+    L.push(`🌐 *Sitio web — ${mk.webViews} visitas (${mk.webUniques} personas)*`);
+    if (mk.sources.length) {
+      L.push("De dónde llegan al sitio:");
+      for (const s of mk.sources) L.push(`• ${sourceLabel(s.referrer)}: ${s.c} (${Math.round((s.c / srcTotal) * 100)}%)`);
+      L.push("⚠️ \"Directo / sin origen\" incluye a quienes vienen de las apps de Instagram/Facebook, que ocultan el origen del clic. Para verlo exacto → etiquetar los ads con UTM (abajo).");
     }
     L.push("");
-    if (mk.sources.length) {
-      L.push("📣 *De dónde llegan*");
-      for (const s of mk.sources) L.push(`• ${sourceLabel(s.referrer)}: ${s.c} (${Math.round((s.c / srcTotal) * 100)}%)`);
-      L.push("⚠️ Ojo: \"Directo / sin origen\" incluye a quienes vienen de las apps de Instagram/Facebook (ocultan el origen). Es probable que MUCHOS de esos sean de sus ads.", "");
-    }
     if (mk.topProperties.length) {
-      L.push("🏆 *Anuncios más vistos*");
+      L.push("🏆 *Anuncios más vistos en el sitio*");
       for (const p of mk.topProperties) L.push(`• ${pageLabel(p.path)}: ${p.c} vistas`);
       L.push("");
     }
-    L.push(`_(Airbnb va aparte: ${mk.airbnbStays} estadías con llegada este mes — es su propio canal)_`, "");
-    L.push("✅ *Para saber EXACTO qué ad funciona*, etiqueten los links de sus anuncios así:");
-    L.push("estadiasjacari.com/?utm_source=instagram&utm_medium=paid&utm_campaign=NOMBRE");
-    L.push("(cambien \"instagram\" por \"facebook\" según el canal, y \"NOMBRE\" por el de la campaña). Con eso, el próximo reporte les dice qué campaña trajo cada reserva.");
+    L.push(`💬 *WhatsApp — ${mk.contacts} personas escribieron*`);
+    if (directTotal === 0) {
+      L.push("• Cerradas en reserva: *0* registradas este mes");
+    } else {
+      L.push(`• Se cerraron *${directTotal}* en reserva:`);
+      for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
+    }
+    L.push("⚠️ IMPORTANTE: de estas reservas NO sabemos aún el origen del lead (pudo ser Instagram, Facebook, Airbnb o recomendación). WhatsApp no lo dice solo. Cómo saberlo, abajo. 👇", "");
+    L.push(`_(Airbnb va aparte: ${mk.airbnbStays} estadías con llegada este mes — su propio canal.)_`, "");
+    L.push("✅ *Para saber de qué ad viene cada reserva:*");
+    L.push("1) En el SITIO — etiquetar los links de los ads así:");
+    L.push("   estadiasjacari.com/?utm_source=instagram&utm_medium=paid&utm_campaign=NOMBRE");
+    L.push("   (cambiar \"instagram\" por \"facebook\", y \"NOMBRE\" por la campaña).");
+    L.push("2) En WHATSAPP — usar ads \"Click to WhatsApp\" (con botón Enviar mensaje). Ahí Meta nos dice de qué anuncio vino cada chat.");
     return L.join("\n");
   })();
 
@@ -823,10 +828,10 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           )}
         </Section>
 
-        <Section title="Resultados — reservas directas (pauta / sitio)">
+        <Section title="Reservas cerradas por WhatsApp / sitio">
           <div className="text-sm space-y-1.5">
             {directTotal === 0 ? (
-              <p className="text-[13px] text-slate-500">Sin reservas directas este mes.</p>
+              <p className="text-[13px] text-slate-500">Sin reservas registradas por estos canales este mes.</p>
             ) : (
               <>
                 <div className="flex justify-between"><span className="text-slate-300">Reservas directas</span><span className="font-mono font-semibold text-white">{directTotal} <span className="text-slate-500 font-normal">({directConf} confirm.)</span></span></div>
@@ -852,10 +857,10 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           <span className="text-slate-600">→</span>
           <span className="font-mono font-semibold text-white">{mk.contacts.toLocaleString("en-US")}</span><span className="text-slate-400">escribieron</span>
           <span className="text-slate-600">→</span>
-          <span className="font-mono font-semibold text-emerald-300">{directTotal}</span><span className="text-slate-400">reservas directas</span>
+          <span className="font-mono font-semibold text-emerald-300">{directTotal}</span><span className="text-slate-400">reservas cerradas</span>
         </div>
         <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
-          ❓ <b className="text-slate-400">Directo / sin origen</b> incluye a quienes llegan desde las apps de Instagram/Facebook (ocultan el origen) — por eso ese número es alto. Para atribución <b className="text-slate-300">exacta</b>, la pauta debe etiquetar sus links: <code className="text-fuchsia-300/80 break-all">?utm_source=instagram&amp;utm_medium=paid&amp;utm_campaign=NOMBRE</code>. Al hacerlo, aparecen acá como Instagram/Facebook reales.
+          ❓ <b className="text-amber-300/80">El origen de los leads de WhatsApp NO se rastrea aún</b> — una reserva por WhatsApp pudo venir de Instagram, Facebook, Airbnb o recomendación; el chat no lo dice. Para saberlo hay 2 vías: <b className="text-slate-300">(1) Sitio:</b> etiquetar los ads con <code className="text-fuchsia-300/80 break-all">?utm_source=instagram&amp;utm_medium=paid&amp;utm_campaign=NOMBRE</code>. <b className="text-slate-300">(2) WhatsApp:</b> usar ads <b>Click-to-WhatsApp</b> de Meta → nos dicen de qué anuncio vino cada chat (falta activar la captura). Y <b>Directo / sin origen</b> arriba = visitas al sitio cuyo referrer se perdió (apps de IG/FB).
         </p>
       </div>
     </section>
