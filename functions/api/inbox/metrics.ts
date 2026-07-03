@@ -185,7 +185,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // Conversiones DIRECTAS = todo lo NO-Airbnb (sitio, bot, transferencia y las
   // reservas cargadas a mano desde el inbox). Es el payoff de la pauta/atención.
   const DIRECT_SRC = "('website','whatsapp_bot','whatsapp_transfer','manual')";
-  const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkDirectByProp, mkAirbnbStays] = await Promise.all([
+  const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkDirectByProp, mkAirbnbStays, mkLeadsByAd] = await Promise.all([
     db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
     db.prepare(`SELECT COALESCE(NULLIF(utm_source,''), NULLIF(referrer,''), '(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY 1 ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
@@ -196,6 +196,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT property_slug AS slug, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY property_slug ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; total: number }>().catch(() => ({ results: [] })),
     // Estadías de Airbnb con llegada en el mes (por check_in) — volumen del canal.
     db.prepare(`SELECT COUNT(*) AS c FROM reservations WHERE source IN ('airbnb','airbnb_ical') AND status IN ('pending','confirmed') AND check_in >= ? AND check_in < ?`).bind(monthStart, nextMonthStart).first<{ c: number }>().catch(() => ({ c: 0 })),
+    // Leads de WhatsApp que vinieron de un ad (Click-to-WhatsApp), por anuncio.
+    // Fail-soft si la tabla aún no existe. first_at = cuándo escribió por primera vez.
+    db.prepare(`SELECT COALESCE(NULLIF(headline,''), NULLIF(source_url,''), source_id, 'Ad sin título') AS ad, COUNT(*) AS c FROM whatsapp_lead_source WHERE first_at >= ? AND first_at < ? GROUP BY ad ORDER BY c DESC LIMIT 10`).bind(monthStartUtc, nextMonthStartUtc).all<{ ad: string; c: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Salud del LLM del bot: último error registrado por el webhook cuando el bot
@@ -409,6 +412,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       directBySource: rowsOf<{ source: string; confirmed: number; total: number }>(mkDirectResv),
       directByProperty: rowsOf<{ slug: string; total: number }>(mkDirectByProp),
       airbnbStays: numOf(mkAirbnbStays, "c"),
+      // Leads de WhatsApp que vinieron de un ad Click-to-WhatsApp (por anuncio).
+      leadsByAd: rowsOf<{ ad: string; c: number }>(mkLeadsByAd),
     },
     health: {
       lastInAt: strOf(lastIn, "t"),

@@ -181,6 +181,17 @@ interface MetaMessage {
     name?: { formatted_name?: string; first_name?: string };
     phones?: Array<{ phone?: string; wa_id?: string }>;
   }>;
+  // Presente cuando el chat se inició desde un ad "Click to WhatsApp" de Meta:
+  // nos dice EXACTAMENTE de qué anuncio/campaña vino el lead.
+  referral?: {
+    source_url?: string;
+    source_id?: string;
+    source_type?: string; // 'ad' | 'post'
+    headline?: string;
+    body?: string;
+    media_type?: string;
+    ctwa_clid?: string;
+  };
 }
 
 interface MetaContact {
@@ -368,6 +379,31 @@ async function processIncomingMessage(
         .run();
     } catch (err) {
       console.error("Error guardando contacto:", (err as Error).message);
+    }
+  }
+
+  // ── Origen del lead (ad Click-to-WhatsApp) ─────────────────────────────
+  // Meta manda `referral` cuando el chat se inició desde un ad. Guardamos el
+  // PRIMERO por teléfono (INSERT OR IGNORE) = la atribución original del lead.
+  if (msg.referral && (msg.referral.source_id || msg.referral.source_url)) {
+    try {
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO whatsapp_lead_source
+           (phone, source_type, source_id, source_url, headline, body, ctwa_clid, first_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      )
+        .bind(
+          fromE164,
+          msg.referral.source_type ?? null,
+          msg.referral.source_id ?? null,
+          msg.referral.source_url ?? null,
+          (msg.referral.headline ?? "").slice(0, 200) || null,
+          (msg.referral.body ?? "").slice(0, 300) || null,
+          msg.referral.ctwa_clid ?? null,
+        )
+        .run();
+    } catch (err) {
+      console.error("Error guardando origen del lead:", (err as Error).message);
     }
   }
 

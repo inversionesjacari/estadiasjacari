@@ -166,6 +166,7 @@ interface Metrics {
     directBySource: { source: string; confirmed: number; total: number }[];
     directByProperty: { slug: string; total: number }[];
     airbnbStays: number;
+    leadsByAd?: { ad: string; c: number }[];
   };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
@@ -720,6 +721,8 @@ function MoneyKpi({ usd, hnl, usdDirect, usdAirbnb, glow }: { usd: number; hnl: 
 function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketing"]>; monthPrefix: string }) {
   const [copied, setCopied] = useState(false);
   const srcTotal = mk.sources.reduce((s, r) => s + r.c, 0) || 1;
+  const leadsByAd = mk.leadsByAd ?? [];
+  const leadsFromAds = leadsByAd.reduce((s, a) => s + a.c, 0);
   const directTotal = mk.directBySource.reduce((s, r) => s + r.total, 0);
   const directConf = mk.directBySource.reduce((s, r) => s + r.confirmed, 0);
   const web = mk.directBySource.find((r) => r.source === "website");
@@ -744,19 +747,24 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
       L.push("");
     }
     L.push(`💬 *WhatsApp — ${mk.contacts} personas escribieron*`);
+    if (leadsFromAds > 0) {
+      L.push(`• De esos, *${leadsFromAds}* vinieron de un ad (Click-to-WhatsApp):`);
+      for (const a of leadsByAd) L.push(`   • ${a.c} de "${a.ad}"`);
+    }
     if (directTotal === 0) {
       L.push("• Cerradas en reserva: *0* registradas este mes");
     } else {
       L.push(`• Se cerraron *${directTotal}* en reserva:`);
       for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
     }
-    L.push("⚠️ IMPORTANTE: de estas reservas NO sabemos aún el origen del lead (pudo ser Instagram, Facebook, Airbnb o recomendación). WhatsApp no lo dice solo. Cómo saberlo, abajo. 👇", "");
-    L.push(`_(Airbnb va aparte: ${mk.airbnbStays} estadías con llegada este mes — su propio canal.)_`, "");
-    L.push("✅ *Para saber de qué ad viene cada reserva:*");
-    L.push("1) En el SITIO — etiquetar los links de los ads así:");
+    if (leadsFromAds === 0) {
+      L.push("⚠️ De estas reservas todavía no vemos el origen del lead. Acabamos de activar la captura de ads Click-to-WhatsApp — a partir de ahora, cada chat que venga de un ad va a aparecer acá con el nombre del anuncio.");
+    }
+    L.push("", `_(Airbnb va aparte: ${mk.airbnbStays} estadías con llegada este mes — su propio canal.)_`, "");
+    L.push("✅ *Para atribuir todo:*");
+    L.push("• WhatsApp: seguí usando ads \"Click to WhatsApp\" — el origen ya se captura solo.");
+    L.push("• Sitio web: etiquetá los links de los ads que llevan a la página con:");
     L.push("   estadiasjacari.com/?utm_source=instagram&utm_medium=paid&utm_campaign=NOMBRE");
-    L.push("   (cambiar \"instagram\" por \"facebook\", y \"NOMBRE\" por la campaña).");
-    L.push("2) En WHATSAPP — usar ads \"Click to WhatsApp\" (con botón Enviar mensaje). Ahí Meta nos dice de qué anuncio vino cada chat.");
     return L.join("\n");
   })();
 
@@ -859,8 +867,21 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           <span className="text-slate-600">→</span>
           <span className="font-mono font-semibold text-emerald-300">{directTotal}</span><span className="text-slate-400">reservas cerradas</span>
         </div>
+        {leadsFromAds > 0 && (
+          <div className="mt-2.5 pt-2.5 border-t border-white/5">
+            <div className="text-[11px] uppercase tracking-wider text-emerald-300/70 font-semibold mb-1.5">📲 Leads que vinieron de un ad (Click-to-WhatsApp)</div>
+            <ul className="space-y-1">
+              {leadsByAd.map((a, i) => (
+                <li key={i} className="flex justify-between text-[13px] gap-2">
+                  <span className="text-slate-300 truncate">{a.ad}</span>
+                  <span className="font-mono text-emerald-300 whitespace-nowrap">{a.c}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
-          ❓ <b className="text-amber-300/80">El origen de los leads de WhatsApp NO se rastrea aún</b> — una reserva por WhatsApp pudo venir de Instagram, Facebook, Airbnb o recomendación; el chat no lo dice. Para saberlo hay 2 vías: <b className="text-slate-300">(1) Sitio:</b> etiquetar los ads con <code className="text-fuchsia-300/80 break-all">?utm_source=instagram&amp;utm_medium=paid&amp;utm_campaign=NOMBRE</code>. <b className="text-slate-300">(2) WhatsApp:</b> usar ads <b>Click-to-WhatsApp</b> de Meta → nos dicen de qué anuncio vino cada chat (falta activar la captura). Y <b>Directo / sin origen</b> arriba = visitas al sitio cuyo referrer se perdió (apps de IG/FB).
+          📲 <b className="text-emerald-300/80">Origen de los leads de WhatsApp: captura ACTIVA.</b> Como usás ads <b>Click-to-WhatsApp</b>, Meta nos dice de qué anuncio vino cada chat — a partir de ahora aparece acá arriba con el nombre del ad. <b className="text-slate-300">Sitio web:</b> etiquetá los links con <code className="text-fuchsia-300/80 break-all">?utm_source=instagram&amp;utm_medium=paid&amp;utm_campaign=NOMBRE</code>. Y <b>Directo / sin origen</b> = visitas al sitio cuyo referrer se perdió (apps de IG/FB).
         </p>
       </div>
     </section>
