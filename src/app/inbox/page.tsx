@@ -41,7 +41,7 @@ interface Conversation {
     checkIn: string | null;
     checkOut: string | null;
   } | null;
-  tag?: { outcome: string; propertySlug: string | null } | null;
+  tag?: { outcome: string; propertySlug: string | null; by?: string } | null;
 }
 
 // Desenlaces de conversación (etiquetado manual). Espejo de conversation-tag.ts.
@@ -1762,7 +1762,11 @@ export default function InboxPage() {
                         <option value="">¿qué propiedad?</option>
                         {Object.entries(PROPERTY_NAMES).map(([slug, name]) => <option key={slug} value={slug}>{name}</option>)}
                       </select>
-                      {conv?.tag?.outcome && <span className="text-[11px] text-emerald-600 dark:text-emerald-400 shrink-0">✓ guardado</span>}
+                      {conv?.tag?.outcome && (
+                        <span className={`text-[11px] shrink-0 ${conv.tag.by === "auto" ? "text-violet-500 dark:text-violet-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                          {conv.tag.by === "auto" ? "🤖 auto (revisá)" : "✓ guardado"}
+                        </span>
+                      )}
                     </div>
                   </>
                 );

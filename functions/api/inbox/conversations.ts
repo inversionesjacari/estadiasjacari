@@ -36,6 +36,7 @@ interface ConversationRow {
   conv_state: string | null;
   tag_outcome: string | null;
   tag_property: string | null;
+  tag_by: string | null;
   last_out_at: string | null;
   last_out_body: string | null;
   last_out_rule: string | null;
@@ -79,7 +80,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
               r.check_out,
               st.state AS conv_state,
               ct.outcome AS tag_outcome,
-              ct.property_slug AS tag_property
+              ct.property_slug AS tag_property,
+              ct.tagged_by AS tag_by
          FROM last_msg lm
          LEFT JOIN reservations r ON r.id = lm.reservation_id
          LEFT JOIN whatsapp_contacts c ON c.phone = lm.phone
@@ -128,7 +130,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         botPaused: paused.has(r.phone),
         dismissed: ((da) => da != null && da >= r.last_at)(dismissed.get(r.phone)),
         state: r.conv_state,
-        tag: r.tag_outcome ? { outcome: r.tag_outcome, propertySlug: r.tag_property ?? null } : null,
+        tag: r.tag_outcome ? { outcome: r.tag_outcome, propertySlug: r.tag_property ?? null, by: r.tag_by ?? "manual" } : null,
         lastOutAt: r.last_out_at,
         lastOutRule: r.last_out_rule,
         contactName: r.contact_name,

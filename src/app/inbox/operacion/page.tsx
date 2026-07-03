@@ -307,6 +307,23 @@ export default function OperacionPage() {
     }
   }, [load]);
 
+  // Auto-clasifica el desenlace de los chats (reservó/cotizó/… ) sin pisar lo manual.
+  const [classifying, setClassifying] = useState(false);
+  const [classifyMsg, setClassifyMsg] = useState("");
+  const runClassify = useCallback(async () => {
+    setClassifying(true);
+    setClassifyMsg("");
+    try {
+      const r = await fetch("/api/inbox/conversation-autotag", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 40 }) });
+      const d = await r.json().catch(() => ({})) as { ok?: boolean; deterministic?: number; llm?: number; candidates?: number };
+      if (d.ok) setClassifyMsg(`✓ ${(d.deterministic ?? 0) + (d.llm ?? 0)} clasificados (${d.deterministic ?? 0} por reserva, ${d.llm ?? 0} por IA)${(d.candidates ?? 0) >= 40 ? " · corré de nuevo para seguir" : ""}`);
+      else setClassifyMsg("Error al clasificar");
+      await load();
+    } catch { setClassifyMsg("Error de red"); } finally {
+      setClassifying(false);
+    }
+  }, [load]);
+
   // Marca un hallazgo de QA como resuelto (lo borra) y recarga. Como el análisis
   // es incremental, no reaparece salvo que el cliente vuelva a escribir.
   const resolveFinding = useCallback(async (id: number) => {
@@ -397,7 +414,7 @@ export default function OperacionPage() {
         </section>
 
         {/* Reporte para marketing / pauta (mes seleccionado) */}
-        {m.marketing && <MarketingReport mk={m.marketing} monthPrefix={curMonthPrefix} />}
+        {m.marketing && <MarketingReport mk={m.marketing} monthPrefix={curMonthPrefix} onClassify={runClassify} classifying={classifying} classifyMsg={classifyMsg} />}
 
         {/* Diagrama protagonista */}
         <section className="rounded-2xl border border-cyan-500/20 bg-[#0a1120] p-5 shadow-[0_0_40px_rgba(34,211,238,0.06)]">
@@ -720,7 +737,7 @@ function MoneyKpi({ usd, hnl, usdDirect, usdAirbnb, glow }: { usd: number; hnl: 
 
 // Reporte para el equipo de marketing/pauta: alcance, canales, interés y conversión
 // del mes seleccionado, en lenguaje simple + botón para copiar y pegarle a marketing.
-function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketing"]>; monthPrefix: string }) {
+function MarketingReport({ mk, monthPrefix, onClassify, classifying, classifyMsg }: { mk: NonNullable<Metrics["marketing"]>; monthPrefix: string; onClassify?: () => void; classifying?: boolean; classifyMsg?: string }) {
   const [copied, setCopied] = useState(false);
   const srcTotal = mk.sources.reduce((s, r) => s + r.c, 0) || 1;
   const leadsByAd = mk.leadsByAd ?? [];
@@ -798,10 +815,18 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           <h2 className="text-lg font-bold text-white tracking-tight">📣 Para marketing · <span className="capitalize">{monthLabel(monthPrefix)}</span></h2>
           <p className="text-[11px] text-slate-400">Resumen para el equipo de pauta — cambiá el mes con el selector de arriba</p>
         </div>
-        <button onClick={copy} className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition ${copied ? "border-green-400/40 bg-green-400/10 text-green-300" : "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200 hover:bg-fuchsia-400/20"}`}>
-          {copied ? "✓ Copiado" : "📋 Copiar reporte"}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {onClassify && (
+            <button onClick={onClassify} disabled={classifying} className="px-3.5 py-2 rounded-lg text-sm font-semibold border border-violet-400/30 bg-violet-400/10 text-violet-200 hover:bg-violet-400/20 transition disabled:opacity-50">
+              {classifying ? "Clasificando…" : "🤖 Auto-clasificar chats"}
+            </button>
+          )}
+          <button onClick={copy} className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition ${copied ? "border-green-400/40 bg-green-400/10 text-green-300" : "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200 hover:bg-fuchsia-400/20"}`}>
+            {copied ? "✓ Copiado" : "📋 Copiar reporte"}
+          </button>
+        </div>
       </div>
+      {classifyMsg && <p className="text-[11px] text-violet-300/80 mb-3 -mt-2">{classifyMsg}</p>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <Section title="Alcance">

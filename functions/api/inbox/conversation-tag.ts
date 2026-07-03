@@ -61,12 +61,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   try {
     await env.DB
       .prepare(
-        `INSERT INTO conversation_tags (phone, outcome, property_slug, note, updated_at)
-           VALUES (?, ?, ?, ?, datetime('now'))
+        `INSERT INTO conversation_tags (phone, outcome, property_slug, note, tagged_by, updated_at)
+           VALUES (?, ?, ?, ?, 'manual', datetime('now'))
          ON CONFLICT(phone) DO UPDATE SET
            outcome = excluded.outcome,
            property_slug = excluded.property_slug,
            note = excluded.note,
+           tagged_by = 'manual',
            updated_at = datetime('now')`,
       )
       .bind(phone, outcome, propertySlug, note)
