@@ -41,7 +41,20 @@ interface Conversation {
     checkIn: string | null;
     checkOut: string | null;
   } | null;
+  tag?: { outcome: string; propertySlug: string | null } | null;
 }
+
+// Desenlaces de conversación (etiquetado manual). Espejo de conversation-tag.ts.
+const OUTCOMES: { key: string; label: string; emoji: string }[] = [
+  { key: "reservo", label: "Reservó", emoji: "✅" },
+  { key: "cotizo", label: "Cotizó", emoji: "💬" },
+  { key: "sin_disponibilidad", label: "Sin disponib.", emoji: "📅" },
+  { key: "precio", label: "Precio", emoji: "💰" },
+  { key: "sin_respuesta", label: "Sin respuesta", emoji: "👻" },
+  { key: "fuera", label: "Fuera de alcance", emoji: "🚫" },
+  { key: "otro", label: "Otro", emoji: "•" },
+];
+const OUTCOME_LABEL = Object.fromEntries(OUTCOMES.map((o) => [o.key, `${o.emoji} ${o.label}`]));
 
 interface Message {
   id: number;
@@ -894,6 +907,22 @@ export default function InboxPage() {
     }
   }, [fetchConversations]);
 
+  // Etiquetar el desenlace de una conversación (reservó / cotizó / precio…) + de
+  // qué propiedad preguntó. Alimenta el seguimiento por propiedad del Centro de Control.
+  const handleTag = useCallback(async (phone: string, outcome: string, propertySlug: string | null): Promise<void> => {
+    try {
+      await fetch("/api/inbox/conversation-tag", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, outcome, propertySlug }),
+      });
+      fetchConversations();
+    } catch (err) {
+      console.error("handleTag error", err);
+    }
+  }, [fetchConversations]);
+
   // "Que el bot retome": encola el chat para que el cron de auto-recuperación
   // reprocese el último mensaje y el bot responda solo (útil si quedó mudo por un
   // crash del LLM). Seguro de apretar: el cron lo descarta si ya hubo respuesta.
@@ -1712,6 +1741,28 @@ export default function InboxPage() {
                         </button>
                       </div>
                       )}
+                    </div>
+                    {/* Etiqueta / desenlace de la conversación (alimenta el seguimiento por propiedad) */}
+                    <div className="bg-white dark:bg-slate-800/50 border-b border-gray-200 dark:border-slate-700 px-4 sm:px-6 py-2 flex items-center gap-2 flex-wrap text-[12px]">
+                      <span className="text-slate-500 dark:text-slate-400 font-medium shrink-0">🏷️ Desenlace:</span>
+                      <select
+                        value={conv?.tag?.outcome ?? ""}
+                        onChange={(e) => { if (selectedPhone) handleTag(selectedPhone, e.target.value, conv?.tag?.propertySlug ?? conv?.reservation?.propertySlug ?? null); }}
+                        className="text-[12px] rounded-md border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 px-2 py-1"
+                      >
+                        <option value="">— sin etiqueta —</option>
+                        {OUTCOMES.map((o) => <option key={o.key} value={o.key}>{o.emoji} {o.label}</option>)}
+                      </select>
+                      <select
+                        value={conv?.tag?.propertySlug ?? conv?.reservation?.propertySlug ?? ""}
+                        onChange={(e) => { if (selectedPhone) handleTag(selectedPhone, conv?.tag?.outcome ?? "cotizo", e.target.value || null); }}
+                        className="text-[12px] rounded-md border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 px-2 py-1"
+                        title="¿De qué propiedad preguntó? (para el seguimiento por propiedad)"
+                      >
+                        <option value="">¿qué propiedad?</option>
+                        {Object.entries(PROPERTY_NAMES).map(([slug, name]) => <option key={slug} value={slug}>{name}</option>)}
+                      </select>
+                      {conv?.tag?.outcome && <span className="text-[11px] text-emerald-600 dark:text-emerald-400 shrink-0">✓ guardado</span>}
                     </div>
                   </>
                 );

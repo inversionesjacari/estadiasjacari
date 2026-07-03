@@ -167,6 +167,8 @@ interface Metrics {
     directByProperty: { slug: string; total: number }[];
     airbnbStays: number;
     leadsByAd?: { ad: string; c: number }[];
+    funnelByProperty?: { slug: string; webViews: number; waInquiries: number; resAirbnb: number; resDirect: number }[];
+    outcomes?: { outcome: string; c: number }[];
   };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
@@ -741,9 +743,15 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
       L.push("⚠️ \"Directo / sin origen\" incluye a quienes vienen de las apps de Instagram/Facebook, que ocultan el origen del clic. Para verlo exacto → etiquetar los ads con UTM (abajo).");
     }
     L.push("");
-    if (mk.topProperties.length) {
-      L.push("🏆 *Anuncios más vistos en el sitio*");
-      for (const p of mk.topProperties) L.push(`• ${pageLabel(p.path)}: ${p.c} vistas`);
+    const funnel = mk.funnelByProperty ?? [];
+    if (funnel.length) {
+      L.push("📍 *Seguimiento por propiedad* (vistas web · consultas WA · reservas):");
+      for (const f of funnel) {
+        const parts = [`${f.webViews} vistas`];
+        if (f.waInquiries) parts.push(`${f.waInquiries} consult.`);
+        parts.push(`${f.resAirbnb} Airbnb`, `${f.resDirect} directa`);
+        L.push(`• ${PROPERTY_NAMES[f.slug] ?? f.slug}: ${parts.join(" · ")}`);
+      }
       L.push("");
     }
     L.push(`💬 *WhatsApp — ${mk.contacts} personas escribieron*`);
@@ -823,19 +831,6 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           )}
         </Section>
 
-        <Section title="Anuncios más vistos">
-          {mk.topProperties.length === 0 ? <p className="text-[13px] text-slate-500">Sin visitas a propiedades este mes.</p> : (
-            <ul className="space-y-1.5">
-              {mk.topProperties.map((p, i) => (
-                <li key={i} className="flex justify-between text-sm">
-                  <span className="text-slate-300 truncate mr-2">{pageLabel(p.path)}</span>
-                  <span className="font-mono text-xs text-slate-400 whitespace-nowrap">{p.c} vistas</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
-
         <Section title="Reservas cerradas por WhatsApp / sitio">
           <div className="text-sm space-y-1.5">
             {directTotal === 0 ? (
@@ -857,6 +852,9 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
           </div>
         </Section>
       </div>
+
+      {/* Seguimiento por propiedad: vistas web → consultas WhatsApp → reservas */}
+      <FunnelTable rows={mk.funnelByProperty} />
 
       {/* Embudo + nota honesta de atribución */}
       <div className="mt-3 rounded-xl bg-white/[0.02] border border-white/5 p-3.5">
@@ -885,6 +883,41 @@ function MarketingReport({ mk, monthPrefix }: { mk: NonNullable<Metrics["marketi
         </p>
       </div>
     </section>
+  );
+}
+
+// Embudo por propiedad: vistas web → consultas WhatsApp → reservas (Airbnb / directas).
+function FunnelTable({ rows }: { rows: NonNullable<Metrics["marketing"]>["funnelByProperty"] }) {
+  if (!rows || rows.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-xl bg-white/[0.02] border border-white/5 p-3.5 overflow-x-auto">
+      <div className="text-[11px] uppercase tracking-wider text-fuchsia-300/70 font-semibold mb-2">📍 Seguimiento por propiedad</div>
+      <table className="w-full text-sm min-w-[460px]">
+        <thead>
+          <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+            <th className="text-left font-medium pb-2">Propiedad</th>
+            <th className="text-right font-medium pb-2">👀 Vistas web</th>
+            <th className="text-right font-medium pb-2">💬 Consultas WA</th>
+            <th className="text-right font-medium pb-2">🅰 Reserva Airbnb</th>
+            <th className="text-right font-medium pb-2">✅ Reserva directa</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.slug} className="border-t border-white/5">
+              <td className="py-2 pr-3 text-slate-200 whitespace-nowrap">{PROPERTY_NAMES[r.slug] ?? r.slug}</td>
+              <td className="py-2 text-right font-mono text-slate-300">{r.webViews || <span className="text-slate-600">—</span>}</td>
+              <td className="py-2 text-right font-mono text-violet-300">{r.waInquiries || <span className="text-slate-600">—</span>}</td>
+              <td className="py-2 text-right font-mono text-cyan-300">{r.resAirbnb || <span className="text-slate-600">—</span>}</td>
+              <td className="py-2 text-right font-mono text-emerald-300">{r.resDirect || <span className="text-slate-600">—</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+        👀 vistas del sitio · 💬 consultas por WhatsApp (se llenan al <b className="text-slate-400">etiquetar los chats</b> en el inbox) · reservas por check-in del mes. Así ves, por casa: cuánta gente la mira, cuántos preguntan, y cuántos reservan (y por dónde).
+      </p>
+    </div>
   );
 }
 
