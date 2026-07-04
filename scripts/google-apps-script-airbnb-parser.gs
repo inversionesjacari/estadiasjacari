@@ -254,10 +254,14 @@ function parseReservationEmail(subject, body, refDate) {
   // 5) Viajeros (adultos + niños + bebés)
   const guestCount = parseGuestCount(lines) || 1;
 
-  // 6) Monto — GANAS (payout al anfitrión = ingreso real de César)
+  // 6) Monto — GANAS (payout al anfitrión = ingreso real de César). El símbolo
+  //    "$" puede ir ANTES ("$106.70", perfil viejo) o DESPUÉS del número
+  //    ("77,22 $", perfil nuevo), y el decimal puede ser punto o coma. parseMoney
+  //    normaliza ambos. (El regex viejo exigía "$número" con $ delante → fallaba
+  //    en el formato nuevo y dejaba el monto en blanco.)
   let amountUsd;
-  const ganasMatch = clean.match(/\bGanas\b[\s:]*\$\s*([\d,]+(?:\.\d+)?)/i);
-  if (ganasMatch) amountUsd = parseFloat(ganasMatch[1].replace(/,/g, ''));
+  const ganasMatch = clean.match(/\bGanas\b[\s:]*\$?\s*([\d.,]+)\s*\$?/i);
+  if (ganasMatch) amountUsd = parseMoney(ganasMatch[1]);
 
   // 7) Ubicación del huésped (opcional): línea tras "· N reseñas"
   let guestLocation;
@@ -329,6 +333,26 @@ function extractListingName(lines) {
   return '';
 }
 
+/**
+ * Normaliza un monto de texto a Number, tolerando ambos formatos de Airbnb:
+ *   "77,22" (coma decimal, perfil nuevo) · "106.70" (punto decimal, perfil viejo)
+ *   "1.234,56" · "1,234.53" (con separador de miles).
+ * Regla: el separador decimal es el ÚLTIMO seguido de EXACTAMENTE 2 dígitos; el
+ * resto son miles. Sin decimales ("80") → entero.
+ */
+function parseMoney(s) {
+  s = String(s).replace(/[^\d.,]/g, '');
+  if (!s) return undefined;
+  const m = s.match(/[.,](\d{2})$/);
+  if (m) {
+    const intPart = s.slice(0, s.length - 3).replace(/[.,]/g, '');
+    const n = parseFloat((intPart || '0') + '.' + m[1]);
+    return isNaN(n) ? undefined : n;
+  }
+  const n = parseFloat(s.replace(/[.,]/g, ''));
+  return isNaN(n) ? undefined : n;
+}
+
 /** day (num) + monthStr → YYYY-MM-DD, con año inferido de refDate (email). */
 function dayMonthToIso(day, monthStr, refDate) {
   const month = MONTH_MAP[String(monthStr).toLowerCase().slice(0, 3)];
@@ -339,38 +363,64 @@ function dayMonthToIso(day, monthStr, refDate) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+// Regex de fecha RESTRINGIDA a meses reales (ene…dic). Evita que "5 adultos",
+// "2 noches" o "3.0 %" se confundan con fechas — era el bug del regex viejo
+// `[a-záéíóúñ]{3,}` que aceptaba cualquier palabra tras un número.
+const DATE_RE_SRC = '(\\d{1,2})\\s+(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)';
+
 /**
- * Fechas check-in/out. Formato real: DOS fechas en UNA línea ("lun, 29 jun   mar,
- * 30 jun"). Fallback al formato vertical viejo (cada fecha bajo su etiqueta).
+ * Fechas check-in/out. Cubre TRES formatos del email host de Airbnb:
+ *   1) Etiquetas ES nuevas ("Llegada"/"Salida") o viejas ("check-in/out"),
+ *      cada fecha en su línea ("jue, 25 dic").
+ *   2) Columnar: dos fechas en UNA línea ("lun, 29 jun   mar, 30 jun").
+ *   3) Fallback total: las primeras dos fechas del cuerpo, en orden (ci < co).
  */
 function parseCheckInOut(lines, refDate) {
-  let anchor = 0;
-  for (let i = 0; i < lines.length; i++) { if (/check-?in/i.test(lines[i])) { anchor = i; break; } }
-  const dateRe = /(\d{1,2})\s+([a-záéíóúñ]{3,})/gi;
-  // Caso columnar: primera línea con >=2 fechas.
-  for (let i = anchor; i < lines.length && i < anchor + 10; i++) {
-    dateRe.lastIndex = 0;
+  const dateReLine = new RegExp(DATE_RE_SRC, 'gi');
+
+  // 1) Por etiqueta (llegada/salida = ES nuevo; check-in/out = viejo/EN).
+  const lci = dateAfterLabel(lines, /llegada|check-?in/i, refDate);
+  const lco = dateAfterLabel(lines, /salida|check-?out/i, refDate);
+  if (lci && lco && lci < lco) return { checkIn: lci, checkOut: lco };
+
+  // 2) Columnar: una línea con >=2 fechas.
+  for (let i = 0; i < lines.length; i++) {
+    dateReLine.lastIndex = 0;
     const found = [];
     let m;
-    while ((m = dateRe.exec(lines[i])) !== null) found.push(m);
+    while ((m = dateReLine.exec(lines[i])) !== null) found.push(m);
     if (found.length >= 2) {
-      const ci = dayMonthToIso(parseInt(found[0][1], 10), found[0][2], refDate);
-      const co = dayMonthToIso(parseInt(found[1][1], 10), found[1][2], refDate);
-      if (ci && co && ci < co) return { checkIn: ci, checkOut: co };
+      const a = dayMonthToIso(parseInt(found[0][1], 10), found[0][2], refDate);
+      const b = dayMonthToIso(parseInt(found[1][1], 10), found[1][2], refDate);
+      if (a && b && a < b) return { checkIn: a, checkOut: b };
     }
   }
-  // Caso vertical (formato viejo).
-  const ci = dateAfterLabel(lines, /check-?in/i, refDate);
-  const co = dateAfterLabel(lines, /check-?out/i, refDate);
-  if (ci && co) return { checkIn: ci, checkOut: co };
+
+  // 3) Fallback total: recolectar todas las fechas del cuerpo y tomar el primer
+  //    par ascendente (check-in antes que check-out).
+  const all = [];
+  for (const line of lines) {
+    dateReLine.lastIndex = 0;
+    let m;
+    while ((m = dateReLine.exec(line)) !== null) {
+      const iso = dayMonthToIso(parseInt(m[1], 10), m[2], refDate);
+      if (iso) all.push(iso);
+    }
+  }
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      if (all[i] < all[j]) return { checkIn: all[i], checkOut: all[j] };
+    }
+  }
   return null;
 }
 
 function dateAfterLabel(lines, labelRe, refDate) {
+  const dateRe = new RegExp(DATE_RE_SRC, 'i');
   for (let i = 0; i < lines.length; i++) {
     if (labelRe.test(lines[i])) {
       for (let j = i + 1; j < lines.length && j < i + 4; j++) {
-        const m = lines[j].match(/(\d{1,2})\s+([a-záéíóúñ]{3,})/i);
+        const m = lines[j].match(dateRe);
         if (m) { const iso = dayMonthToIso(parseInt(m[1], 10), m[2], refDate); if (iso) return iso; }
       }
     }
@@ -410,7 +460,7 @@ function processMessages() {
   const doneLabel = ensureLabel(LABEL_MESSAGE_DONE);
 
   const threads = label.getThreads(0, 20);
-  console.log(`processMessages: ${threads.length} threads con label "${LABEL_MESSAGE_PENDING}"`);
+  console.log(`processMessages: ${threads.length} threads con label "${label.getName()}"`);
 
   for (const thread of threads) {
     const messages = thread.getMessages();

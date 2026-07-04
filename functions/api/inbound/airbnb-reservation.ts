@@ -115,7 +115,18 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const changes = insertResult.meta?.changes ?? 0;
 
     if (changes === 0) {
-      // Ya existía — devolver OK pero indicar que no se insertó nada.
+      // Ya existía — RELLENAR monto/huéspedes si estaban en NULL (p.ej. reservas
+      // importadas antes del fix del parser de "Ganas", que quedaron sin monto).
+      // COALESCE(col, ?) => nunca pisa un valor ya presente (money-safe); solo
+      // completa huecos. Así el reproceso del email rescata las reservas viejas.
+      await env.DB.prepare(
+        `UPDATE reservations
+            SET amount_usd  = COALESCE(amount_usd, ?),
+                guest_count = COALESCE(guest_count, ?)
+          WHERE paypal_order_id = ?`,
+      )
+        .bind(r.amountUsd ?? null, r.guestCount ?? null, externalId)
+        .run();
       const existing = await env.DB.prepare(
         `SELECT id FROM reservations WHERE paypal_order_id = ?`,
       )
@@ -123,11 +134,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         .first<{ id: number }>();
       return json({
         ok: true,
-        action: "idempotent_skip",
+        action: "backfilled_or_skipped",
         externalId,
         reservationId: existing?.id ?? null,
         slug,
-        message: "Reserva ya existía. No se duplicó.",
+        message: "Reserva ya existía; se rellenó monto/huéspedes si faltaban.",
       });
     }
 

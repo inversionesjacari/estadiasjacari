@@ -209,10 +209,23 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE path LIKE '/propiedades/%' AND created_at >= ? AND created_at < ? GROUP BY path`).bind(monthStartUtc, nextMonthStartUtc).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
     // Reservas de Airbnb por propiedad (por check_in del mes).
     db.prepare(`SELECT property_slug AS slug, COUNT(*) AS c FROM reservations WHERE source IN ('airbnb','airbnb_ical') AND status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
-    // Consultas por WhatsApp por propiedad (de las etiquetas manuales, por updated_at).
-    db.prepare(`SELECT property_slug AS slug, COUNT(*) AS c FROM conversation_tags WHERE property_slug IS NOT NULL AND property_slug <> '' AND updated_at >= ? AND updated_at < ? GROUP BY property_slug`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
-    // Desenlaces de conversación etiquetados en el mes.
-    db.prepare(`SELECT outcome, COUNT(*) AS c FROM conversation_tags WHERE outcome IS NOT NULL AND updated_at >= ? AND updated_at < ? GROUP BY outcome ORDER BY c DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ outcome: string; c: number }>().catch(() => ({ results: [] })),
+    // Consultas por WhatsApp por propiedad — bucketizadas por el PRIMER mensaje
+    // entrante del lead (cuándo llegó), NO por updated_at del tag. Si no, el
+    // auto-clasificador (que corre hoy) tiraría todo el histórico al mes actual.
+    // COALESCE a updated_at conserva tags manuales de teléfonos sin inbound.
+    db.prepare(`SELECT ct.property_slug AS slug, COUNT(*) AS c
+      FROM conversation_tags ct
+      LEFT JOIN (SELECT from_phone, MIN(created_at) AS first_at FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone) fm ON fm.from_phone = ct.phone
+      WHERE ct.property_slug IS NOT NULL AND ct.property_slug <> ''
+        AND COALESCE(fm.first_at, ct.updated_at) >= ? AND COALESCE(fm.first_at, ct.updated_at) < ?
+      GROUP BY ct.property_slug`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
+    // Desenlaces de conversación — mismo criterio: por el primer mensaje del lead.
+    db.prepare(`SELECT ct.outcome AS outcome, COUNT(*) AS c
+      FROM conversation_tags ct
+      LEFT JOIN (SELECT from_phone, MIN(created_at) AS first_at FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone) fm ON fm.from_phone = ct.phone
+      WHERE ct.outcome IS NOT NULL
+        AND COALESCE(fm.first_at, ct.updated_at) >= ? AND COALESCE(fm.first_at, ct.updated_at) < ?
+      GROUP BY ct.outcome ORDER BY c DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ outcome: string; c: number }>().catch(() => ({ results: [] })),
     // CONSEGUIDAS este mes = por fecha de RESERVA (created_at). Efecto de la pauta:
     // cuándo entró la reserva (aunque la estadía sea otro mes). Solo directas.
     db.prepare(`SELECT source, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY source ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ source: string; total: number }>().catch(() => ({ results: [] })),
