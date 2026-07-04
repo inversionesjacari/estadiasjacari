@@ -166,6 +166,8 @@ interface Metrics {
     directBySource: { source: string; confirmed: number; total: number }[];
     directByProperty: { slug: string; total: number }[];
     airbnbStays: number;
+    wonBySource?: { source: string; total: number }[];
+    wonByProperty?: { slug: string; total: number }[];
     leadsByAd?: { ad: string; c: number }[];
     funnelByProperty?: { slug: string; webViews: number; waInquiries: number; resAirbnb: number; resDirect: number }[];
     outcomes?: { outcome: string; c: number }[];
@@ -742,10 +744,9 @@ function MarketingReport({ mk, monthPrefix, onClassify, classifying, classifyMsg
   const srcTotal = mk.sources.reduce((s, r) => s + r.c, 0) || 1;
   const leadsByAd = mk.leadsByAd ?? [];
   const leadsFromAds = leadsByAd.reduce((s, a) => s + a.c, 0);
-  const directTotal = mk.directBySource.reduce((s, r) => s + r.total, 0);
-  const directConf = mk.directBySource.reduce((s, r) => s + r.confirmed, 0);
-  const web = mk.directBySource.find((r) => r.source === "website");
-  const transfer = mk.directBySource.find((r) => r.source === "whatsapp_transfer");
+  const directTotal = mk.directBySource.reduce((s, r) => s + r.total, 0); // estadías (check-in)
+  const wonByProperty = mk.wonByProperty ?? [];
+  const wonTotal = (mk.wonBySource ?? []).reduce((s, r) => s + r.total, 0); // conseguidas (created_at)
 
   // Texto formato WhatsApp (negritas con *asteriscos*), para pegarle a marketing.
   // Honesto sobre atribución: el SITIO se puede atribuir (UTM/referrer); el origen
@@ -776,12 +777,12 @@ function MarketingReport({ mk, monthPrefix, onClassify, classifying, classifyMsg
       L.push(`• De esos, *${leadsFromAds}* vinieron de un ad (Click-to-WhatsApp):`);
       for (const a of leadsByAd) L.push(`   • ${a.c} de "${a.ad}"`);
     }
-    if (directTotal === 0) {
-      L.push("• Cerradas en reserva: *0* registradas este mes");
-    } else {
-      L.push(`• Se cerraron *${directTotal}* en reserva:`);
-      for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
-    }
+    // Dos vistas SEPARADAS para no confundir el efecto de la pauta con la operación.
+    L.push(`🎯 *Reservas CONSEGUIDAS en ${monthLabel(monthPrefix)}* (cuándo reservaron): *${wonTotal}*`);
+    for (const p of wonByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
+    L.push(`🏠 *Estadías que LLEGAN en ${monthLabel(monthPrefix)}* (cuándo se atienden): *${directTotal}*`);
+    for (const p of mk.directByProperty) L.push(`   • ${p.total} en ${PROPERTY_NAMES[p.slug] ?? p.slug}`);
+    L.push("ℹ️ \"Conseguidas\" = efecto de la pauta (cuándo entró la reserva). \"Estadías\" = operación (cuándo llega el huésped). Ej: una reserva de junio para julio cuenta como CONSEGUIDA en junio y ESTADÍA en julio.");
     if (leadsFromAds === 0) {
       L.push("⚠️ De estas reservas todavía no vemos el origen del lead. Acabamos de activar la captura de ads Click-to-WhatsApp — a partir de ahora, cada chat que venga de un ad va a aparecer acá con el nombre del anuncio.");
     }
@@ -856,24 +857,28 @@ function MarketingReport({ mk, monthPrefix, onClassify, classifying, classifyMsg
           )}
         </Section>
 
-        <Section title="Reservas cerradas por WhatsApp / sitio">
-          <div className="text-sm space-y-1.5">
-            {directTotal === 0 ? (
-              <p className="text-[13px] text-slate-500">Sin reservas registradas por estos canales este mes.</p>
-            ) : (
-              <>
-                <div className="flex justify-between"><span className="text-slate-300">Reservas directas</span><span className="font-mono font-semibold text-white">{directTotal} <span className="text-slate-500 font-normal">({directConf} confirm.)</span></span></div>
-                {mk.directBySource.map((r, i) => (
-                  <div key={i} className="flex justify-between text-[13px] pl-2">
-                    <span className="text-slate-400">{SOURCE_NAMES[r.source] ?? r.source}</span>
-                    <span className="font-mono text-slate-300">{r.total}</span>
-                  </div>
-                ))}
-              </>
-            )}
-            {web && web.total > 0 && <div className="text-[13px] text-emerald-300/90 pt-1">🎉 El sitio web generó {web.total} reserva{web.total > 1 ? "s" : ""} directa{web.total > 1 ? "s" : ""}</div>}
-            {transfer && transfer.total > 0 && <div className="text-[13px] text-slate-400">💵 {transfer.total} por transferencia</div>}
-            <div className="text-[12px] text-slate-500 pt-1.5 mt-1 border-t border-white/5">Airbnb: <span className="text-slate-400 font-mono">{mk.airbnbStays}</span> estadía{mk.airbnbStays === 1 ? "" : "s"} con llegada este mes (canal aparte)</div>
+        <Section title="Reservas: conseguidas vs. estadías">
+          <div className="text-sm space-y-2">
+            <div>
+              <div className="flex justify-between">
+                <span className="text-slate-300">🎯 Conseguidas <span className="text-slate-500 text-[11px]">(reservaron este mes)</span></span>
+                <span className="font-mono font-semibold text-emerald-300">{wonTotal}</span>
+              </div>
+              {wonByProperty.map((p, i) => (
+                <div key={i} className="flex justify-between text-[12px] pl-3">
+                  <span className="text-slate-400">{PROPERTY_NAMES[p.slug] ?? p.slug}</span>
+                  <span className="font-mono text-slate-300">{p.total}</span>
+                </div>
+              ))}
+            </div>
+            <div className="pt-1.5 border-t border-white/5">
+              <div className="flex justify-between">
+                <span className="text-slate-300">🏠 Estadías <span className="text-slate-500 text-[11px]">(llegan este mes)</span></span>
+                <span className="font-mono font-semibold text-cyan-300">{directTotal}</span>
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-500">Airbnb: <span className="font-mono text-slate-400">{mk.airbnbStays}</span> estadía{mk.airbnbStays === 1 ? "" : "s"} este mes (canal aparte)</div>
+            <div className="text-[10px] text-slate-500 leading-relaxed pt-1">Conseguidas = efecto de la pauta (cuándo entró la reserva) · Estadías = operación (cuándo llega). Una reserva de junio para julio: conseguida en junio, estadía en julio.</div>
           </div>
         </Section>
       </div>

@@ -204,7 +204,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   ]);
 
   // ── Seguimiento POR PROPIEDAD (embudo) + desenlaces de conversación ───────────
-  const [mkViewsByProp, mkAirbnbByProp, mkInquiriesByProp, mkOutcomes] = await Promise.all([
+  const [mkViewsByProp, mkAirbnbByProp, mkInquiriesByProp, mkOutcomes, mkWonBySource, mkWonByProp] = await Promise.all([
     // Vistas del sitio por propiedad (mes, por created_at del page_view).
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE path LIKE '/propiedades/%' AND created_at >= ? AND created_at < ? GROUP BY path`).bind(monthStartUtc, nextMonthStartUtc).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
     // Reservas de Airbnb por propiedad (por check_in del mes).
@@ -213,6 +213,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT property_slug AS slug, COUNT(*) AS c FROM conversation_tags WHERE property_slug IS NOT NULL AND property_slug <> '' AND updated_at >= ? AND updated_at < ? GROUP BY property_slug`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
     // Desenlaces de conversación etiquetados en el mes.
     db.prepare(`SELECT outcome, COUNT(*) AS c FROM conversation_tags WHERE outcome IS NOT NULL AND updated_at >= ? AND updated_at < ? GROUP BY outcome ORDER BY c DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ outcome: string; c: number }>().catch(() => ({ results: [] })),
+    // CONSEGUIDAS este mes = por fecha de RESERVA (created_at). Efecto de la pauta:
+    // cuándo entró la reserva (aunque la estadía sea otro mes). Solo directas.
+    db.prepare(`SELECT source, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY source ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ source: string; total: number }>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT property_slug AS slug, COUNT(*) AS total FROM reservations WHERE source IN ${DIRECT_SRC} AND status IN ('pending','confirmed') AND created_at >= ? AND created_at < ? GROUP BY property_slug ORDER BY total DESC`).bind(monthStartUtc, nextMonthStartUtc).all<{ slug: string; total: number }>().catch(() => ({ results: [] })),
   ]);
 
   // Salud del LLM del bot: último error registrado por el webhook cuando el bot
@@ -422,10 +426,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       webUniques: numOf(mkWeb, "uniques"),
       sources: rowsOf<{ referrer: string; c: number }>(mkSources),
       topProperties: rowsOf<{ path: string; c: number }>(mkTopProps),
-      // Conversiones directas por fecha de reserva (pauta) + volumen Airbnb (check-in).
+      // ESTADÍAS del mes (por check-in): cuándo LLEGA el huésped (operación).
       directBySource: rowsOf<{ source: string; confirmed: number; total: number }>(mkDirectResv),
       directByProperty: rowsOf<{ slug: string; total: number }>(mkDirectByProp),
       airbnbStays: numOf(mkAirbnbStays, "c"),
+      // CONSEGUIDAS del mes (por fecha de reserva): cuándo se RESERVÓ (efecto pauta).
+      wonBySource: rowsOf<{ source: string; total: number }>(mkWonBySource),
+      wonByProperty: rowsOf<{ slug: string; total: number }>(mkWonByProp),
       // Leads de WhatsApp que vinieron de un ad Click-to-WhatsApp (por anuncio).
       leadsByAd: rowsOf<{ ad: string; c: number }>(mkLeadsByAd),
       // Embudo POR PROPIEDAD: vistas web → consultas WhatsApp → reservas (Airbnb / directas).
