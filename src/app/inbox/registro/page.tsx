@@ -106,6 +106,7 @@ const COLUMNS: { key: SortKey | null; label: string; align?: "right" }[] = [
 const EMPTY_FORM = {
   guest_name: "", guest_phone: "", property_slug: "",
   check_in: "", check_out: "", guest_count: "", total_hnl: "", paid_hnl: "",
+  booked_at: "",
 };
 
 const INPUT_CLS =
@@ -547,6 +548,11 @@ export default function RegistroPage() {
                 <label className="block text-[12px] text-slate-400 mb-1">Salida</label>
                 <input type="date" value={form.check_out} onChange={(e) => setForm((f) => ({ ...f, check_out: e.target.value }))} className={INPUT_CLS} />
               </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-[12px] text-slate-400 mb-1">Fecha en que reservó <span className="text-slate-500">(opcional — para marketing; si lo dejás vacío, cuenta como hoy)</span></label>
+              <input type="date" value={form.booked_at} onChange={(e) => setForm((f) => ({ ...f, booked_at: e.target.value }))} className={INPUT_CLS} />
             </div>
 
             <div className="grid grid-cols-3 gap-3 mt-3">

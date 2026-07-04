@@ -49,6 +49,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const check_out = String(body.check_out ?? "").trim();
   const guest_name = String(body.guest_name ?? "").trim();
   const guest_phone_raw = String(body.guest_phone ?? "").trim();
+  // Fecha en que el cliente RESERVÓ (opcional). Es lo que define en qué mes cuenta
+  // como "conseguida" para marketing. Si no se pone, se usa hoy (cuándo se cargó).
+  const booked_at_raw = String(body.booked_at ?? "").trim();
+  const created_at = ISO_DATE.test(booked_at_raw) ? `${booked_at_raw} 12:00:00` : null;
 
   // ── Validación ────────────────────────────────────────────────────────────
   if (!SLUGS.has(property_slug)) return json({ ok: false, error: "Elegí una propiedad válida." }, 400);
@@ -98,11 +102,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const res = await env.DB.prepare(
       `INSERT INTO reservations
          (property_slug, check_in, check_out, guest_name, guest_phone, guest_phone_normalized,
-          guest_count, total_hnl, paid_hnl, source, status, paypal_order_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+          guest_count, total_hnl, paid_hnl, source, status, paypal_order_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, COALESCE(?, datetime('now')))`,
     ).bind(
       property_slug, check_in, check_out, guest_name || null, guest_phone, guest_phone_normalized,
-      guest_count, total_hnl, paid_hnl, status, paypal_order_id,
+      guest_count, total_hnl, paid_hnl, status, paypal_order_id, created_at,
     ).run();
     return json({ ok: true, id: res.meta?.last_row_id ?? null });
   } catch (err) {
