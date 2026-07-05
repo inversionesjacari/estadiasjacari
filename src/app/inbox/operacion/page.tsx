@@ -876,6 +876,12 @@ function MarketingReport({ mk, monthPrefix, onClassify, classifying, classifyMsg
                 <span className="text-slate-300">🏠 Estadías <span className="text-slate-500 text-[11px]">(llegan este mes)</span></span>
                 <span className="font-mono font-semibold text-cyan-300">{directTotal}</span>
               </div>
+              {mk.directByProperty.map((p, i) => (
+                <div key={i} className="flex justify-between text-[12px] pl-3">
+                  <span className="text-slate-400">{PROPERTY_NAMES[p.slug] ?? p.slug}</span>
+                  <span className="font-mono text-slate-300">{p.total}</span>
+                </div>
+              ))}
             </div>
             <div className="text-[11px] text-slate-500">Airbnb: <span className="font-mono text-slate-400">{mk.airbnbStays}</span> estadía{mk.airbnbStays === 1 ? "" : "s"} este mes (canal aparte)</div>
             <div className="text-[10px] text-slate-500 leading-relaxed pt-1">Conseguidas = efecto de la pauta (cuándo entró la reserva) · Estadías = operación (cuándo llega). Una reserva de junio para julio: conseguida en junio, estadía en julio.</div>
