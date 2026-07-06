@@ -178,7 +178,8 @@ const PROPERTY_MAPS: Partial<Record<PropertySlug, string>> = {
   "las-gemelas-tela":     "https://maps.app.goo.gl/EQYzmV7sfnVr2ZFs9",
   "villa-b11-palma-real": "https://maps.app.goo.gl/1JN66ajXPAmL3xtA6",
   "centro-morazan":       "https://maps.app.goo.gl/KwBr1PAt79UyNogU6",
-  // PENDIENTE (pedir a César los links): casa-lara-townhouse, la-florida.
+  "casa-lara-townhouse":  "https://maps.app.goo.gl/5ab9xZ5L53UxH9q88",
+  "la-florida":           "https://maps.app.goo.gl/C9XARi5wky4MJ8dMA",
 };
 
 // Links por CIUDAD: para cuando el cliente pide la ubicación explorando una ZONA sin
