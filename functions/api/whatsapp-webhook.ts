@@ -34,6 +34,31 @@ import { handleQuoteIncoming, cancelQuoteFlow } from "../_lib/quote-flow";
 import { pauseBot, isBotPaused } from "../_lib/bot-pause";
 import { getState } from "../_lib/quote-state";
 import { processTransferReceipt } from "../_lib/receipt";
+import { checkRateLimit } from "../_lib/rate-limit";
+
+// Máximo de mensajes por número que DISPARAN al bot (LLM/visión/escalación) por
+// minuto. El mensaje entrante SIEMPRE se guarda en el inbox — esto solo frena la
+// respuesta automática ante un flood (protege cuota de OpenAI y emails). Con
+// "última palabra gana", un humano legítimo nunca se acerca a este límite.
+const BOT_RATE_MAX_PER_MIN = 10;
+
+/**
+ * true = este número superó el límite y NO debe disparar trabajo caro.
+ * checkRateLimit es fail-open (si D1 falla, deja pasar) — nunca calla al bot
+ * por un problema del rate limiter.
+ */
+async function isBotRateLimited(fromE164: string, env: Env): Promise<boolean> {
+  const rl = await checkRateLimit(env, {
+    endpoint: "webhook/whatsapp",
+    ip: fromE164, // clave por teléfono origen, no por IP (la IP es de Meta)
+    max: BOT_RATE_MAX_PER_MIN,
+    windowSec: 60,
+  });
+  if (!rl.allowed) {
+    console.warn(`Rate limit bot: ${fromE164} lleva ${rl.currentCount} msgs/min — mensaje guardado, sin auto-respuesta`);
+  }
+  return !rl.allowed;
+}
 
 // Reglas que significan "un humano toma la conversación" → pausamos el bot para
 // ese número (deja de auto-responder) hasta reactivarlo a mano desde el inbox.
@@ -426,6 +451,16 @@ async function processIncomingMessage(
   // para que lo atienda un humano. El bot se reactiva a mano con "Reactivar bot".
   if (await isBotPaused(fromE164, env.DB)) {
     console.log(`Bot pausado para ${fromE164} — mensaje queda en el inbox, sin auto-respuesta`);
+    return;
+  }
+
+  // ── Rate limit por número: ante un flood, el mensaje ya quedó en el inbox
+  // pero NO disparamos LLM ni respuesta (protege cuota y evita loops de spam).
+  if (await isBotRateLimited(fromE164, env)) {
+    try {
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'RATE_LIMITED', ?)`)
+        .bind(fromE164, bodyText.slice(0, 60)).run();
+    } catch { /* best-effort */ }
     return;
   }
 
@@ -865,6 +900,11 @@ async function handleMediaMessage(
   // Si un humano ya tomó la conversación (bot en pausa), no respondemos ni
   // escalamos de nuevo: César ya lo está viendo y ahora puede ver el archivo.
   if (await isBotPaused(fromE164, env.DB)) return;
+
+  // Rate limit por número (comparte presupuesto con los mensajes de texto):
+  // un flood de imágenes no debe quemar visión de OpenAI ni inundar de emails.
+  // El archivo ya quedó guardado y visible en el inbox.
+  if (await isBotRateLimited(fromE164, env)) return;
 
   // ── Comprobante de transferencia (FOTO) en el paso de pago → leer + verificar ──
   // Si el huésped está esperando confirmar su transferencia y manda una IMAGEN, el bot
