@@ -26,11 +26,16 @@
 // Como prefijamos con "AIRBNB-" no choca con order IDs reales de PayPal.
 //
 
-import { validateAirbnbReservation } from "../../_lib/airbnb-parser";
+import {
+  validateAirbnbReservation,
+  AIRBNB_AMOUNT_MIN_USD,
+  AIRBNB_AMOUNT_MAX_USD,
+} from "../../_lib/airbnb-parser";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
+import { notifyOwners, type OwnerAlertEnv } from "../../_lib/owner-alerts";
 
-interface Env {
+interface Env extends OwnerAlertEnv {
   DB: D1Database;
   AIRBNB_INBOUND_SECRET?: string;
 }
@@ -113,6 +118,35 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       .run();
 
     const changes = insertResult.meta?.changes ?? 0;
+
+    // Monto fuera de rango ($5-$2500, ver airbnb-parser.ts): NO bloquea el alta
+    // (fechas/huésped son reales) pero se marca para que sync-airbnb-income.js
+    // la excluya de contabilidad hasta revisión manual, y se avisa a César.
+    // Best-effort: si la migración 0035 (amount_flagged) todavía no corrió en
+    // D1, esto no debe romper el alta de la reserva.
+    if (r.amountFlagged) {
+      try {
+        await env.DB.prepare(
+          `UPDATE reservations SET amount_flagged = 1 WHERE paypal_order_id = ?`,
+        )
+          .bind(externalId)
+          .run();
+      } catch (err) {
+        console.error(
+          "No se pudo marcar amount_flagged (¿falta aplicar schema/0035_amount_flagged.sql?):",
+          (err as Error).message,
+        );
+      }
+      await notifyOwners(env, {
+        tipo: "⚠️ Monto Airbnb sospechoso — revisar antes de contabilizar",
+        cliente: `${r.guestName} · ${slug}`,
+        detalle:
+          `Reserva ${r.confirmationCode} (check-in ${r.checkIn}): $${r.amountUsd} ` +
+          `fuera de rango ($${AIRBNB_AMOUNT_MIN_USD}-$${AIRBNB_AMOUNT_MAX_USD}). ` +
+          `Excluida del sync a contabilidad hasta que la revises.`,
+        guestPhone: "",
+      });
+    }
 
     if (changes === 0) {
       // Ya existía — RELLENAR monto/huéspedes si estaban en NULL (p.ej. reservas

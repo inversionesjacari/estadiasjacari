@@ -339,6 +339,16 @@ function extractListingName(lines) {
  *   "1.234,56" · "1,234.53" (con separador de miles).
  * Regla: el separador decimal es el ÚLTIMO seguido de EXACTAMENTE 2 dígitos; el
  * resto son miles. Sin decimales ("80") → entero.
+ *
+ * MANTENER IDÉNTICA a functions/_lib/airbnb-parser.ts::parseMoney (Apps Script
+ * no corre vitest, así que la lógica se testea ahí — 2026-07-06, regresión del
+ * bug ×100 cubierta con 10+ casos). Si tocás esta función, portá el cambio y
+ * corré `npm test` en estadia-jacari antes de pegar acá.
+ *
+ * Solo se llama con `ganasMatch[1]` (línea de abajo) — una captura de regex,
+ * siempre string con 2 decimales. NO llamarla con un número ya parseado: un
+ * `Number` de JS pierde ceros finales al volverse texto y rompería la regla
+ * de "2 dígitos exactos" (ver el comentario espejo en airbnb-parser.ts).
  */
 function parseMoney(s) {
   s = String(s).replace(/[^\d.,]/g, '');

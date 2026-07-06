@@ -89,8 +89,58 @@ export interface AirbnbReservationPayload {
   guestCount: number;
   /** Monto que pagó el huésped en USD. */
   amountUsd?: number;
+  /**
+   * true si amountUsd cayó fuera del rango esperado (ver isAmountSuspicious).
+   * NO bloquea la reserva (fechas/huésped son reales) pero la excluye del
+   * sync a contabilidad hasta revisión manual — ver airbnb-reservation.ts.
+   */
+  amountFlagged?: boolean;
   /** Ciudad origen del huésped (ej. "Santo Domingo, República Dominicana"). */
   guestLocation?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Monto (GANAS) — parseo tolerante a formato + guardia de rango
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Puerto a TypeScript de `parseMoney` en scripts/google-apps-script-airbnb-parser.gs
+// (Apps Script no corre vitest, así que la lógica se testea acá — ver
+// __tests__/airbnb-parser.test.ts). MANTENER AMBAS COPIAS IDÉNTICAS: si tocás
+// una, tocá la otra y volvé a correr los tests de acá.
+//
+// Bug histórico ×100 (JACARI_MEMORY 2026-07-04): el parser viejo interpretaba
+// la coma decimal como separador de miles ("232,80" → 23280). Regla correcta:
+// el separador decimal es el ÚLTIMO seguido de EXACTAMENTE 2 dígitos; el resto
+// son miles. Sin decimales ("80") → entero.
+//
+// SOLO acepta string (igual que el .gs, que solo la llama con una captura de
+// regex): un `number` de JS pierde ceros finales al volverse string
+// (`String(232.80)` === "232.8") y rompería la regla de "2 dígitos exactos".
+// Nunca le pases un number ya parseado — para eso no hace falta parsear nada.
+export function parseMoney(raw: string | null | undefined): number | undefined {
+  const s = String(raw ?? "").replace(/[^\d.,]/g, "");
+  if (!s) return undefined;
+  const m = s.match(/[.,](\d{2})$/);
+  if (m) {
+    const intPart = s.slice(0, s.length - 3).replace(/[.,]/g, "");
+    const n = parseFloat((intPart || "0") + "." + m[1]);
+    return Number.isNaN(n) ? undefined : n;
+  }
+  const n = parseFloat(s.replace(/[.,]/g, ""));
+  return Number.isNaN(n) ? undefined : n;
+}
+
+// Rango sano de un "Ganas" (payout por reserva) de Jacarí. Basado en los montos
+// históricos reales (~$50-$600/reserva); generoso hacia arriba para no marcar
+// estadías largas legítimas. Un ×100 real (ej. $77.22 → $7722) siempre cae muy
+// por encima del máximo, así que esto lo atrapa aunque el parser se rompa de nuevo.
+export const AIRBNB_AMOUNT_MIN_USD = 5;
+export const AIRBNB_AMOUNT_MAX_USD = 2500;
+
+/** true = amountUsd fuera de rango (posible bug de parseo). undefined (sin monto aún) NO es sospechoso. */
+export function isAmountSuspicious(amountUsd: number | undefined): boolean {
+  if (amountUsd === undefined) return false;
+  return amountUsd < AIRBNB_AMOUNT_MIN_USD || amountUsd > AIRBNB_AMOUNT_MAX_USD;
 }
 
 export interface ValidationResult {
@@ -176,6 +226,7 @@ export function validateAirbnbReservation(raw: unknown): ValidationResult {
       checkOut,
       guestCount,
       amountUsd,
+      amountFlagged: isAmountSuspicious(amountUsd),
       guestLocation,
     },
   };
