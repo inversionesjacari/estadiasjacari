@@ -1,12 +1,9 @@
 import Image from "next/image";
 import Link from "next/link";
+import { waUrl, waMessage } from "@/lib/whatsapp";
 
 export default function GemelasBanner() {
-  const whatsapp =
-    "https://wa.me/50488390145?text=" +
-    encodeURIComponent(
-      "Hola, me interesa rentar Las Gemelas de Tela (Casa Brisa + Casa Marea) para mi grupo."
-    );
+  const whatsapp = waUrl(waMessage.gemelas());
 
   return (
     <section className="py-16 lg:py-20">
@@ -69,7 +66,7 @@ export default function GemelasBanner() {
               </div>
               <div className="aspect-[4/5] relative rounded-2xl overflow-hidden mt-8">
                 <Image
-                  src="/images/casa-brisa/01.png"
+                  src="/images/casa-brisa/01.jpg"
                   alt="Casa Brisa"
                   fill
                   sizes="(min-width: 1024px) 25vw, 50vw"

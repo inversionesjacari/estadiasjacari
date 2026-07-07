@@ -1,7 +1,7 @@
+import { waUrl, waMessage } from "@/lib/whatsapp";
+
 export default function ContactCTA() {
-  const whatsapp =
-    "https://wa.me/50488390145?text=" +
-    encodeURIComponent("Hola, quiero información de una propiedad.");
+  const whatsapp = waUrl(waMessage.generic());
 
   return (
     <section id="contacto" className="py-20">

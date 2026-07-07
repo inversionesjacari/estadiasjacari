@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import CatalogClient from "./CatalogClient";
+import { waUrl, waMessage } from "@/lib/whatsapp";
 
 export const metadata: Metadata = {
   title: "Propiedades — Estadías Jacarí",
@@ -42,10 +43,7 @@ export default function PropiedadesPage() {
             ¿No sabés cuál elegir? Te ayudamos a encontrar la ideal.
           </p>
           <a
-            href={
-              "https://wa.me/50488390145?text=" +
-              encodeURIComponent("Hola, quiero ayuda para elegir una propiedad.")
-            }
+            href={waUrl(waMessage.chooseProperty())}
             target="_blank"
             rel="noopener noreferrer"
             className="btn-accent"

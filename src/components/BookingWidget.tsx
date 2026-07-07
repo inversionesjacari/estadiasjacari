@@ -13,11 +13,10 @@ import {
   isSameDay,
 } from "date-fns";
 import "react-day-picker/style.css";
+import { waUrl, waMessage } from "@/lib/whatsapp";
 
 const PAYPAL_CLIENT_ID =
   "AQYfxeAZGvq-HZ4Fz7RdENtJjGRCWKzILQBXlqixS6LdJN5FF7njl3w4ofXnaTMpZw6GugYCYiKK05gy";
-
-const WHATSAPP_NUMBER = "50488390145";
 
 interface BookingWidgetProps {
   propertyName: string;
@@ -363,9 +362,14 @@ export default function BookingWidget({
   if (step === "success") {
     const checkInStr = range?.from ? format(range.from, "yyyy-MM-dd") : "";
     const checkOutStr = range?.to ? format(range.to, "yyyy-MM-dd") : "";
-    const waText = encodeURIComponent(
-      `¡Hola! Acabo de confirmar mi reserva en ${propertyName} del ${checkInStr} al ${checkOutStr}. ` +
-        `Mi nombre es ${guestName}. Número de orden PayPal: ${orderId}`,
+    const successWaUrl = waUrl(
+      waMessage.bookingSuccess({
+        propertyName,
+        checkIn: checkInStr,
+        checkOut: checkOutStr,
+        guestName,
+        orderId,
+      }),
     );
     return (
       <div className="bg-white rounded-2xl border border-green-200 shadow-card p-6 text-center sticky top-24">
@@ -408,7 +412,7 @@ export default function BookingWidget({
           </p>
         </div>
         <a
-          href={`https://wa.me/${WHATSAPP_NUMBER}?text=${waText}`}
+          href={successWaUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-block w-full bg-green-500 text-white py-3 rounded-xl font-semibold text-sm hover:bg-green-600 transition"
@@ -424,9 +428,7 @@ export default function BookingWidget({
 
   // ── FALLBACK: endpoint de disponibilidad falló ──────────────────────────
   if (availabilityError) {
-    const waText = encodeURIComponent(
-      `Hola, quiero reservar ${propertyName} pero el calendario del sitio no carga. ¿Pueden ayudarme?`,
-    );
+    const fallbackWaUrl = waUrl(waMessage.unavailable(propertyName));
     return (
       <div className="bg-white rounded-2xl border border-red-200 shadow-card p-6 sticky top-24">
         <div className="mb-4">
@@ -444,7 +446,7 @@ export default function BookingWidget({
             en menos de 1 hora.
           </p>
           <a
-            href={`https://wa.me/${WHATSAPP_NUMBER}?text=${waText}`}
+            href={fallbackWaUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn-accent w-full"

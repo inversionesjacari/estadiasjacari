@@ -1,10 +1,20 @@
+"use client";
+
+import { usePathname } from "next/navigation";
+import { getProperty } from "@/data/properties";
+import { waUrl, waMessage } from "@/lib/whatsapp";
+
 export default function WhatsAppButton() {
-  const message = encodeURIComponent(
-    "Hola, me interesa una propiedad de Estadías Jacarí"
-  );
+  const pathname = usePathname();
+  const slug = pathname?.match(/^\/propiedades\/([^/]+)$/)?.[1];
+  const property = slug ? getProperty(slug) : undefined;
+  const message = property
+    ? waMessage.property(property.name)
+    : waMessage.generic();
+
   return (
     <a
-      href={`https://wa.me/50488390145?text=${message}`}
+      href={waUrl(message)}
       target="_blank"
       rel="noopener noreferrer"
       aria-label="Contactar por WhatsApp"

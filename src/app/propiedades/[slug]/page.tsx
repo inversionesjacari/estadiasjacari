@@ -12,6 +12,7 @@ import PropertyCard from "@/components/PropertyCard";
 import JsonLd from "@/components/JsonLd";
 import { vacationRentalSchema, breadcrumbSchema } from "@/lib/schema";
 import { SITE_NAME } from "@/lib/site";
+import { waUrl, waMessage } from "@/lib/whatsapp";
 
 export function generateStaticParams() {
   return properties.map((p) => ({ slug: p.slug }));
@@ -205,12 +206,7 @@ export default function PropertyDetailPage({
                   separado según el tamaño del grupo.
                 </p>
                 <a
-                  href={
-                    "https://wa.me/50488390145?text=" +
-                    encodeURIComponent(
-                      "Hola, me interesa rentar Las Gemelas de Tela (Casa Brisa + Casa Marea) para mi grupo."
-                    )
-                  }
+                  href={waUrl(waMessage.gemelas())}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn-accent"
