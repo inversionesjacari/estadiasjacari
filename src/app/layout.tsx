@@ -3,6 +3,7 @@ import { DM_Serif_Display, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import SiteChrome from "@/components/SiteChrome";
 import Analytics from "@/components/Analytics";
+import { SITE_URL, SITE_NAME, SITE_TITLE, SITE_DESCRIPTION } from "@/lib/site";
 
 // NOTE: brand font is "Le Mores" (Studio Sun, commercial license).
 // Using DM Serif Display as the closest free alternative until the
@@ -20,11 +21,6 @@ const body = Plus_Jakarta_Sans({
   display: "swap",
 });
 
-const SITE_URL = "https://estadiasjacari.com";
-const SITE_TITLE = "Estadías Jacarí — Alquileres Temporales en Honduras";
-const SITE_DESCRIPTION =
-  "Alquileres temporales en Honduras con todo lo que necesitas para sentirte en casa. Propiedades verificadas en La Ceiba, Tela y Tegucigalpa.";
-
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: SITE_TITLE,
@@ -32,7 +28,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/" },
   openGraph: {
     type: "website",
-    siteName: "Estadías Jacarí",
+    siteName: SITE_NAME,
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     url: SITE_URL,
