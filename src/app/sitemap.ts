@@ -16,5 +16,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
       changeFrequency: "weekly" as const,
     })),
+    { url: `${SITE_URL}/politicas`, priority: 0.4, changeFrequency: "monthly" },
+    {
+      url: `${SITE_URL}/preguntas-frecuentes`,
+      priority: 0.4,
+      changeFrequency: "monthly",
+    },
   ];
 }

@@ -267,6 +267,12 @@ export default function PropertyDetailPage({
               pricePerNightHNL={property.pricePerNightHNL}
               cleaningFeeHNL={property.cleaningFeeHNL}
             />
+            <p className="text-xs text-muted text-center mt-3">
+              Cancelación flexible: reembolso completo hasta 7 días antes.{" "}
+              <Link href="/politicas" className="underline hover:text-primary">
+                Ver políticas
+              </Link>
+            </p>
           </aside>
         </div>
 

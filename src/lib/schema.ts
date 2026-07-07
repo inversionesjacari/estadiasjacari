@@ -91,11 +91,11 @@ export function breadcrumbSchema(items: { name: string; url: string }[]) {
   };
 }
 
-export function faqPageSchema(faqs: { question: string; answer: string }[]) {
+export function faqPageSchema(items: { question: string; answer: string }[]) {
   return {
     "@context": "https://schema.org",
     "@type": "FAQPage",
-    mainEntity: faqs.map((f) => ({
+    mainEntity: items.map((f) => ({
       "@type": "Question",
       name: f.question,
       acceptedAnswer: {

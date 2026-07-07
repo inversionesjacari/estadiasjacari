@@ -78,6 +78,19 @@ export default function Footer() {
           </div>
         </div>
 
+        {/* Links */}
+        <nav className="mt-6 pt-5 border-t border-white/15 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-white/70">
+          <Link href="/propiedades" className="hover:text-accent transition">
+            Propiedades
+          </Link>
+          <Link href="/politicas" className="hover:text-accent transition">
+            Políticas
+          </Link>
+          <Link href="/preguntas-frecuentes" className="hover:text-accent transition">
+            Preguntas frecuentes
+          </Link>
+        </nav>
+
         {/* Divider + copyright */}
         <div className="mt-6 pt-5 border-t border-white/15">
           <div className="flex flex-col sm:flex-row justify-between items-center gap-2 text-xs text-white/45">
