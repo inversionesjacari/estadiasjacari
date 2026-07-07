@@ -9,6 +9,7 @@ import {
 import Gallery from "@/components/Gallery";
 import BookingWidget from "@/components/BookingWidget";
 import PropertyCard from "@/components/PropertyCard";
+import HostCard from "@/components/HostCard";
 import JsonLd from "@/components/JsonLd";
 import { vacationRentalSchema, breadcrumbSchema } from "@/lib/schema";
 import { SITE_NAME } from "@/lib/site";
@@ -140,6 +141,8 @@ export default function PropertyDetailPage({
                 ))}
               </div>
             </section>
+
+            <HostCard propertyName={property.name} />
 
             {/* Bedrooms */}
             <section>
