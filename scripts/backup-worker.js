@@ -1,43 +1,48 @@
 /**
- * Cloudflare Worker — backup diario de D1 → R2.
+ * Cloudflare Worker — backup diario de AMBAS D1 (operación + contabilidad) → R2.
  *
- * Cada día a las 4 AM UTC (10 PM HN), exporta a JSON las tablas críticas:
- *   - reservations
- *   - paypal_webhook_log (últimos 30 días)
- *   - property_checkin_info
- * y sube el archivo a R2 con nombre `backups/YYYY-MM-DD.json`.
+ * v2 (2026-07-06): antes solo respaldaba 3 tablas hardcodeadas de la D1 de
+ * operación y NO tocaba la contabilidad (que no tenía NINGÚN backup). Ahora:
+ *   - Vuelca TODAS las tablas de cada D1, descubiertas dinámicamente vía
+ *     `sqlite_master` (si mañana aparece una tabla nueva, entra sola al
+ *     backup sin tener que tocar este archivo).
+ *   - Respalda las DOS bases: `estadias-jacari-db` (operación, binding DB, YA
+ *     existía) y `jacari-contabilidad` (binding CONTAB_DB, NUEVO en v2).
+ *   - Sube a R2 en `backups/ops/YYYY-MM-DD.json` y `backups/contab/YYYY-MM-DD.json`.
  *
- * Retención: 30 días (el worker borra backups más viejos cuando corre).
+ * Retención: 30 días por prefijo (el worker borra backups más viejos cuando corre).
  *
  * Esto mitiga el riesgo de pérdida de D1: Cloudflare D1 tiene backups internos
- * pero NO un botón "restore from N days ago" disponible al usuario hoy. Con
- * esto siempre tenemos un dump descargable en R2.
+ * (ver `wrangler d1 time-travel` — primera línea de defensa, restore nativo de
+ * hasta 30 días) pero como capa adicional e independiente del proveedor,
+ * siempre tenemos un dump JSON descargable en R2. Ver runbook de restore:
+ * 03_documentos/runbook-restore-d1.md (incluye un restore drill verificado).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * SETUP (una sola vez, todo desde el dashboard via Cloudflare AI):
+ * SETUP / ACTUALIZACIÓN (todo desde el dashboard vía Cloudflare AI):
  *
- * Pegar el prompt de `scripts/prompts/setup-backup-worker.md` al chat del
- * Ask AI de Cloudflare. El AI hace:
+ * Pegar el prompt de `05_automatizacion/10_prompt_backup_worker_v2.md` al chat
+ * del Ask AI de Cloudflare. Bindings del Worker `estadia-jacari-backup`:
+ *   - D1 `DB`        → database `estadias-jacari-db`      (YA existía, no tocar)
+ *   - D1 `CONTAB_DB` → database `jacari-contabilidad`     (NUEVO en v2)
+ *   - R2 `BACKUPS`   → bucket `estadias-jacari-checkin-pdfs` (prefijo `backups/`, ya existía)
+ *   - Var `CRON_SECRET` → el mismo de Pages (encrypted, ya existía)
+ * Cron Trigger: `0 4 * * *` (4 AM UTC = 10 PM HN previo) — ya existía, no tocar.
  *
- *   1. Crea Worker `estadia-jacari-backup`.
- *   2. Pega ESTE archivo como código del Worker.
- *   3. Bindings:
- *        - D1: variable name `DB`, database `estadias-jacari-db`
- *        - R2: variable name `BACKUPS`, bucket `estadias-jacari-checkin-pdfs`
- *          (reusar el bucket existente, prefijo `backups/`)
- *   4. Cron Triggers: `0 4 * * *` (4 AM UTC = 10 PM HN previo)
- *   5. Deploy.
- *
- * PRUEBA MANUAL: abre la URL del Worker con ?secret=CRON_SECRET — corre el
+ * PRUEBA MANUAL: abrir la URL del Worker con ?secret=CRON_SECRET — corre el
  * backup inmediatamente y devuelve resumen JSON.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 const RETENTION_DAYS = 30;
 
+// Tablas internas de D1/SQLite que NUNCA hay que respaldar (no son datos del
+// negocio; algunas ni siquiera son legibles con SELECT *).
+const SYSTEM_TABLE_PATTERNS = [/^sqlite_/, /^_cf_/, /^d1_/];
+
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runBackup(env));
+    ctx.waitUntil(runAllBackups(env));
   },
 
   async fetch(request, env) {
@@ -45,7 +50,7 @@ export default {
     if (url.searchParams.get('secret') !== env.CRON_SECRET) {
       return new Response('unauthorized', { status: 401 });
     }
-    const result = await runBackup(env);
+    const result = await runAllBackups(env);
     return new Response(JSON.stringify(result, null, 2), {
       status: 200,
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -53,74 +58,102 @@ export default {
   },
 };
 
-async function runBackup(env) {
+async function runAllBackups(env) {
+  const results = {};
+  // Cada base es independiente: si una falla, la otra igual se respalda (no
+  // queremos que un problema en contabilidad tumbe el backup de operación).
+  if (env.DB) {
+    results.ops = await backupDatabase(env.DB, env.BACKUPS, 'ops').catch((err) => ({
+      ok: false,
+      error: err.message,
+    }));
+  }
+  if (env.CONTAB_DB) {
+    results.contab = await backupDatabase(env.CONTAB_DB, env.BACKUPS, 'contab').catch((err) => ({
+      ok: false,
+      error: err.message,
+    }));
+  }
+  console.log('Backups completed:', JSON.stringify(results));
+  return { ok: true, ...results };
+}
+
+/** Nombres de tabla reales de una D1 (excluye las internas de SQLite/D1). */
+async function listUserTables(db) {
+  const { results } = await db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+    .all();
+  return (results ?? [])
+    .map((r) => r.name)
+    .filter((name) => !SYSTEM_TABLE_PATTERNS.some((re) => re.test(name)));
+}
+
+async function backupDatabase(db, bucket, prefix) {
   const startedAt = new Date().toISOString();
   const dateStr = startedAt.slice(0, 10); // YYYY-MM-DD
-  const key = `backups/${dateStr}.json`;
+  const key = `backups/${prefix}/${dateStr}.json`;
 
-  // 1. Volcar tablas
-  const [reservations, webhookLog, checkinInfo] = await Promise.all([
-    env.DB.prepare('SELECT * FROM reservations ORDER BY id ASC').all(),
-    env.DB.prepare(
-      `SELECT * FROM paypal_webhook_log
-        WHERE received_at > datetime('now', '-30 days')
-        ORDER BY id ASC`,
-    ).all(),
-    env.DB.prepare('SELECT * FROM property_checkin_info').all(),
-  ]);
+  const tables = await listUserTables(db);
+
+  const data = {};
+  const counts = {};
+  for (const table of tables) {
+    // Nombre de tabla viene de sqlite_master (no de input externo) — seguro
+    // interpolar directo, D1 no soporta bind params para nombres de tabla/columna.
+    const { results } = await db.prepare(`SELECT * FROM "${table}"`).all();
+    data[table] = results ?? [];
+    counts[table] = data[table].length;
+  }
 
   const payload = {
-    backup_version: 1,
+    backup_version: 2,
     generated_at: startedAt,
-    counts: {
-      reservations: reservations.results?.length ?? 0,
-      paypal_webhook_log: webhookLog.results?.length ?? 0,
-      property_checkin_info: checkinInfo.results?.length ?? 0,
-    },
-    data: {
-      reservations: reservations.results ?? [],
-      paypal_webhook_log: webhookLog.results ?? [],
-      property_checkin_info: checkinInfo.results ?? [],
-    },
+    tables: tables,
+    counts,
+    data,
   };
 
-  // 2. Subir a R2
-  await env.BACKUPS.put(key, JSON.stringify(payload, null, 2), {
+  await bucket.put(key, JSON.stringify(payload), {
     httpMetadata: { contentType: 'application/json; charset=utf-8' },
     customMetadata: {
       generatedAt: startedAt,
-      reservationsCount: String(payload.counts.reservations),
+      tableCount: String(tables.length),
     },
   });
 
-  // 3. Limpieza de backups viejos (>RETENTION_DAYS)
+  const deleted = await cleanupOldBackups(bucket, prefix);
+
+  const result = {
+    ok: true,
+    key,
+    tables,
+    counts,
+    deleted_old_backups: deleted,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+  };
+  console.log(`Backup [${prefix}] completed:`, JSON.stringify(result));
+  return result;
+}
+
+async function cleanupOldBackups(bucket, prefix) {
   const cutoffDate = new Date();
   cutoffDate.setUTCDate(cutoffDate.getUTCDate() - RETENTION_DAYS);
   const cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
   let deleted = 0;
   try {
-    const list = await env.BACKUPS.list({ prefix: 'backups/' });
+    const list = await bucket.list({ prefix: `backups/${prefix}/` });
+    const dateRe = new RegExp(`^backups/${prefix}/(\\d{4}-\\d{2}-\\d{2})\\.json$`);
     for (const obj of list.objects ?? []) {
-      // Key format: backups/YYYY-MM-DD.json — extraer la fecha
-      const m = obj.key.match(/^backups\/(\d{4}-\d{2}-\d{2})\.json$/);
+      const m = obj.key.match(dateRe);
       if (m && m[1] < cutoffStr) {
-        await env.BACKUPS.delete(obj.key);
+        await bucket.delete(obj.key);
         deleted++;
       }
     }
   } catch (err) {
-    console.error('Cleanup failed:', err.message);
+    console.error(`Cleanup failed [${prefix}]:`, err.message);
   }
-
-  const result = {
-    ok: true,
-    key,
-    counts: payload.counts,
-    deleted_old_backups: deleted,
-    started_at: startedAt,
-    finished_at: new Date().toISOString(),
-  };
-  console.log('Backup completed:', JSON.stringify(result));
-  return result;
+  return deleted;
 }
