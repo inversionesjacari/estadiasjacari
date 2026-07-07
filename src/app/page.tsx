@@ -3,10 +3,14 @@ import HeroSearch from "@/components/HeroSearch";
 import PropertyGrid from "@/components/PropertyGrid";
 import WhyUs from "@/components/WhyUs";
 import ContactCTA from "@/components/ContactCTA";
+import JsonLd from "@/components/JsonLd";
+import { organizationSchema, lodgingBusinessSchema } from "@/lib/schema";
 
 export default function HomePage() {
   return (
     <>
+      <JsonLd data={organizationSchema()} />
+      <JsonLd data={lodgingBusinessSchema()} />
       <section className="relative min-h-[88vh] flex items-center justify-center text-white overflow-hidden">
         <Image
           src="/images/casa-marea/12.jpg"

@@ -9,6 +9,9 @@ import {
 import Gallery from "@/components/Gallery";
 import BookingWidget from "@/components/BookingWidget";
 import PropertyCard from "@/components/PropertyCard";
+import JsonLd from "@/components/JsonLd";
+import { vacationRentalSchema, breadcrumbSchema } from "@/lib/schema";
+import { SITE_NAME } from "@/lib/site";
 
 export function generateStaticParams() {
   return properties.map((p) => ({ slug: p.slug }));
@@ -21,9 +24,29 @@ export function generateMetadata({
 }): Metadata {
   const p = getProperty(params.slug);
   if (!p) return { title: "Propiedad no encontrada" };
+  const title = `${p.name} — Estadías Jacarí`;
+  const description = p.description[0];
+  const url = `/propiedades/${p.slug}`;
+  const ogImage = `/og/${p.slug}.jpg`;
   return {
-    title: `${p.name} — Estadías Jacarí`,
-    description: p.description[0],
+    title,
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      type: "website",
+      siteName: SITE_NAME,
+      title,
+      description,
+      url,
+      locale: "es_HN",
+      images: [{ url: ogImage, width: 1200, height: 630, alt: p.name }],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [ogImage],
+    },
   };
 }
 
@@ -39,6 +62,14 @@ export default function PropertyDetailPage({
 
   return (
     <article className="pt-24 lg:pt-28 pb-24 lg:pb-0">
+      <JsonLd data={vacationRentalSchema(property)} />
+      <JsonLd
+        data={breadcrumbSchema([
+          { name: "Inicio", url: "/" },
+          { name: "Propiedades", url: "/propiedades" },
+          { name: property.name, url: `/propiedades/${property.slug}` },
+        ])}
+      />
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {/* Crumbs */}
         <nav className="text-sm text-muted mb-6">
