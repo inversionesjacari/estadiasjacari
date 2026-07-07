@@ -58,8 +58,15 @@ export default function PropertyCard({ property, priority = false }: Props) {
           />
         </div>
 
-        <div className="mt-4">
-          <span className="text-accent font-medium text-sm group-hover:underline">
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <p className="leading-tight">
+            <span className="text-xs text-muted">Desde </span>
+            <span className="font-display text-lg text-primary">
+              L. {property.pricePerNightHNL.toLocaleString("es-HN")}
+            </span>
+            <span className="text-xs text-muted"> /noche</span>
+          </p>
+          <span className="text-accent font-medium text-sm group-hover:underline whitespace-nowrap">
             Ver detalles →
           </span>
         </div>
