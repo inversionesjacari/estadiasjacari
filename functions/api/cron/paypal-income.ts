@@ -17,6 +17,7 @@
 
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { fetchAirbnbTxns, configuredAccounts, type AirbnbTxn } from "../../_lib/paypal-reporting";
+import { withCronMonitor } from "../../_lib/cron-monitor";
 
 interface Env {
   DB: D1Database;
@@ -43,7 +44,10 @@ function hnDayStartMs(now: number): number {
   return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) + 6 * 3600 * 1000;
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<Env> = (context) =>
+  withCronMonitor(context.env, "cron_paypal_income", () => handlePost(context));
+
+const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
 

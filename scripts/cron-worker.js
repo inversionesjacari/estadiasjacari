@@ -17,6 +17,8 @@
  * Horarios (UTC; Honduras = UTC-6):
  *   cada 2 min   → bot-retry          (auto-recuperación del bot tras glitch del LLM)
  *   cada 10 min  → quote-followups    (seguimiento de cotizaciones a medias)
+ *   cada 30 min  → watchdog           (2026-07-06: avisa por WhatsApp si un cron
+ *                  se queda callado o falla seguido — ver functions/api/cron/watchdog.ts)
  *   cada hora    → paypal-income      (ingreso Airbnb vía PayPal)
  *   00:00 UTC    → checkin-reminders  (6 PM HN — Correo #2 + WA T-1 día)
  *   11:30 UTC    → bot-qa-run         (5:30 AM HN — QA diario del bot)
@@ -48,6 +50,7 @@ function dueEndpoints(date) {
 
   if (m % 2 === 0)  urls.push(BASE + '/api/cron/bot-retry');        // cada 2 min
   if (m % 10 === 0) urls.push(BASE + '/api/cron/quote-followups');  // cada 10 min
+  if (m % 30 === 0) urls.push(BASE + '/api/cron/watchdog');         // cada 30 min
   if (m === 0)      urls.push(BASE + '/api/cron/paypal-income');    // cada hora
 
   if (h === 0  && m === 0)  urls.push(BASE + '/api/cron/checkin-reminders'); // 6 PM HN
@@ -72,6 +75,7 @@ const MANUAL_DISPATCH = {
   'income-debug': BASE + '/api/cron/paypal-income?debug=1',  // muestra txns Airbnb SIN escribir
   qa:             BASE + '/api/inbox/bot-qa-run',            // QA del bot
   retry:          BASE + '/api/cron/bot-retry',              // auto-recuperación del bot
+  watchdog:       BASE + '/api/cron/watchdog',                // vigila que los otros crons sigan corriendo
 };
 
 export default {

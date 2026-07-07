@@ -21,6 +21,7 @@ import { handleQuoteIncoming, type QuoteFlowEnv } from "../../_lib/quote-flow";
 import { sendTextMessage, sendImageMessage, type WhatsAppEnv } from "../../_lib/whatsapp";
 import { sendEscalationEmail } from "../../_lib/whatsapp-escalation";
 import { pauseBot } from "../../_lib/bot-pause";
+import { withCronMonitor } from "../../_lib/cron-monitor";
 
 type Env = QuoteFlowEnv & WhatsAppEnv & {
   CRON_SECRET?: string;
@@ -57,17 +58,12 @@ function json(body: unknown): Response {
   });
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<Env> = (context) =>
+  withCronMonitor(context.env, "cron_bot_retry", () => handlePost(context));
+
+const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
-
-  // Latido (para el Centro de Control).
-  try {
-    await env.DB.prepare(
-      `INSERT INTO system_heartbeat (key, last_at) VALUES ('cron_bot_retry', datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
-    ).run();
-  } catch { /* best-effort */ }
 
   // ── FRENO (circuit breaker): si la IA falló hace muy poco, NO reproceses ──
   // Reintentar mientras Workers AI está saturado/caído solo lo empeora: es un

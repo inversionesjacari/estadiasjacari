@@ -32,6 +32,7 @@ import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../..
 import { normalizePhone, isValidE164 } from "../../_lib/phone";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
+import { withCronMonitor } from "../../_lib/cron-monitor";
 
 interface Env {
   DB: D1Database;
@@ -93,7 +94,10 @@ async function notifyOwner(
   }
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<Env> = (context) =>
+  withCronMonitor(context.env, "cron_checkin_reminders", () => handlePost(context));
+
+const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   // 1. Auth (timing-safe Bearer compare via helper compartido)
   const authResult = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!authResult.ok) return authResult.response!;

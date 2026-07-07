@@ -28,6 +28,7 @@ import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from
 import { isNotInterested } from "../../_lib/quote-flow";
 import { todayHn } from "../../_lib/dates";
 import { T } from "../../_lib/i18n";
+import { withCronMonitor } from "../../_lib/cron-monitor";
 
 interface Env extends AvailabilityEnv {
   DB: D1Database;
@@ -171,22 +172,15 @@ async function lastRealOutRule(phone: string, db: D1Database): Promise<string> {
   }
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<Env> = (context) =>
+  withCronMonitor(context.env, "cron_followups", () => handlePost(context));
+
+const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
 
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
     return json({ ok: false, error: "Faltan credenciales de WhatsApp" }, 500);
-  }
-
-  // Latido: registrar que el cron corrió (para el Centro de Control).
-  try {
-    await env.DB.prepare(
-      `INSERT INTO system_heartbeat (key, last_at) VALUES ('cron_followups', datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
-    ).run();
-  } catch {
-    // best-effort (la tabla puede no existir aún)
   }
 
   const url = new URL(request.url);

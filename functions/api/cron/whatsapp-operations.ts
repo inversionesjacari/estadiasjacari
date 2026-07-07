@@ -48,6 +48,7 @@ import { normalizePhone, isValidE164 } from "../../_lib/phone";
 import { getCleaningContacts, getSecurityContacts } from "../../_lib/property-contacts";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
+import { withCronMonitor } from "../../_lib/cron-monitor";
 import {
   sendCheckinDiaHuesped,
   sendCheckinDiaLimpieza,
@@ -119,7 +120,15 @@ function json(body: unknown, status = 200): Response {
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<Env> = (context) => {
+  // El key incluye el hito (3 hitos diarios distintos por el mismo endpoint) —
+  // sigue DESACTIVADO en cron-worker.js (falta property_contacts), así que no
+  // está en el mapa del watchdog todavía; se agrega cuando se active.
+  const hito = new URL(context.request.url).searchParams.get("hito") || "unknown";
+  return withCronMonitor(context.env, `cron_whatsapp_operations_${hito}`, () => handlePost(context));
+};
+
+const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   // 1. Auth (timing-safe Bearer compare via helper compartido)
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
