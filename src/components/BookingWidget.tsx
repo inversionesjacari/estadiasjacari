@@ -140,6 +140,9 @@ export default function BookingWidget({
   // Si la API falla, queda en null y caemos al pricePerNightUSD hardcoded.
   const [exchangeRate, setExchangeRate] = useState<number | null>(null);
   const [rateDate, setRateDate] = useState<string | null>(null);
+  const [rateStatus, setRateStatus] = useState<"loading" | "live" | "fallback">(
+    "loading",
+  );
 
   // ── ESTADO DE LA RESERVA ────────────────────────────────────────────────
   const [range, setRange] = useState<DateRange | undefined>(undefined);
@@ -229,12 +232,17 @@ export default function BookingWidget({
     fetch(`/api/exchange-rate`)
       .then((resp) => (resp.ok ? (resp.json() as Promise<ExchangeRateResponse>) : null))
       .then((data) => {
-        if (cancelled || !data || typeof data.rate !== "number") return;
+        if (cancelled) return;
+        if (!data || typeof data.rate !== "number") {
+          setRateStatus("fallback");
+          return;
+        }
         setExchangeRate(data.rate);
         setRateDate(data.date);
+        setRateStatus("live");
       })
       .catch(() => {
-        // Silencioso — fallback al hardcoded
+        if (!cancelled) setRateStatus("fallback");
       });
     return () => {
       cancelled = true;
@@ -502,11 +510,27 @@ export default function BookingWidget({
           </div>
         </div>
 
-        {/* (Nota: cuando `availabilitySyncStatus !== "full"`, el sync con Airbnb
-            está degradado y el calendar no refleja todas las fechas bloqueadas
-            externas. No mostramos banner para no ensuciar la UI — el riesgo se
-            mitiga porque el sitio acepta solo reservas con cobro directo y el
-            staff puede gestionar conflictos manualmente vía WhatsApp.) */}
+        {/* Aviso si el sync con Airbnb está degradado — el calendario puede no
+            reflejar todas las fechas bloqueadas externas. Informativo, no
+            bloquea el flujo (el staff resuelve conflictos vía WhatsApp). */}
+        {(availabilitySyncStatus === "partial" ||
+          availabilitySyncStatus === "unavailable") && (
+          <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs p-3">
+            {availabilitySyncStatus === "unavailable"
+              ? "No pudimos sincronizar el calendario con Airbnb en este momento. "
+              : "El calendario podría no reflejar reservas recientes de otras plataformas. "}
+            Confirmá disponibilidad por{" "}
+            <a
+              href={waUrl(waMessage.property(propertyName))}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-medium"
+            >
+              WhatsApp
+            </a>{" "}
+            antes de pagar.
+          </div>
+        )}
 
         {/* Fechas — COLAPSADO al inicio (no abruma); el calendario se despliega
             al tocar Llegada/Salida, estilo Airbnb (2 meses en desktop). */}
@@ -827,6 +851,12 @@ export default function BookingWidget({
               <p className="text-xs text-gray-500 text-right">
                 ≈ USD ${grandTotalUSD.toFixed(2)}
               </p>
+              {rateStatus === "fallback" && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-1">
+                  Estamos usando un tipo de cambio de referencia; el monto
+                  exacto en USD puede variar levemente.
+                </p>
+              )}
             </div>
 
             {/* Datos del huésped */}
