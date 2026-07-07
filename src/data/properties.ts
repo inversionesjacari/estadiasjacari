@@ -122,12 +122,12 @@ export const properties: Property[] = [
       "Casa Brisa es parte de Las Gemelas de Tela junto a Casa Marea — si son más de 6, pueden rentar ambas casas para hasta 12 personas en la misma propiedad.",
     ],
     images: [
-      "/images/casa-brisa/01.png",
-      "/images/casa-brisa/02.png",
-      "/images/casa-brisa/03.png",
-      "/images/casa-brisa/04.png",
-      "/images/casa-brisa/05.png",
-      "/images/casa-brisa/06.png",
+      "/images/casa-brisa/01.jpg",
+      "/images/casa-brisa/02.jpg",
+      "/images/casa-brisa/03.jpg",
+      "/images/casa-brisa/04.jpg",
+      "/images/casa-brisa/05.jpg",
+      "/images/casa-brisa/06.jpg",
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
