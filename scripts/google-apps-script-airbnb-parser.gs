@@ -2,13 +2,18 @@
  * Apps Script — Parser de emails Airbnb para Estadías Jacarí
  *
  * Corre cada 5 min sobre el Gmail de inversionesjacari@gmail.com (o estadiasjacari@gmail.com).
- * Monitorea dos labels:
+ * Monitorea tres labels:
  *
- *   1. "Airbnb-Reservation"   → emails de CONFIRMACIÓN de reservas nuevas
+ *   1. "Airbnb-Reservations"   → emails de CONFIRMACIÓN de reservas nuevas
  *      (asunto típico: "¡Nueva reservación confirmada! ...")
  *      → POST a /api/inbound/airbnb-reservation con los datos parseados
  *
- *   2. "Airbnb-Message"       → emails de MENSAJES del chat de Airbnb
+ *   2. "Airbnb-Cancellations" → emails de CANCELACIÓN (ETIQUETADO MANUAL por
+ *      César — no hay auto-detección de subject/body, nunca vimos un email
+ *      real de cancelación para basar un parser confiable en eso)
+ *      → POST a /api/inbound/airbnb-cancellation con solo el confirmationCode
+ *
+ *   3. "Airbnb-Messages"       → emails de MENSAJES del chat de Airbnb
  *      (asunto típico: "Reservación para ..." con texto del huésped)
  *      → POST a /api/inbound/airbnb-message con el texto del mensaje
  *
@@ -72,8 +77,9 @@
 // CONFIG — César debe editar estas 3 constantes
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ENDPOINT_RESERVATION = 'https://estadiasjacari.pages.dev/api/inbound/airbnb-reservation';
-const ENDPOINT_MESSAGE     = 'https://estadiasjacari.pages.dev/api/inbound/airbnb-message';
+const ENDPOINT_RESERVATION  = 'https://estadiasjacari.pages.dev/api/inbound/airbnb-reservation';
+const ENDPOINT_MESSAGE      = 'https://estadiasjacari.pages.dev/api/inbound/airbnb-message';
+const ENDPOINT_CANCELLATION = 'https://estadiasjacari.pages.dev/api/inbound/airbnb-cancellation';
 
 // IMPORTANTE: pegar el valor real de AIRBNB_INBOUND_SECRET aquí.
 // Debe coincidir con el env var de Cloudflare Pages.
@@ -89,6 +95,14 @@ const LABEL_RESERVATION_DONE    = 'Airbnb-Reservations-Processed';
 const LABEL_RESERVATION_FAILED  = 'Airbnb-Reservations-Failed'; // no parseó o el endpoint lo rechazó → revisión manual
 const LABEL_MESSAGE_PENDING_CANDIDATES = ['Airbnb-Messages', 'Airbnb-Message'];
 const LABEL_MESSAGE_DONE        = 'Airbnb-Messages-Processed';
+
+// Cancelaciones (2026-07-07): César etiqueta A MANO el email de cancelación
+// de Airbnb con este label — NO hay auto-detección de subject/body (nunca
+// vimos un email de cancelación real para basar un parser confiable ahí).
+// DONE y FAILED se crean solos, igual que los otros dos flujos.
+const LABEL_CANCELLATION_PENDING_CANDIDATES = ['Airbnb-Cancellations', 'Airbnb-Cancellation'];
+const LABEL_CANCELLATION_DONE   = 'Airbnb-Cancellations-Processed';
+const LABEL_CANCELLATION_FAILED = 'Airbnb-Cancellations-Failed';
 
 /** Devuelve el primer label existente de la lista de candidatos, o null. */
 function resolveExistingLabel(candidates) {
@@ -112,6 +126,11 @@ function processNewEmails() {
     processReservations();
   } catch (err) {
     console.error('processReservations error:', err);
+  }
+  try {
+    processCancellations();
+  } catch (err) {
+    console.error('processCancellations error:', err);
   }
   try {
     processMessages();
@@ -457,6 +476,62 @@ function parseGuestCount(lines) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CANCELLATIONS — emails de cancelación de Airbnb (etiquetado MANUAL)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A diferencia de processReservations (que detecta el email por subject/body
+// con un formato verificado), acá NO adivinamos el formato de un email de
+// cancelación: César etiqueta el thread con "Airbnb-Cancellations" a mano
+// (son pocos al mes) y el único dato que necesitamos —el código de
+// confirmación— está en CUALQUIER correo de Airbnb sobre la reserva.
+//
+// El endpoint marca la reserva como cancelada, lo que libera la
+// disponibilidad y la excluye del próximo sync a contabilidad.
+
+function processCancellations() {
+  const label = resolveExistingLabel(LABEL_CANCELLATION_PENDING_CANDIDATES);
+  if (!label) {
+    console.log(`Sin label de cancelaciones (${LABEL_CANCELLATION_PENDING_CANDIDATES.join('/')}); nada que hacer. Etiquetá los emails de cancelación de Airbnb con "Airbnb-Cancellations" para que se procesen.`);
+    return;
+  }
+  const doneLabel = ensureLabel(LABEL_CANCELLATION_DONE);
+  const failedLabel = ensureLabel(LABEL_CANCELLATION_FAILED);
+
+  const threads = label.getThreads(0, 20);
+  console.log(`processCancellations: ${threads.length} threads con label "${label.getName()}"`);
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    const msg = messages[messages.length - 1];
+    const body = msg.getPlainBody();
+    const subject = msg.getSubject();
+    const lines = String(body || '').split('\n').map((l) => l.trim());
+
+    // extractConfirmationCode ya tolera buscar en cualquier lado del cuerpo
+    // (fallback "HM…"); si no aparece en el cuerpo, probamos el subject.
+    const confirmationCode = extractConfirmationCode(lines) || extractConfirmationCode([subject]);
+    if (!confirmationCode) {
+      console.warn(`processCancellations: no se encontró código en "${subject}" → ${LABEL_CANCELLATION_FAILED}`);
+      label.removeFromThread(thread);
+      failedLabel.addToThread(thread);
+      continue;
+    }
+
+    const result = postToEndpoint(ENDPOINT_CANCELLATION, { confirmationCode });
+    if (result.ok) {
+      console.log(`Cancelación ${confirmationCode} OK: ${result.response.slice(0, 160)}`);
+      label.removeFromThread(thread);
+      failedLabel.removeFromThread(thread); // si venía de un reintento, limpiar Failed
+      doneLabel.addToThread(thread);
+    } else {
+      console.error(`Falló cancelación ${confirmationCode}: ${result.error}`);
+      label.removeFromThread(thread);
+      failedLabel.addToThread(thread);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MESSAGES — emails de "Reservación para ..." con mensaje del huésped
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -607,4 +682,17 @@ function debugLatestMessageEmail() {
   const parsed = parseMessageEmail(msg.getSubject(), msg.getPlainBody());
   console.log('SUBJECT:', msg.getSubject());
   console.log('PARSED:', JSON.stringify(parsed, null, 2));
+}
+
+function debugLatestCancellationEmail() {
+  const label = resolveExistingLabel(LABEL_CANCELLATION_PENDING_CANDIDATES);
+  if (!label) { console.log('Label de cancelaciones no existe'); return; }
+  const threads = label.getThreads(0, 1);
+  if (threads.length === 0) { console.log('Sin emails pending'); return; }
+  const msg = threads[0].getMessages()[0];
+  const body = msg.getPlainBody();
+  const lines = String(body || '').split('\n').map((l) => l.trim());
+  const confirmationCode = extractConfirmationCode(lines) || extractConfirmationCode([msg.getSubject()]);
+  console.log('SUBJECT:', msg.getSubject());
+  console.log('CONFIRMATION CODE:', confirmationCode || '(no encontrado)');
 }
