@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { getProperty } from "@/data/properties";
 import { waUrl, waMessage } from "@/lib/whatsapp";
+import { trackEvent } from "@/lib/analytics";
 
 export default function WhatsAppButton() {
   const pathname = usePathname();
@@ -18,6 +19,7 @@ export default function WhatsAppButton() {
       target="_blank"
       rel="noopener noreferrer"
       aria-label="Contactar por WhatsApp"
+      onClick={() => trackEvent("whatsapp_click", { propertySlug: slug })}
       className="fixed bottom-6 right-6 z-50 bg-[#25D366] text-white p-3.5 rounded-full shadow-xl hover:scale-110 hover:bg-[#1ebe5d] transition-all"
     >
       <svg

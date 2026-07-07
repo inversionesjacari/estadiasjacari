@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
 import { DayPicker, type DateRange } from "react-day-picker";
 import { es } from "date-fns/locale";
@@ -14,6 +14,7 @@ import {
 } from "date-fns";
 import "react-day-picker/style.css";
 import { waUrl, waMessage } from "@/lib/whatsapp";
+import { trackEvent } from "@/lib/analytics";
 
 const PAYPAL_CLIENT_ID =
   "AQYfxeAZGvq-HZ4Fz7RdENtJjGRCWKzILQBXlqixS6LdJN5FF7njl3w4ofXnaTMpZw6GugYCYiKK05gy";
@@ -174,6 +175,17 @@ export default function BookingWidget({
   // Mensaje cuando el usuario cancela el modal de PayPal (Auditoría — M1)
   const [paypalCancelMsg, setPaypalCancelMsg] = useState<string | null>(null);
 
+  // Guardas para que los eventos del embudo se disparen una sola vez por
+  // montaje (evita inflar el conteo con re-renders).
+  const widgetOpenTracked = useRef(false);
+  const datesSelectedTracked = useRef(false);
+  const handleOpenCalendar = () => {
+    if (!widgetOpenTracked.current) {
+      widgetOpenTracked.current = true;
+      trackEvent("booking_widget_open", { propertySlug });
+    }
+  };
+
   // ── EFECTO: cargar disponibilidad desde el endpoint ─────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -244,6 +256,13 @@ export default function BookingWidget({
       ? Math.max(0, differenceInDays(range.to, range.from))
       : 0;
 
+  useEffect(() => {
+    if (nights > 0 && !datesSelectedTracked.current) {
+      datesSelectedTracked.current = true;
+      trackEvent("dates_selected", { propertySlug });
+    }
+  }, [nights, propertySlug]);
+
   // Precio USD derivado: HNL / TC del día. Si el TC no cargó, fallback al
   // valor hardcoded en properties.ts (pricePerNightUSD, cleaningFeeUSD).
   const effectivePricePerNightUSD = exchangeRate
@@ -308,6 +327,7 @@ export default function BookingWidget({
       // Caso defensivo — el botón ya está disabled cuando esto pasa.
       return;
     }
+    trackEvent("checkout_review", { propertySlug });
     setStep("review");
   };
 
@@ -350,9 +370,11 @@ export default function BookingWidget({
       }
       // OK (resp.ok=true sin overlap, o resp.ok=false fail-open) → mostrar PayPal
       setPaypalRevealed(true);
+      trackEvent("paypal_shown", { propertySlug });
     } catch {
       // Network error — fail-open
       setPaypalRevealed(true);
+      trackEvent("paypal_shown", { propertySlug });
     } finally {
       setRevalidating(false);
     }
@@ -492,7 +514,10 @@ export default function BookingWidget({
           <div className="grid grid-cols-2 rounded-xl border border-gray-300 overflow-hidden">
             <button
               type="button"
-              onClick={() => setCalendarOpen((o) => !o)}
+              onClick={() => {
+                handleOpenCalendar();
+                setCalendarOpen((o) => !o);
+              }}
               className={`text-left px-3 py-2.5 transition ${calendarOpen ? "ring-2 ring-primary ring-inset" : "hover:bg-gray-50"}`}
             >
               <div className="text-[10px] font-bold text-primary tracking-wide">LLEGADA</div>
@@ -502,7 +527,10 @@ export default function BookingWidget({
             </button>
             <button
               type="button"
-              onClick={() => setCalendarOpen(true)}
+              onClick={() => {
+                handleOpenCalendar();
+                setCalendarOpen(true);
+              }}
               className="text-left px-3 py-2.5 border-l border-gray-300 hover:bg-gray-50 transition"
             >
               <div className="text-[10px] font-bold text-primary tracking-wide">SALIDA</div>
@@ -929,6 +957,10 @@ export default function BookingWidget({
                     await actions.order?.capture();
                     setOrderId(data.orderID);
                     setStep("success");
+                    trackEvent("booking_success", {
+                      propertySlug,
+                      meta: { orderId: data.orderID, nights },
+                    });
                   }}
                   onCancel={() => {
                     // Auditoría M1 — usuario cerró modal PayPal sin pagar.
