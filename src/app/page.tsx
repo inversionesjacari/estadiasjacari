@@ -3,6 +3,7 @@ import HeroSearch from "@/components/HeroSearch";
 import PropertyGrid from "@/components/PropertyGrid";
 import HowItWorks from "@/components/HowItWorks";
 import TrustBadges from "@/components/TrustBadges";
+import HomeReviews from "@/components/HomeReviews";
 import WhyUs from "@/components/WhyUs";
 import ContactCTA from "@/components/ContactCTA";
 import JsonLd from "@/components/JsonLd";
@@ -48,6 +49,8 @@ export default function HomePage() {
       <HowItWorks />
 
       <WhyUs />
+
+      <HomeReviews />
 
       <ContactCTA />
     </>

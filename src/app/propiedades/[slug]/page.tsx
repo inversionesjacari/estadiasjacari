@@ -10,8 +10,10 @@ import Gallery from "@/components/Gallery";
 import BookingWidget from "@/components/BookingWidget";
 import PropertyCard from "@/components/PropertyCard";
 import HostCard from "@/components/HostCard";
+import ReviewsSection from "@/components/ReviewsSection";
 import JsonLd from "@/components/JsonLd";
 import { vacationRentalSchema, breadcrumbSchema } from "@/lib/schema";
+import { aggregateFor } from "@/data/reviews";
 import { SITE_NAME } from "@/lib/site";
 import { waUrl, waMessage } from "@/lib/whatsapp";
 
@@ -64,7 +66,9 @@ export default function PropertyDetailPage({
 
   return (
     <article className="pt-24 lg:pt-28 pb-24 lg:pb-0">
-      <JsonLd data={vacationRentalSchema(property)} />
+      <JsonLd
+        data={vacationRentalSchema(property, aggregateFor(property.slug))}
+      />
       <JsonLd
         data={breadcrumbSchema([
           { name: "Inicio", url: "/" },
@@ -236,6 +240,8 @@ export default function PropertyDetailPage({
                 ))}
               </ul>
             </section>
+
+            <ReviewsSection slug={property.slug} />
 
             {/* Map */}
             <section>
