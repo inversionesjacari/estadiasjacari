@@ -8,6 +8,20 @@
 // el test te avisa si rompés un caso real ya visto.
 //
 
+/**
+ * Reglas "terminales": el bot ya cerró / derivó / cobró esta conversación. Ni el
+ * followup de "armemos cotización" ni el último aviso ni el watchdog de "bot mudo"
+ * deben insistirle a alguien que se despidió, pagó y confirmó, o fue escalado.
+ * (Caso Sandra, 12-jun: pagó y su reserva quedó confirmada, y el followup le dijo
+ * "contame personas y fechas" → la hizo dudar de su propia reserva.) Única fuente
+ * de verdad — antes vivía duplicada solo en quote-followups.ts.
+ */
+export const TERMINAL_RULES = new Set([
+  "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
+  "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
+  "escalar_humano", "call_requested", "farewell",
+]);
+
 /** Detecta si un texto tiene intención de pedir cotización / precio. */
 export function isPriceIntent(text: string): boolean {
   const norm = text

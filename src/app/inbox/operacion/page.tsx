@@ -174,7 +174,7 @@ interface Metrics {
   };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
-  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null };
+  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null; botMudoAt: string | null };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
@@ -237,12 +237,28 @@ function airbnbHex(s: string): string {
   return s === "unavailable" ? HEX.red : HEX.green;
 }
 // Bot IA en ROJO si el LLM (Workers AI) registró un error en los últimos 20 min
-// (el webhook escribe el latido 'bot_llm_error' al caer en bot_glitch_silent).
-// Sin errores recientes → verde (se asume recuperado).
-function botHex(llmErrorAt: string | null): string {
-  const t = parseUtc(llmErrorAt);
-  if (Number.isNaN(t)) return HEX.green;
-  return (Date.now() - t) / 60000 <= 20 ? HEX.red : HEX.green;
+// (el webhook escribe el latido 'bot_llm_error' al caer en bot_glitch_silent) O
+// si el watchdog detectó un cliente sin respuesta hace poco ('bot_mudo', pista B2
+// — corre cada 30 min, por eso la ventana es más ancha que la del LLM). Sin
+// ninguna señal reciente → verde (se asume recuperado / operando normal).
+function botHex(llmErrorAt: string | null, mudoAt: string | null): string {
+  const llm = parseUtc(llmErrorAt);
+  if (!Number.isNaN(llm) && (Date.now() - llm) / 60000 <= 20) return HEX.red;
+  const mudo = parseUtc(mudoAt);
+  if (!Number.isNaN(mudo) && (Date.now() - mudo) / 60000 <= 45) return HEX.red;
+  return HEX.green;
+}
+// Texto de detalle de la card "Bot IA": prioriza la señal MÁS reciente entre falla
+// de LLM y bot mudo (pueden coexistir); verde → última respuesta normal del bot.
+function botDetail(llmErrorAt: string | null, mudoAt: string | null, lastOutAt: string | null): string {
+  const llm = parseUtc(llmErrorAt);
+  const mudo = parseUtc(mudoAt);
+  const llmLive = !Number.isNaN(llm) && (Date.now() - llm) / 60000 <= 20;
+  const mudoLive = !Number.isNaN(mudo) && (Date.now() - mudo) / 60000 <= 45;
+  if (llmLive && mudoLive) return llm >= mudo ? `⚠ falla IA · ${timeAgo(llmErrorAt)}` : `⚠ sin responder · ${timeAgo(mudoAt)}`;
+  if (llmLive) return `⚠ falla IA · ${timeAgo(llmErrorAt)}`;
+  if (mudoLive) return `⚠ sin responder · ${timeAgo(mudoAt)}`;
+  return `últ. ${timeAgo(lastOutAt)}`;
 }
 function isLive(iso: string | null, minutes = 10): boolean {
   const t = parseUtc(iso);
@@ -432,7 +448,7 @@ export default function OperacionPage() {
           <Panel title="🩺 Salud de sistemas">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <HealthItem hex={recencyHex(m.health.lastInAt)} label="WhatsApp" detail={`últ. ${timeAgo(m.health.lastInAt)}`} />
-              <HealthItem hex={botHex(m.health.botLlmErrorAt)} label="Bot IA" detail={botHex(m.health.botLlmErrorAt) === HEX.red ? `⚠ falla IA · ${timeAgo(m.health.botLlmErrorAt)}` : `últ. ${timeAgo(m.health.lastOutAt)}`} />
+              <HealthItem hex={botHex(m.health.botLlmErrorAt, m.health.botMudoAt)} label="Bot IA" detail={botDetail(m.health.botLlmErrorAt, m.health.botMudoAt, m.health.lastOutAt)} />
               <HealthItem hex={airbnbHex(m.health.airbnbStatus)} label="Airbnb" detail={AIRBNB_LABEL[m.health.airbnbStatus]} />
               <HealthItem hex={cronHex(m.health.cronLastAt)} label="Seguimientos" detail={`últ. ${timeAgo(m.health.cronLastAt)}`} />
               <HealthItem hex={recencyHex(m.health.lastReservationAt, 24 * 30)} label="Reservas / PayPal" detail={`últ. ${timeAgo(m.health.lastReservationAt)}`} />
@@ -1268,7 +1284,7 @@ function ArchitectureDiagram({ health }: { health: Metrics["health"] }) {
     airbnb: airbnbHex(health.airbnbStatus),
     wa: recencyHex(health.lastInAt),
     sitio: HEX.green,
-    bot: botHex(health.botLlmErrorAt),
+    bot: botHex(health.botLlmErrorAt, health.botMudoAt),
     agente: HEX.green,
     db: HEX.green,
     cron: cronHex(health.cronLastAt),

@@ -3,9 +3,10 @@
 // POST /api/cron/watchdog
 //
 // Vigila que los OTROS crons sigan corriendo. Se dispara desde
-// scripts/cron-worker.js cada 30 min. Dos chequeos, por cron_key:
-//   1. Staleness: ¿corrió hace más de lo esperado + holgura? (system_heartbeat)
-//   2. Racha de fallos: ¿las últimas 3 corridas fallaron? (cron_runs)
+// scripts/cron-worker.js cada 30 min. Tres chequeos:
+//   1. Staleness por cron_key: ¿corrió hace más de lo esperado + holgura? (system_heartbeat)
+//   2. Racha de fallos por cron_key: ¿las últimas 3 corridas fallaron? (cron_runs)
+//   3. "Bot mudo": ¿hay un cliente con un mensaje SIN responder hace rato? (whatsapp_messages)
 // Si algo dispara, avisa por WhatsApp a César/socio (con cooldown de 6h por
 // alerta — el mismo mecanismo de heartbeat, con una key `watchdog_alert_*`,
 // para no mandar el mismo aviso cada 30 min mientras el problema siga vivo).
@@ -18,6 +19,8 @@
 
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { notifyOwners, type OwnerAlertEnv } from "../../_lib/owner-alerts";
+import { TERMINAL_RULES } from "../../_lib/detectors";
+import { lastRealOutRule } from "./quote-followups";
 
 interface Env extends OwnerAlertEnv {
   DB: D1Database;
@@ -89,8 +92,82 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  return json({ ok: true, checked: Object.keys(EXPECTED_SCHEDULE), findings });
+  const botMudo = await checkBotMudo(env);
+  if (botMudo.phones.length > 0) {
+    findings.push({ key: "bot_mudo", issue: `${botMudo.phones.length} cliente(s) sin respuesta`, alerted: botMudo.alerted });
+  }
+
+  return json({ ok: true, checked: Object.keys(EXPECTED_SCHEDULE), findings, botMudo: botMudo.phones });
 };
+
+// Ventana de detección: un "in" de más de 10 min (holgura sobre bot-retry, que
+// reintenta ~12 min antes de escalar) y menos de 24h (más viejo que eso, la
+// ventana de Meta para texto libre ya cerró — es un lead frío, no una falla en
+// curso) sin ningún "out" a partir de su hora, y sin estar pausado a mano.
+const MUDO_MIN_AGE_MIN = 10;
+const MUDO_MAX_AGE_HOURS = 24;
+
+/**
+ * "Bot mudo": cliente con un mensaje sin CUALQUIER respuesta del bot (ni humana
+ * desde el inbox) hace más de MUDO_MIN_AGE_MIN. Es el patrón ⭐⭐ más caro del
+ * historial (2026-06-09: un día entero de leads perdidos sin que nadie lo notara
+ * hasta revisar el inbox a mano). Excluye:
+ *   - reacciones (emoji sobre un mensaje nuestro — se guardan como 'in' pero
+ *     NUNCA generan respuesta, por diseño; ver handleReaction en el webhook).
+ *   - números con el bot pausado (un humano ya está atendiendo a mano).
+ *   - conversaciones ya CERRADAS a propósito (última regla real del bot en
+ *     TERMINAL_RULES, ej. 'farewell' → el siguiente "ok" del cliente se silencia
+ *     intencionalmente — closing_ack_silent — y NUNCA debe leerse como bot mudo).
+ */
+async function checkBotMudo(env: Env): Promise<{ phones: string[]; alerted: boolean }> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT DISTINCT m.from_phone AS phone
+         FROM whatsapp_messages m
+        WHERE m.direction = 'in'
+          AND m.created_at <= datetime('now', ?)
+          AND m.created_at >= datetime('now', ?)
+          AND m.body NOT LIKE 'Reaccionó con%'
+          AND m.body <> 'Quitó su reacción'
+          AND m.from_phone NOT IN (SELECT phone FROM bot_pauses)
+          AND NOT EXISTS (
+            SELECT 1 FROM whatsapp_messages o
+             WHERE o.direction = 'out' AND o.to_phone = m.from_phone AND o.created_at >= m.created_at
+          )
+        LIMIT 10`,
+    )
+      .bind(`-${MUDO_MIN_AGE_MIN} minutes`, `-${MUDO_MAX_AGE_HOURS} hours`)
+      .all<{ phone: string }>();
+
+    const candidates = (rows.results ?? []).map((r) => r.phone);
+    const phones: string[] = [];
+    for (const phone of candidates) {
+      const lastRule = await lastRealOutRule(phone, env.DB);
+      if (lastRule && TERMINAL_RULES.has(lastRule)) continue; // silencio intencional, no es falla
+      phones.push(phone);
+    }
+
+    if (phones.length === 0) return { phones: [], alerted: false };
+
+    // Latido → semáforo rojo del Bot IA en /inbox/operacion (mismo patrón que bot_llm_error).
+    await env.DB.prepare(
+      `INSERT INTO system_heartbeat (key, last_at) VALUES ('bot_mudo', datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
+    ).run();
+
+    const alerted = await maybeAlert(
+      env,
+      "bot_mudo",
+      "🔴 Bot sin responder",
+      "bot_mudo",
+      `${phones.length} cliente(s) con mensaje sin respuesta hace más de ${MUDO_MIN_AGE_MIN} min: ${phones.slice(0, 3).join(", ")}${phones.length > 3 ? "…" : ""}. Revisá el inbox.`,
+    );
+    return { phones, alerted };
+  } catch (err) {
+    console.error("checkBotMudo error:", (err as Error).message);
+    return { phones: [], alerted: false };
+  }
+}
 
 /** Avisa por WhatsApp si no se avisó lo mismo en las últimas ALERT_COOLDOWN_HOURS. */
 async function maybeAlert(

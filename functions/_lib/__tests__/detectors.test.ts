@@ -11,6 +11,9 @@ import {
   isLocationRequest,
   isLongTermRequest,
   nightsBetween,
+  cityFromText,
+  hasInScopeSignal,
+  TERMINAL_RULES,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -109,5 +112,37 @@ describe("otros detectores clave", () => {
   it("nightsBetween cuenta noches", () => {
     expect(nightsBetween("2026-07-17", "2026-07-19")).toBe(2);
     expect(nightsBetween("2026-07-17", "2026-07-17")).toBe(0);
+  });
+});
+
+describe("TERMINAL_RULES — fuente única para no confundir cierre intencional con falla (B2)", () => {
+  it("incluye 'farewell' — sin esto, watchdog.ts trataría un closing_ack_silent como bot mudo", () => {
+    expect(TERMINAL_RULES.has("farewell")).toBe(true);
+  });
+  it("incluye las reglas de escalación que quote-followups.ts ya dependía", () => {
+    expect(TERMINAL_RULES.has("existing_guest_escalation")).toBe(true);
+    expect(TERMINAL_RULES.has("payment_reported")).toBe(true);
+    expect(TERMINAL_RULES.has("transfer_confirmed_deposit")).toBe(true);
+  });
+  it("NO incluye reglas de flujo normal (no deben cortar followups/watchdog)", () => {
+    expect(TERMINAL_RULES.has("bot_gathering_data")).toBe(false);
+    expect(TERMINAL_RULES.has("quote_provided")).toBe(false);
+  });
+});
+
+describe("cityFromText / hasInScopeSignal — caso Alisson + su hueco corregido", () => {
+  it("ciudades nuestras se detectan sin LLM", () => {
+    expect(cityFromText("Ceiba")).toBe("La Ceiba");
+    expect(cityFromText("Tegucigalpa")).toBe("Tegucigalpa");
+    expect(cityFromText("Tela")).toBe("Tela");
+  });
+  it("un grupo grande SOLO (sin ciudad/propiedad nuestra) no fuerza in-scope", () => {
+    expect(hasInScopeSignal("Roatán para 8 personas", null, null, null, null)).toBe(false);
+  });
+  it("ciudad nombrada, extraída por el LLM, o ya fijada en el estado — cualquiera alcanza", () => {
+    expect(hasInScopeSignal("Ceiba", null, null, null, null)).toBe(true);
+    expect(hasInScopeSignal("y para 8?", "Tegucigalpa", null, null, null)).toBe(true);
+    expect(hasInScopeSignal("y para 8?", null, null, "Tela", null)).toBe(true);
+    expect(hasInScopeSignal("y para 8?", null, "casa-brisa", null, null)).toBe(true);
   });
 });

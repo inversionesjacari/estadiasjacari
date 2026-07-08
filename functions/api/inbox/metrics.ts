@@ -239,6 +239,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     .first<{ t: string }>()
     .catch(() => ({ t: null }));
 
+  // "Bot mudo": último latido del watchdog (cron/watchdog.ts) cuando detectó un
+  // cliente con mensaje sin CUALQUIER respuesta hace >10 min. Mismo patrón que
+  // bot_llm_error — alimenta el mismo semáforo rojo del Bot IA (pista B2).
+  const botMudo = await db
+    .prepare(`SELECT last_at AS t FROM system_heartbeat WHERE key='bot_mudo'`)
+    .first<{ t: string }>()
+    .catch(() => ({ t: null }));
+
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
   let airbnbStatus: "full" | "partial" | "unavailable" | "unknown" = "unknown";
   try {
@@ -483,6 +491,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       cronLastAt: strOf(heartbeat, "t"),
       airbnbStatus,
       botLlmErrorAt: strOf(llmError, "t"),
+      botMudoAt: strOf(botMudo, "t"),
     },
     botHealth: {
       inbound: bc.inbound,

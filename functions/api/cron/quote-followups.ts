@@ -29,6 +29,7 @@ import { isNotInterested } from "../../_lib/quote-flow";
 import { todayHn } from "../../_lib/dates";
 import { T } from "../../_lib/i18n";
 import { withCronMonitor } from "../../_lib/cron-monitor";
+import { TERMINAL_RULES } from "../../_lib/detectors";
 
 interface Env extends AvailabilityEnv {
   DB: D1Database;
@@ -146,19 +147,12 @@ function buildGatherFollowup(data: Record<string, unknown>, ref: string, en: boo
     : `¡Hola de nuevo! 👋 ¿Seguimos${ref}? Contame ${join(missing)} y te muestro opciones. ¡Sin apuro! 🌴`;
 }
 
-// Reglas "terminales": el bot ya cerró / derivó / cobró esta conversación. Ni el
-// followup de "armemos cotización" ni el último aviso deben insistirle a alguien que
-// se despidió, pagó y confirmó, o fue escalado. (Caso Sandra, 12-jun: pagó y su
-// reserva quedó confirmada, y el followup le dijo "contame personas y fechas" → la
-// hizo dudar de su propia reserva: "¿se supone que ya reservé?".)
-const TERMINAL_RULES = new Set([
-  "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
-  "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
-  "escalar_humano", "call_requested", "farewell",
-]);
-
-/** Última regla REAL del bot para este número (ignora los propios followups). */
-async function lastRealOutRule(phone: string, db: D1Database): Promise<string> {
+/**
+ * Última regla REAL del bot para este número (ignora los propios followups).
+ * Exportada: la reutiliza `cron/watchdog.ts` para no confundir un silencio
+ * INTENCIONAL (conversación ya cerrada — TERMINAL_RULES) con un bot mudo real.
+ */
+export async function lastRealOutRule(phone: string, db: D1Database): Promise<string> {
   try {
     const r = await db.prepare(
       `SELECT matched_rule FROM whatsapp_messages
