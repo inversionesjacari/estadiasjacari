@@ -152,6 +152,13 @@ interface Metrics {
   messages: { todayIn: number; todayOut: number; weekIn: number; weekOut: number; today: number; week: number; month: number };
   conversations: { today: number; week: number; month: number };
   funnel: { awaitingData: number; quoteProvided: number; awaitingPaymentMethod: number; awaitingPaypal: number; awaitingTransfer: number; total: number };
+  conversionFunnel?: {
+    leadsNew: number; leadsQuoted: number; leadsQuotedPct: number;
+    leadsPaid: number; leadsPaidPct: number;
+    medianFirstResponseMin: number | null;
+    followupSent: number; followupResponded: number; followupEffectivenessPct: number;
+    revenueByOrigin: { origin: string; revenue: number; reservas: number }[];
+  };
   reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
   revenue: { direct: { today: number; week: number; month: number }; airbnb: { today: number | null; week: number | null; month: number | null } };
   // Ingreso del mes seleccionado, monedas separadas (por check-in). Es lo que muestra la KPI.
@@ -467,6 +474,30 @@ export default function OperacionPage() {
             {m.funnel.total === 0 && <p className="text-center text-slate-500 text-sm py-3">Sin conversaciones en proceso ahora. 🌴</p>}
           </Panel>
         </section>
+
+        {/* Conversión del bot (30d) — línea base, pista B3. Todas las cifras salen
+            de tablas ya existentes (whatsapp_messages, reservations, conversation_state,
+            whatsapp_lead_source); nada de tablas ni dashboards nuevos. */}
+        {m.conversionFunnel && (
+          <Panel title="🎯 Conversión del bot · 30 días" subtitle="línea base para medir las próximas mejoras">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+              <WebStat label="Leads nuevos" value={m.conversionFunnel.leadsNew} foot={<span className="text-slate-500">primer mensaje en la ventana</span>} />
+              <WebStat label="Cotizados" value={m.conversionFunnel.leadsQuotedPct} foot={<span className="text-slate-500">{m.conversionFunnel.leadsQuoted} de {m.conversionFunnel.leadsNew} · %</span>} />
+              <WebStat label="Pagaron" value={m.conversionFunnel.leadsPaidPct} foot={<span className="text-slate-500">{m.conversionFunnel.leadsPaid} de {m.conversionFunnel.leadsNew} · %</span>} />
+              <WebStat label="1ra respuesta" value={m.conversionFunnel.medianFirstResponseMin ?? 0} foot={<span className="text-slate-500">{m.conversionFunnel.medianFirstResponseMin === null ? "sin datos" : "min · mediana"}</span>} />
+              <WebStat label="Followups" value={m.conversionFunnel.followupEffectivenessPct} foot={<span className="text-slate-500">{m.conversionFunnel.followupResponded} de {m.conversionFunnel.followupSent} respondieron · %</span>} />
+            </div>
+            {m.conversionFunnel.revenueByOrigin.length > 0 && (
+              <BarList
+                title="Revenue por origen del lead (ad de WhatsApp)"
+                rows={m.conversionFunnel.revenueByOrigin.map((r) => ({ label: r.origin, value: Math.round(r.revenue) }))}
+                empty="Sin reservas con origen de ad este período."
+                hex={HEX.amber}
+              />
+            )}
+            {m.conversionFunnel.leadsNew === 0 && <p className="text-center text-slate-500 text-sm py-3">Sin leads nuevos en los últimos 30 días. 🌴</p>}
+          </Panel>
+        )}
 
         {/* Tráfico web */}
         {m.web && (

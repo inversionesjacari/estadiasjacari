@@ -156,6 +156,86 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT COALESCE(NULLIF(matched_rule,''),'(sin regla)') AS rule, COUNT(*) AS c FROM whatsapp_messages WHERE direction='out' AND created_at >= datetime('now','-7 days') AND (escalated=1 OR matched_rule='bot_failed') GROUP BY rule ORDER BY c DESC LIMIT 8`).all<{ rule: string; c: number }>().catch(() => ({ results: [] })),
   ]);
 
+  // ── EMBUDO DE CONVERSIÓN (pista del bot, sesión B3 — línea base) ─────────────
+  // Cohorte = leads NUEVOS (primer 'in' de ese teléfono) en los últimos 30 días.
+  // lead → cotizado (matched_rule='quote_provided', ya se graba en quote-flow.ts)
+  // → pagado (join con reservations por guest_phone_normalized, canal WhatsApp).
+  // Todo con tablas YA existentes — nada de dashboards ni tablas nuevas.
+  const funnelRow = await db
+    .prepare(`
+      WITH first_in AS (
+        SELECT from_phone AS phone, MIN(created_at) AS first_at
+        FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone
+      ),
+      cohort AS (SELECT phone FROM first_in WHERE first_at >= datetime('now','-30 days')),
+      quoted AS (SELECT DISTINCT to_phone AS phone FROM whatsapp_messages WHERE direction='out' AND matched_rule='quote_provided'),
+      paid AS (SELECT DISTINCT guest_phone_normalized AS phone FROM reservations WHERE source IN ('whatsapp_bot','whatsapp_transfer') AND status IN ('pending','confirmed') AND guest_phone_normalized IS NOT NULL)
+      SELECT
+        (SELECT COUNT(*) FROM cohort) AS leadsNew,
+        (SELECT COUNT(*) FROM cohort c JOIN quoted q ON q.phone = c.phone) AS leadsQuoted,
+        (SELECT COUNT(*) FROM cohort c JOIN paid p ON p.phone = c.phone) AS leadsPaid
+    `)
+    .first<{ leadsNew: number; leadsQuoted: number; leadsPaid: number }>()
+    .catch(() => ({ leadsNew: 0, leadsQuoted: 0, leadsPaid: 0 }));
+
+  // Latencia de primera respuesta (minutos) por lead de la MISMA cohorte — julianday()
+  // hace la resta de fechas EN SQL (evita parsear el datetime "YYYY-MM-DD HH:MM:SS" de
+  // SQLite a mano en JS); la mediana se calcula abajo, volumen mensual chico de sobra.
+  const firstResponseRows = await db
+    .prepare(`
+      WITH first_in AS (
+        SELECT from_phone AS phone, MIN(created_at) AS first_at
+        FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone
+        HAVING MIN(created_at) >= datetime('now','-30 days')
+      )
+      SELECT
+        (JULIANDAY((SELECT MIN(o.created_at) FROM whatsapp_messages o WHERE o.direction='out' AND o.to_phone = fi.phone AND o.created_at >= fi.first_at)) - JULIANDAY(fi.first_at)) * 24 * 60 AS minutes
+      FROM first_in fi
+    `)
+    .all<{ minutes: number | null }>()
+    .catch(() => ({ results: [] }));
+
+  const responseMinutes = rowsOf<{ minutes: number | null }>(firstResponseRows)
+    .map((r) => r.minutes)
+    .filter((m): m is number => typeof m === "number" && Number.isFinite(m) && m >= 0)
+    .sort((a, b) => a - b);
+  const medianFirstResponseMin =
+    responseMinutes.length === 0
+      ? null
+      : responseMinutes.length % 2 === 1
+        ? responseMinutes[(responseMinutes.length - 1) / 2]
+        : (responseMinutes[responseMinutes.length / 2 - 1] + responseMinutes[responseMinutes.length / 2]) / 2;
+
+  // Efectividad de followups (30d): de los que se mandaron, ¿cuántos leads
+  // volvieron a escribir después? (followup_sent_at ya existe, schema 0014/0017)
+  const followupRow = await db
+    .prepare(`
+      SELECT
+        COUNT(*) AS sent,
+        SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM whatsapp_messages m
+           WHERE m.direction='in' AND m.from_phone = cs.phone AND m.created_at > cs.followup_sent_at
+        ) THEN 1 ELSE 0 END) AS responded
+      FROM conversation_state cs
+      WHERE cs.followup_sent_at IS NOT NULL AND cs.followup_sent_at >= datetime('now','-30 days')
+    `)
+    .first<{ sent: number; responded: number }>()
+    .catch(() => ({ sent: 0, responded: 0 }));
+
+  // Revenue por origen del lead (30d, por check_in de la reserva) — cruza
+  // reservations con whatsapp_lead_source (ads Click-to-WhatsApp).
+  const revenueByOriginRows = await db
+    .prepare(`
+      SELECT COALESCE(NULLIF(wls.headline,''), '(sin origen de ad)') AS origin,
+        COALESCE(SUM(r.amount_usd),0) AS revenue, COUNT(*) AS reservas
+      FROM reservations r
+      LEFT JOIN whatsapp_lead_source wls ON wls.phone = r.guest_phone_normalized
+      WHERE r.status IN ('pending','confirmed') AND r.created_at >= datetime('now','-30 days')
+      GROUP BY origin ORDER BY revenue DESC LIMIT 10
+    `)
+    .all<{ origin: string; revenue: number; reservas: number }>()
+    .catch(() => ({ results: [] }));
+
   // Ingreso del mes seleccionado por CHECK-IN, separado por moneda (USD vs HNL) +
   // desglose Airbnb vs directo. Nunca mezcla monedas en un solo total.
   const revMonthRow = await db
@@ -400,6 +480,22 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       awaitingPaypal: fc("awaiting_paypal_capture"),
       awaitingTransfer: fc("awaiting_transfer_proof"),
       total: funnel.reduce((s, r) => s + r.c, 0),
+    },
+    // Embudo de CONVERSIÓN de la cohorte de leads nuevos (30d) — pista del bot,
+    // sesión B3. Distinto del `funnel` de arriba (que es una foto del estado ACTUAL
+    // de conversation_state, no una cohorte). Línea base para medir el impacto de
+    // las próximas sesiones (B4 followups, B5 botones, B6 audio, B7 post-checkout).
+    conversionFunnel: {
+      leadsNew: numOf(funnelRow, "leadsNew"),
+      leadsQuoted: numOf(funnelRow, "leadsQuoted"),
+      leadsQuotedPct: numOf(funnelRow, "leadsNew") > 0 ? Math.round((numOf(funnelRow, "leadsQuoted") / numOf(funnelRow, "leadsNew")) * 100) : 0,
+      leadsPaid: numOf(funnelRow, "leadsPaid"),
+      leadsPaidPct: numOf(funnelRow, "leadsNew") > 0 ? Math.round((numOf(funnelRow, "leadsPaid") / numOf(funnelRow, "leadsNew")) * 100) : 0,
+      medianFirstResponseMin: medianFirstResponseMin === null ? null : Math.round(medianFirstResponseMin * 10) / 10,
+      followupSent: numOf(followupRow, "sent"),
+      followupResponded: numOf(followupRow, "responded"),
+      followupEffectivenessPct: numOf(followupRow, "sent") > 0 ? Math.round((numOf(followupRow, "responded") / numOf(followupRow, "sent")) * 100) : 0,
+      revenueByOrigin: rowsOf<{ origin: string; revenue: number; reservas: number }>(revenueByOriginRows),
     },
     reservations: {
       today: numOf(resvCounts, "today"),
