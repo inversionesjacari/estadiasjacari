@@ -63,6 +63,7 @@ import {
   isPostponing,
   isPriceIntent,
   isTransferChoice,
+  cityFromText,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -802,17 +803,47 @@ async function gatherQuoteData(
   // atendiendo. Nada de "escribile al equipo" (eso pausaba el bot y mataba el lead).
   // Mensaje DETERMINÍSTICO en el idioma del cliente (el reply del LLM a veces sale en
   // el idioma equivocado). Sin 🌴: out_of_scope no tiene zona de playa fija.
+  let overrodeOutOfScope = false;
   if (botResult.intent === "out_of_scope") {
-    const msg =
-      lang === "en"
-        ? "For now we focus on La Ceiba, Tela and Tegucigalpa, so we don't have that option 🙏. But I'd be glad to help you find something in one of those areas — tell me how many guests and which dates and I'll show you the best fit."
-        : "Por ahora nos enfocamos en La Ceiba, Tela y Tegucigalpa, así que no contamos con esa opción 🙏. Pero con gusto te ayudo a encontrar algo en una de esas zonas — contame para cuántas personas y qué fechas y te muestro lo que mejor les calce.";
-    return {
-      reply:           msg,
-      escalateToOwner: false,
-      ruleName:        "out_of_scope_redirect",
-      tokensUsed:      botResult.tokensUsed,
-    };
+    // Red determinística (caso Alisson, 7-jul-2026): el LLM mandó a out_of_scope
+    // "desde Tegucigalpa, son 10 adultos 1 niño, del 7 al 9 de agosto" y luego un
+    // "Ceiba" suelto (dos veces) — ciudades NUESTRAS con un grupo que SÍ alojamos
+    // (7-12 → gemelas de Tela). Si el mensaje nombra una ciudad en alcance, o el
+    // contexto trae un grupo de 7+, la clasificación se IGNORA y el mensaje sigue
+    // al flujo normal (merge → fechas → routing de grupos → auto-asignación).
+    const cityNamed = cityFromText(text) ?? botResult.extractedData.city ?? null;
+    const guestsCtx = botResult.extractedData.guests ?? previousData.guests ?? null;
+    const inScopeSignal =
+      cityNamed !== null ||
+      botResult.extractedData.property != null ||
+      (typeof guestsCtx === "number" && guestsCtx >= 7);
+
+    if (!inScopeSignal) {
+      // out_of_scope legítimo → declinar + reenfocar. Guardia anti-repetición:
+      // nunca el MISMO texto dos veces seguidas (firma "bot pegado"); la segunda
+      // vez va la variante corta que pide la zona.
+      const lastRule = await getLastOutRule(phone, env.DB);
+      const msg =
+        lastRule === "out_of_scope_redirect"
+          ? T.outOfScopeAgain(lang)
+          : lang === "en"
+            ? "For now we focus on La Ceiba, Tela and Tegucigalpa, so we don't have that option 🙏. But I'd be glad to help you find something in one of those areas — tell me how many guests and which dates and I'll show you the best fit."
+            : "Por ahora nos enfocamos en La Ceiba, Tela y Tegucigalpa, así que no contamos con esa opción 🙏. Pero con gusto te ayudo a encontrar algo en una de esas zonas — contame para cuántas personas y qué fechas y te muestro lo que mejor les calce.";
+      return {
+        reply:           msg,
+        escalateToOwner: false,
+        ruleName:        "out_of_scope_redirect",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
+    // Señal en alcance con intent=out_of_scope: la regla 4 del prompt le ordena al
+    // LLM anular los datos al declinar → restauramos la ciudad detectada para que
+    // el merge de abajo la conserve, y marcamos el override para que la respuesta
+    // final sea determinística (el reply del LLM acá es el texto de declinación).
+    overrodeOutOfScope = true;
+    if (cityNamed && botResult.extractedData.city == null) {
+      botResult.extractedData.city = cityNamed;
+    }
   }
 
   // ── Merge: los datos nuevos ganan sobre los previos cuando no son null ─────
@@ -861,6 +892,46 @@ async function gatherQuoteData(
       ruleName:        "long_term_inquiry",
       tokensUsed:      botResult.tokensUsed,
     };
+  }
+
+  // ── Routing determinístico de GRUPOS (caso Alisson, 7-jul-2026) ─────────────
+  // Un grupo de 7-12 pidiendo La Ceiba o Tegucigalpa (donde las casas topan en 6)
+  // NO es "no contamos con esa opción": la única que los aloja juntos son las
+  // gemelas de Tela → se ofrece EN alcance, determinístico, sin pasar por el LLM.
+  // >12 → honestidad con el tope (antes vivía solo como regla del prompt).
+  // Solo dispara si ESTE turno aportó datos (guests/ciudad/propiedad nuevos) — un
+  // "ok" suelto con un grupo viejo en el estado no debe repetir el mensaje.
+  const turnBroughtData =
+    botResult.extractedData.guests != null ||
+    botResult.extractedData.city != null ||
+    botResult.extractedData.property != null ||
+    cityFromText(text) !== undefined;
+  if (
+    !mergedData.property &&
+    typeof mergedData.guests === "number" &&
+    turnBroughtData
+  ) {
+    if (mergedData.guests > 12) {
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      return {
+        reply:           T.groupTooBig(lang),
+        escalateToOwner: false,
+        ruleName:        "group_too_big",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
+    if (
+      mergedData.guests >= 7 &&
+      (mergedData.city === "La Ceiba" || mergedData.city === "Tegucigalpa")
+    ) {
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      return {
+        reply:           T.groupRedirectGemelas(lang, mergedData.guests, mergedData.city),
+        escalateToOwner: false,
+        ruleName:        "group_redirect_gemelas",
+        tokensUsed:      botResult.tokensUsed,
+      };
+    }
   }
 
   // ── Ciudad sin casa elegida → auto-asignar la propiedad (decisión de César) ──
@@ -1137,7 +1208,10 @@ async function gatherQuoteData(
   // incompletos, la reemplazamos por un pedido DETERMINÍSTICO de lo que falta.
   const overPromise =
     /(un momento|dame un|dame unos|d[eé]jame (verific|revis|consult|chequ)|voy a (verific|revis|consult|chequ)|permit[ií]me|enseguida te|ya te confirmo|te confirmo en un|let me (check|verify)|one moment|hold on|give me a moment|i'?ll (check|verify))/i;
-  if (!isQuoteDataComplete(mergedData) && overPromise.test(botResult.reply ?? "")) {
+  // (overrodeOutOfScope: si arriba ignoramos un out_of_scope mal clasificado, el
+  // reply del LLM es el texto de declinación — jamás se manda; va el pedido
+  // determinístico de lo que falta.)
+  if (!isQuoteDataComplete(mergedData) && (overrodeOutOfScope || overPromise.test(botResult.reply ?? ""))) {
     const miss = missingFields(mergedData);
     const parts: string[] = [];
     if (miss.propiedad) parts.push(lang === "en" ? "which property" : "qué propiedad");

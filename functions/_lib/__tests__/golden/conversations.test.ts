@@ -22,6 +22,7 @@ import {
   isLongTermRequest,
   nightsBetween,
   LONG_TERM_NIGHTS,
+  cityFromText,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
@@ -318,6 +319,51 @@ describe("CHAT: Jflores — 'para hoy' sin salida → 'voy a verificar…' y nun
     expect(r.checkIn).toBe(TODAY);
     expect(r.checkOut).toBeNull();
     expect(r.nights).toBeNull();
+  });
+});
+
+describe("CHAT: Alisson — 11 personas + 'Ceiba' → 'no contamos con esa opción' ×3", () => {
+  // 7-jul-2026: "desde Tegucigalpa, son 10 adultos 1 niño, del 7 al 9 de agosto" y
+  // luego "Ceiba" (dos veces) terminaron en out_of_scope_redirect, texto idéntico.
+  const HOY = "2026-07-07";
+  it("una ciudad NUESTRA nombrada en el texto se detecta SIN LLM", () => {
+    expect(cityFromText("Ceiba")).toBe("La Ceiba");
+    expect(cityFromText("desde Tegucigalpa, son 10 adultos 1 niño")).toBe("Tegucigalpa");
+    expect(cityFromText("Tela")).toBe("Tela");
+    expect(cityFromText("vamos para la ceiba")).toBe("La Ceiba");
+    expect(cityFromText("tegus")).toBe("Tegucigalpa");
+  });
+  it("sin ciudad nombrada, no inventa una (Roatán y frases sueltas → undefined)", () => {
+    expect(cityFromText("busco algo en Roatán")).toBeUndefined();
+    expect(cityFromText("quiero la casa más cerca del centro")).toBeUndefined();
+    expect(cityFromText("hola buenas noches")).toBeUndefined();
+  });
+  it("'del 7 al 9 de agosto' en julio resuelve al agosto FUTURO", () => {
+    const r = resolveDates("del 7 al 9 de agosto", null, null, HOY);
+    expect(r.checkIn).toBe("2026-08-07");
+    expect(r.checkOut).toBe("2026-08-09");
+  });
+  it("'10 adultos 1 niño' jamás produce noches", () => {
+    expect(extractNights("son 10 adultos 1 niño")).toBeNull();
+  });
+  it("el mensaje de grupos 7-12 ofrece las gemelas y menciona el tope 12 (es/en)", () => {
+    const es = T.groupRedirectGemelas("es", 11, "La Ceiba");
+    expect(es).toContain("Tela");
+    expect(es).toContain("12");
+    expect(es).toContain("La Ceiba");
+    const en = T.groupRedirectGemelas("en", 11, null);
+    expect(en).toContain("Tela");
+    expect(en).not.toContain("null");
+  });
+  it("el mensaje de >12 es honesto con el tope y no recita ciudades", () => {
+    const es = T.groupTooBig("es");
+    expect(es).toContain("12");
+    expect(es).not.toContain("Tegucigalpa"); // no es tema de zona
+  });
+  it("la variante anti-repetición del out_of_scope existe y es distinta al texto base", () => {
+    const again = T.outOfScopeAgain("es");
+    expect(again.length).toBeGreaterThan(20);
+    expect(again).not.toContain("Por ahora nos enfocamos"); // nunca el mismo texto 2×
   });
 });
 

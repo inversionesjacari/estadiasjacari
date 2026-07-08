@@ -192,6 +192,29 @@ export const T = {
       ? "Of course, take the time you need! 😊 Just a heads-up: dates are only held on our calendar *once the deposit is made* — without it we can't guarantee they'll still be open, since they go on a first-come basis. So when you're ready, message me *before* sending the deposit and we'll confirm they're still available to lock them in. I'm here whenever you decide!"
       : "¡Claro, tomate el tiempo que necesités! 😊 Solo para que lo tengas en cuenta: las fechas se apartan en nuestro calendario *únicamente con el depósito* — sin él no podemos garantizar que sigan libres, porque se reservan por orden de llegada. Así que cuando estés lista, escribime *antes de depositar* y confirmamos que sigan disponibles para apartarlas. ¡Acá estoy cuando decidás!",
 
+  // Grupo de 7–12 pidiendo una ciudad donde nuestras casas topan en 6 (La Ceiba /
+  // Tegucigalpa): la ÚNICA opción que los aloja juntos son las gemelas de Tela.
+  // Caso Alisson (7-jul): 11 personas + "Ceiba" terminaba en out_of_scope. Redirigir
+  // EN alcance, sin declinar. 🌴 permitido: la oferta es Tela (playa).
+  groupRedirectGemelas: (l: Lang, guests: number, city: string | null): string =>
+    l === "en"
+      ? `For ${guests} people together, our one option is **Las Gemelas in Tela**: Casa Brisa and Casa Marea, two beachfront houses side by side rented together (up to 12 guests) 🌴${city ? ` In ${city} our homes host up to 6.` : ""}\n\nWould Tela work for you? Say yes and I'll check availability right away.`
+      : `Para ${guests} personas juntas, nuestra única opción es **Las Gemelas en Tela**: Casa Brisa y Casa Marea, dos casas a la par frente al mar que se rentan juntas (hasta 12 personas) 🌴${city ? ` En ${city} nuestras casas alojan hasta 6.` : ""}\n\n¿Les sirve Tela? Decime que sí y te reviso la disponibilidad al toque.`,
+
+  // Grupo que supera el tope absoluto (12). Honestidad con calidez; preguntar si
+  // pueden entrar en 12 en vez de recitar ciudades (no es tema de zona).
+  groupTooBig: (l: Lang): string =>
+    l === "en"
+      ? "For groups that size, the most we can host is **12 people** (our two twin beachfront houses in Tela, rented together) 🌴 Any chance the group could fit in 12? If so, I'd be glad to check dates for you."
+      : "Para grupos así de grandes, el máximo que manejamos son **12 personas** (las dos casas gemelas de Tela juntas, frente al mar) 🌴 ¿Habría chance de que el grupo entre en 12? Si sí, con gusto te reviso fechas.",
+
+  // Variante corta del "fuera de alcance" para NO repetir el mismo texto dos veces
+  // seguidas (firma "bot pegado", caso Alisson: 3 veces idéntico).
+  outOfScopeAgain: (l: Lang): string =>
+    l === "en"
+      ? "As I mentioned, that one we don't handle 🙏 What we do have is La Ceiba, Tela and Tegucigalpa. Which of those works for you? Tell me guests and dates and I'll show you options."
+      : "Como te contaba, eso no lo manejamos 🙏 Lo nuestro es La Ceiba, Tela y Tegucigalpa. ¿Cuál de esas zonas te queda mejor? Contame personas y fechas y te muestro opciones.",
+
   techError: (l: Lang): string =>
     l === "en"
       ? "Sorry, I had a technical issue processing your message. A team member will reply shortly. 🙏"

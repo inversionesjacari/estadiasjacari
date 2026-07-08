@@ -308,6 +308,21 @@ export function isLongTermRequest(text: string): boolean {
   return /\b(largo plazo|a largo plazo|por (varios|unos) meses|varios meses|unos meses|algunos meses|alquiler mensual|renta mensual|por mes(es)?|mensualidad|por (medio|un) ano|todo el ano|temporada larga|estadia larga|long[- ]?term|monthly rental|several months|a few months|for (a|some) months)\b/.test(t);
 }
 
+/**
+ * Ciudad NUESTRA nombrada en el texto ("Ceiba", "desde Tegucigalpa", "tela") —
+ * backup determinístico de la extracción del LLM. Nació del caso Alisson (7-jul):
+ * el LLM clasificó "Ceiba" suelto como out_of_scope dos veces seguidas; un mensaje
+ * que nombra una ciudad en la que SÍ operamos jamás debe poder terminar ahí.
+ * Devuelve el nombre EXACTO que usa el resto del sistema (tipo City) o undefined.
+ */
+export function cityFromText(text: string): "La Ceiba" | "Tela" | "Tegucigalpa" | undefined {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/\btela\b/.test(t)) return "Tela";
+  if (/\b(la\s*)?ceiba\b/.test(t)) return "La Ceiba";
+  if (/\b(tegucigalpa|tegus|tgu)\b/.test(t)) return "Tegucigalpa";
+  return undefined;
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
