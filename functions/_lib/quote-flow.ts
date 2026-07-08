@@ -64,6 +64,7 @@ import {
   isPriceIntent,
   isTransferChoice,
   cityFromText,
+  hasInScopeSignal,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -811,12 +812,14 @@ async function gatherQuoteData(
     // (7-12 → gemelas de Tela). Si el mensaje nombra una ciudad en alcance, o el
     // contexto trae un grupo de 7+, la clasificación se IGNORA y el mensaje sigue
     // al flujo normal (merge → fechas → routing de grupos → auto-asignación).
-    const cityNamed = cityFromText(text) ?? botResult.extractedData.city ?? null;
-    const guestsCtx = botResult.extractedData.guests ?? previousData.guests ?? null;
-    const inScopeSignal =
-      cityNamed !== null ||
-      botResult.extractedData.property != null ||
-      (typeof guestsCtx === "number" && guestsCtx >= 7);
+    const cityNamed = cityFromText(text) ?? botResult.extractedData.city ?? previousData.city ?? null;
+    const inScopeSignal = hasInScopeSignal(
+      text,
+      botResult.extractedData.city ?? null,
+      botResult.extractedData.property ?? null,
+      previousData.city ?? null,
+      previousData.property ?? null,
+    );
 
     if (!inScopeSignal) {
       // out_of_scope legítimo → declinar + reenfocar. Guardia anti-repetición:

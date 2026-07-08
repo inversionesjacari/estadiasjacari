@@ -23,6 +23,7 @@ import {
   nightsBetween,
   LONG_TERM_NIGHTS,
   cityFromText,
+  hasInScopeSignal,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
@@ -364,6 +365,21 @@ describe("CHAT: Alisson — 11 personas + 'Ceiba' → 'no contamos con esa opci�
     const again = T.outOfScopeAgain("es");
     expect(again.length).toBeGreaterThan(20);
     expect(again).not.toContain("Por ahora nos enfocamos"); // nunca el mismo texto 2×
+  });
+  it("Ceiba/Tegucigalpa/Tela nombrados SÍ anulan un out_of_scope mal clasificado", () => {
+    expect(hasInScopeSignal("Ceiba", null, null, null, null)).toBe(true);
+    expect(hasInScopeSignal("desde Tegucigalpa, son 10 adultos 1 niño", null, null, null, null)).toBe(true);
+    expect(hasInScopeSignal("Tela", null, null, null, null)).toBe(true);
+    // una propiedad ya fijada de un turno previo también cuenta.
+    expect(hasInScopeSignal("y para cuántos entra?", null, null, null, "casa-brisa")).toBe(true);
+  });
+  it("un grupo grande SOLO (sin ciudad/propiedad nuestra) NO fuerza in-scope — regresión del hueco post-fix", () => {
+    // Hueco real que vivió unas horas tras el primer fix: "Roatán para 8 personas"
+    // tiene un número grande pero NINGUNA ciudad/propiedad nuestra — debe seguir
+    // out_of_scope, no terminar preguntando "¿qué propiedad?" para una zona que
+    // no tenemos. El número de huéspedes NUNCA alcanza solo.
+    expect(hasInScopeSignal("Roatán para 8 personas", null, null, null, null)).toBe(false);
+    expect(hasInScopeSignal("somos 11, tienen algo en Copán?", null, null, null, null)).toBe(false);
   });
 });
 

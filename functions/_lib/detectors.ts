@@ -323,6 +323,27 @@ export function cityFromText(text: string): "La Ceiba" | "Tela" | "Tegucigalpa" 
   return undefined;
 }
 
+/**
+ * ¿Hay una señal DETERMINÍSTICA de que la clasificación `intent = "out_of_scope"`
+ * del LLM está mal — el pedido SÍ es nuestro? Exige una CIUDAD o PROPIEDAD nuestra
+ * nombrada (en el texto, en lo que extrajo el LLM, o ya fijada de un turno previo).
+ * A PROPÓSITO no alcanza con un número de huéspedes grande solo: un pedido
+ * genuinamente fuera de alcance ("Roatán para 8 personas") también trae un número
+ * grande y NO debe forzarse a in-scope por eso — terminaría preguntando "¿qué
+ * propiedad?" para una zona que no tenemos. (Ese hueco vivió en producción unas
+ * horas tras el fix inicial del caso Alisson, 7-jul-2026 — corregido acá.)
+ */
+export function hasInScopeSignal(
+  text: string,
+  extractedCity: string | null,
+  extractedProperty: string | null,
+  previousCity: string | null,
+  previousProperty: string | null,
+): boolean {
+  const cityNamed = cityFromText(text) ?? extractedCity ?? previousCity ?? null;
+  return cityNamed != null || extractedProperty != null || previousProperty != null;
+}
+
 /** Cliente pide la ubicación / cómo llegar / el mapa. */
 export function isLocationRequest(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
