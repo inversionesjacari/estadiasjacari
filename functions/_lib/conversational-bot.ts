@@ -16,8 +16,9 @@
 //
 
 import { PROPERTY_KNOWLEDGE_BASE } from "./property-kb";
-import { callWorkersAIJson, type WorkersAIEnv, type AIMessage } from "./workers-ai";
+import { callWorkersAIJson, type WorkersAIEnv, type AIMessage, type AIJsonResponse } from "./workers-ai";
 import { callOpenAIJson } from "./openai";
+import { validateBotOutput } from "./llm-schema";
 
 // Re-export so callers can import WorkersAIEnv from here or from workers-ai directly
 export type { WorkersAIEnv };
@@ -120,31 +121,9 @@ interface LlamaOutput {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Validación de slugs y ciudades
+// Validación de slugs y ciudades → vive en llm-schema.ts (validateBotOutput),
+// centralizada y testeable (plan maestro 4.1 / pista bot B1).
 // ─────────────────────────────────────────────────────────────────────────────
-
-const VALID_PROPERTIES: PropertySlug[] = [
-  "villa-b11-palma-real",
-  "casa-brisa",
-  "casa-marea",
-  "centro-morazan",
-  "casa-lara-townhouse",
-  "la-florida",
-  "las-gemelas-tela",
-];
-
-const VALID_CITIES: City[] = ["La Ceiba", "Tela", "Tegucigalpa"];
-
-const VALID_INTENTS: BotIntent[] = [
-  "providing_data",
-  "asking_question",
-  "requesting_photos",
-  "confirming",
-  "rejecting",
-  "existing_guest",
-  "out_of_scope",
-  "unknown",
-];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Función principal
@@ -182,29 +161,61 @@ export async function runConversationalBot(
   // Cerebro PRINCIPAL: GPT-4o-mini (OpenAI) — respeta el JSON y no tiene la cuota
   // diaria de Cloudflare. Si no hay API key o falla con error de red, caemos a
   // Workers AI (Llama) como respaldo (que a su vez tiene su modo degradado).
-  let result = await callOpenAIJson<LlamaOutput>(
-    messages,
-    env,
-    { temperature: 0.15, maxTokens: 600 },
-  );
-  // 📸 CÁMARA temporal de OpenAI: ¿respondió o falló, y por qué? (diagnóstico)
-  if (env.DB) {
-    try {
-      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES ('(openai)', ?, ?)`)
-        .bind(
-          result.ok ? "OPENAI_OK" : "OPENAI_FAIL",
-          result.ok ? "respondio bien" : String(result.error ?? "sin detalle").slice(0, 220),
-        )
-        .run();
-    } catch { /* best-effort */ }
-  }
-  if (!result.ok && !result.rawText) {
-    // OpenAI no disponible (sin key / error de red) → respaldo Workers AI (Llama).
-    result = await callWorkersAIJson<LlamaOutput>(
+  const callModel = async (): Promise<AIJsonResponse<LlamaOutput>> => {
+    let r = await callOpenAIJson<LlamaOutput>(
       messages,
       env,
       { temperature: 0.15, maxTokens: 600 },
     );
+    // 📸 CÁMARA temporal de OpenAI: ¿respondió o falló, y por qué? (diagnóstico)
+    if (env.DB) {
+      try {
+        await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES ('(openai)', ?, ?)`)
+          .bind(
+            r.ok ? "OPENAI_OK" : "OPENAI_FAIL",
+            r.ok ? "respondio bien" : String(r.error ?? "sin detalle").slice(0, 220),
+          )
+          .run();
+      } catch { /* best-effort */ }
+    }
+    if (!r.ok && !r.rawText) {
+      // OpenAI no disponible (sin key / error de red) → respaldo Workers AI (Llama).
+      r = await callWorkersAIJson<LlamaOutput>(
+        messages,
+        env,
+        { temperature: 0.15, maxTokens: 600 },
+      );
+    }
+    return r;
+  };
+
+  let result = await callModel();
+  let check = result.ok && result.data ? validateBotOutput(result.data) : null;
+
+  // REINTENTO 1× (plan maestro 4.1): el modelo RESPONDIÓ pero roto — texto plano en
+  // vez de JSON (rawText presente) o JSON sin un reply usable. Un solo reintento:
+  // estos glitches suelen ser transitorios. Si el reintento también viene roto, nos
+  // quedamos con el PRIMER resultado (su rawText puede rescatarse como degradedReply).
+  const respondedBroken =
+    (!result.ok && !!result.rawText) || (check !== null && !check.ok);
+  if (respondedBroken) {
+    if (env.DB) {
+      try {
+        await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES ('(openai)', 'SCHEMA_RETRY', ?)`)
+          .bind(
+            (check !== null ? check.problems.join("; ") : `no-JSON: ${String(result.rawText ?? "").slice(0, 120)}`).slice(0, 220),
+          )
+          .run();
+      } catch { /* best-effort */ }
+    }
+    const second = await callModel();
+    if (second.ok && second.data) {
+      const secondCheck = validateBotOutput(second.data);
+      if (secondCheck.ok) {
+        result = second;
+        check = secondCheck;
+      }
+    }
   }
 
   if (!result.ok || !result.data) {
@@ -227,43 +238,13 @@ export async function runConversationalBot(
     };
   }
 
-  const d = result.data;
+  // ── Campos ya validados y sanitizados por llm-schema (4.1) ──────────────────
+  const fields = (check ?? validateBotOutput(result.data)).fields;
+  const { checkIn, checkOut, guests, property, city, language, intent } = fields;
 
-  // ── Validar y sanitizar el output del modelo ───────────────────────────────
-  const isoDate = /^\d{4}-\d{2}-\d{2}$/;
-
-  const property =
-    d.property && VALID_PROPERTIES.includes(d.property as PropertySlug)
-      ? (d.property as PropertySlug)
-      : null;
-
-  const city =
-    d.city && VALID_CITIES.includes(d.city as City)
-      ? (d.city as City)
-      : null;
-
-  const checkIn =
-    typeof d.checkIn === "string" && isoDate.test(d.checkIn) ? d.checkIn : null;
-
-  const checkOut =
-    typeof d.checkOut === "string" && isoDate.test(d.checkOut) ? d.checkOut : null;
-
-  const guests =
-    typeof d.guests === "number" && d.guests > 0 && d.guests <= 20
-      ? Math.round(d.guests)
-      : null;
-
-  const intent: BotIntent = VALID_INTENTS.includes(d.intent as BotIntent)
-    ? (d.intent as BotIntent)
-    : "unknown";
-
-  const language: "es" | "en" = d.language === "en" ? "en" : "es";
-
-  // Reply con fallback por si el modelo devolvió string vacío
-  const reply =
-    typeof d.reply === "string" && d.reply.trim().length > 0
-      ? d.reply.trim()
-      : "¡Hola! ¿En qué te puedo ayudar hoy? 🌴";
+  // Fallback determinístico: si tras el reintento el modelo siguió sin dar un
+  // reply usable, saludamos genérico en vez de callar (comportamiento histórico).
+  const reply = fields.reply ?? "¡Hola! ¿En qué te puedo ayudar hoy? 🌴";
 
   return {
     ok:            true,
@@ -286,7 +267,7 @@ const DIAS_SEMANA_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "v
  * NOMBRE de mes (no solo ISO) porque razona pésimo comparando meses en YYYY-MM-DD:
  * daba "17 de julio" por pasado estando en junio. Con "junio" vs "julio" lo compara bien.
  */
-function fechaEnPalabras(iso: string): string {
+export function fechaEnPalabras(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
   const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();

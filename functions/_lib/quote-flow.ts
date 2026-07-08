@@ -198,7 +198,7 @@ const CITY_MAPS: Partial<Record<City, string>> = {
  * no lo de antes. Devuelve undefined si no nombra nada con link conocido (o si nombra
  * Tegucigalpa, ambigua: 3 casas distintas → que el bot pregunte de cuál).
  */
-function locationFromText(text: string): string | undefined {
+export function locationFromText(text: string): string | undefined {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   // Propiedad nombrada explícitamente (gana sobre la ciudad).
   if (/\bcasa\s*brisa\b|\bcasita del mar\b/.test(t))        return PROPERTY_MAPS["casa-brisa"];
