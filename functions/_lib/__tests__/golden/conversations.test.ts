@@ -24,6 +24,7 @@ import {
   LONG_TERM_NIGHTS,
   cityFromText,
   hasInScopeSignal,
+  isUnverifiedQuoteClaim,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
@@ -380,6 +381,36 @@ describe("CHAT: Alisson — 11 personas + 'Ceiba' → 'no contamos con esa opci�
     // no tenemos. El número de huéspedes NUNCA alcanza solo.
     expect(hasInScopeSignal("Roatán para 8 personas", null, null, null, null)).toBe(false);
     expect(hasInScopeSignal("somos 11, tienen algo en Copán?", null, null, null, null)).toBe(false);
+  });
+});
+
+describe("CHAT: Casa Lara fantasma — el LLM 'confirmó' disponibilidad y precio sin cotizador", () => {
+  // 16-jun-2026 (+504 3283-4660): con los datos ya completos de turnos previos, el
+  // LLM dijo "te confirmo que está disponible... el precio total es de L.3,580"
+  // DOS turnos después de que el chequeo REAL había dicho NO disponible. El cron
+  // de followup expuso la contradicción 20h después y el lead se perdió.
+  // Los strings de abajo son los mensajes EXACTOS de producción.
+  it("las afirmaciones reales del caso se detectan (disponibilidad + total + proceder)", () => {
+    expect(isUnverifiedQuoteClaim("¡Perfecto! Te confirmo que Casa Lara Townhouse está disponible para tus fechas del 25 al 26 de junio.")).toBe(true);
+    expect(isUnverifiedQuoteClaim("¡Genial! Ahora, para proceder con la reserva de Casa Lara Townhouse del 25 al 26 de junio, el precio total es de L.3,580")).toBe(true);
+    expect(isUnverifiedQuoteClaim("Déjame verificar el precio total para tu estadía del 25 al 26 de junio en Casa Lara Townhouse.")).toBe(true);
+  });
+  it("los otros 4 casos reales de 30 días también se detectan", () => {
+    expect(isUnverifiedQuoteClaim("¡Perfecto! Te confirmo que el Centro Morazán está disponible para el miércoles 17 de junio")).toBe(true);
+    expect(isUnverifiedQuoteClaim("El precio total que te di no incluye el ISV. El ISV en Honduras es del 15%")).toBe(true);
+    expect(isUnverifiedQuoteClaim("El precio total para 23 noches en Centro Morazán sería de L.2,100 x 23 = L.48,300")).toBe(true);
+  });
+  it("un veredicto NEGATIVO improvisado también se verifica (perder ventas por mentira es igual de caro)", () => {
+    expect(isUnverifiedQuoteClaim("Lamentablemente esa casa no está disponible ese fin de semana")).toBe(true);
+  });
+  it("la tarifa POR NOCHE de la ficha es legítima y NO dispara re-cotización", () => {
+    // Mensaje real del chat +504 3204-0655 (6-jul), correcto y útil — no debe matchear.
+    expect(isUnverifiedQuoteClaim("Las casas en Tela, Casa Brisa y Casa Marea, tienen la misma tarifa: L.2,500 por noche + L.350 de limpieza.")).toBe(false);
+    expect(isUnverifiedQuoteClaim("Sí, los L.350 de limpieza son un cargo único que se aplica a la reserva, además de la tarifa por noche. 😊")).toBe(false);
+  });
+  it("respuestas normales del flujo tampoco matchean", () => {
+    expect(isUnverifiedQuoteClaim("¿Para cuántas personas y en qué fechas te gustaría reservar en Tela?")).toBe(false);
+    expect(isUnverifiedQuoteClaim("Casa Lara Townhouse está ubicada justo enfrente de la Embajada de EE.UU., a menos de 1 minuto a pie.")).toBe(false);
   });
 });
 

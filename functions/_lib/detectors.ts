@@ -353,6 +353,38 @@ export function cityFromText(text: string): "La Ceiba" | "Tela" | "Tegucigalpa" 
 }
 
 /**
+ * ¿El REPLY del LLM afirma disponibilidad o un precio TOTAL de estadía? Esas dos
+ * cosas SOLO pueden salir del cotizador real (buildQuote + chequeo de Airbnb/D1),
+ * nunca del texto libre del modelo. Caso real (16-jun-2026, Casa Lara): el LLM dijo
+ * "¡Perfecto! Te confirmo que está disponible... el precio total es de L.3,580" DOS
+ * turnos después de que el chequeo real ya había dicho NO disponible — el followup
+ * expuso la contradicción 20h después y el lead se perdió. Se testea sobre el reply
+ * del BOT (no del cliente). La tarifa POR NOCHE de la KB es legítima y NO matchea
+ * (el modelo la tiene en su prompt); lo prohibido es el TOTAL calculado y el
+ * veredicto de disponibilidad — en ambos sentidos: afirmar "sí está" sin verificar
+ * pierde plata por sobreventa, afirmar "no está" sin verificar pierde la venta.
+ */
+export function isUnverifiedQuoteClaim(reply: string): boolean {
+  const t = reply.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return (
+    // veredicto de disponibilidad (afirmativo o negativo), no una oferta de revisar
+    /\b(esta|estan|sigue|siguen) disponibles?\b/.test(t) ||
+    /\bte confirmo que\b/.test(t) ||
+    /\btenemos disponibilidad\b/.test(t) ||
+    /\bno (esta|estan|hay) disponib/.test(t) ||
+    // precio TOTAL de la estadía (el por-noche de la KB es legítimo)
+    /\bprecio total\b/.test(t) ||
+    /\btotal (es|seria|serian|de la estadia|a pagar|te quedaria)\b/.test(t) ||
+    /\bproceder con (la|tu) reserva\b/.test(t) ||
+    // inglés
+    /\bis (still )?available\b/.test(t) ||
+    /\b(isn'?t|not) available\b/.test(t) ||
+    /\btotal (price|cost|would be|comes to)\b/.test(t) ||
+    /\bto proceed with (the|your) (booking|reservation)\b/.test(t)
+  );
+}
+
+/**
  * ¿Hay una señal DETERMINÍSTICA de que la clasificación `intent = "out_of_scope"`
  * del LLM está mal — el pedido SÍ es nuestro? Exige una CIUDAD o PROPIEDAD nuestra
  * nombrada (en el texto, en lo que extrajo el LLM, o ya fijada de un turno previo).

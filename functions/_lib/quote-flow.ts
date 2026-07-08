@@ -65,6 +65,7 @@ import {
   isTransferChoice,
   cityFromText,
   hasInScopeSignal,
+  isUnverifiedQuoteClaim,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -1064,7 +1065,27 @@ async function gatherQuoteData(
     (ex.guests   != null && ex.guests   !== previousData.guests);
 
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────
-  if (isQuoteDataComplete(mergedData) && changedQuoteData) {
+  // Entra si el turno trajo datos NUEVOS (changedQuoteData, el caso normal) O si el
+  // LLM intentó AFIRMAR disponibilidad/precio total por su cuenta (replyHasClaim).
+  // Ese segundo camino tapa el agujero del caso Casa Lara (16-jun-2026): con los
+  // datos ya completos de turnos previos, un "Perfecto / ¿qué precio me quedaría?"
+  // no cambiaba ningún campo → changedQuoteData=false → el cotizador real NUNCA
+  // corría y el texto libre del LLM llegaba al cliente ("te confirmo que está
+  // disponible... el precio total es de L.3,580") contradiciendo un chequeo real
+  // que 2 turnos antes había dicho NO disponible. Ahora cualquier afirmación de
+  // disponibilidad/total se reemplaza por el veredicto VERIFICADO (cotización real
+  // o no-disponible real) — el LLM jamás tiene la última palabra sobre plata.
+  const replyHasClaim = isUnverifiedQuoteClaim(botResult.reply ?? "");
+  if (isQuoteDataComplete(mergedData) && (changedQuoteData || replyHasClaim)) {
+    if (!changedQuoteData && replyHasClaim) {
+      // 📸 cámara: cuántas veces el LLM intenta afirmar plata sin cotizador
+      // (aparece agrupado en el dashboard de fallos de /inbox/operacion).
+      try {
+        await env.DB.prepare(
+          `INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'UNVERIFIED_QUOTE_CLAIM', ?)`,
+        ).bind(phone, (botResult.reply ?? "").slice(0, 200)).run();
+      } catch { /* best-effort */ }
+    }
     const quote = await buildQuote(
       {
         property: mergedData.property!,
@@ -1124,9 +1145,12 @@ async function gatherQuoteData(
     );
 
     // Si el bot también respondió una pregunta, combinar ambas respuestas
-    // (ej: "¿Hay piscina? Somos 4 del 15 al 20 en Villa B11")
+    // (ej: "¿Hay piscina? Somos 4 del 15 al 20 en Villa B11"). PERO si el reply
+    // del LLM contiene una afirmación de disponibilidad/precio (replyHasClaim),
+    // NO se antepone: podría contradecir la cotización verificada de abajo
+    // (ej. LLM dice L.3,580 y el cotizador real dice otra cosa).
     const baseReply =
-      botResult.intent === "asking_question" && quote.available && !quote.exceedsCapacity
+      botResult.intent === "asking_question" && quote.available && !quote.exceedsCapacity && !replyHasClaim
         ? `${botResult.reply}\n\n${quoteMsg}`
         : quoteMsg;
     const reply = baseReply + availabilityNote;
@@ -1213,8 +1237,10 @@ async function gatherQuoteData(
     /(un momento|dame un|dame unos|d[eé]jame (verific|revis|consult|chequ)|voy a (verific|revis|consult|chequ)|permit[ií]me|enseguida te|ya te confirmo|te confirmo en un|let me (check|verify)|one moment|hold on|give me a moment|i'?ll (check|verify))/i;
   // (overrodeOutOfScope: si arriba ignoramos un out_of_scope mal clasificado, el
   // reply del LLM es el texto de declinación — jamás se manda; va el pedido
-  // determinístico de lo que falta.)
-  if (!isQuoteDataComplete(mergedData) && (overrodeOutOfScope || overPromise.test(botResult.reply ?? ""))) {
+  // determinístico de lo que falta. replyHasClaim: el LLM afirmó disponibilidad o
+  // un precio total, pero con datos INCOMPLETOS no hay forma de verificarlo — una
+  // afirmación de plata que no se puede verificar tampoco se manda.)
+  if (!isQuoteDataComplete(mergedData) && (overrodeOutOfScope || overPromise.test(botResult.reply ?? "") || replyHasClaim)) {
     const miss = missingFields(mergedData);
     const parts: string[] = [];
     if (miss.propiedad) parts.push(lang === "en" ? "which property" : "qué propiedad");
