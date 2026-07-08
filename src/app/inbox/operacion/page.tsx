@@ -156,7 +156,7 @@ interface Metrics {
     leadsNew: number; leadsQuoted: number; leadsQuotedPct: number;
     leadsPaid: number; leadsPaidPct: number;
     medianFirstResponseMin: number | null;
-    followupSent: number; followupResponded: number; followupEffectivenessPct: number;
+    followupSent: number; followupStillInterested: number; followupDeclined: number; followupNoResponse: number; followupEffectivenessPct: number;
     revenueByOrigin: { origin: string; revenue: number; reservas: number }[];
   };
   reservations: { today: number; week: number; month: number; byProperty: { slug: string; c: number }[]; bySource: { source: string; c: number }[] };
@@ -485,7 +485,7 @@ export default function OperacionPage() {
               <WebStat label="Cotizados" value={m.conversionFunnel.leadsQuotedPct} foot={<span className="text-slate-500">{m.conversionFunnel.leadsQuoted} de {m.conversionFunnel.leadsNew} · %</span>} />
               <WebStat label="Pagaron" value={m.conversionFunnel.leadsPaidPct} foot={<span className="text-slate-500">{m.conversionFunnel.leadsPaid} de {m.conversionFunnel.leadsNew} · %</span>} />
               <WebStat label="1ra respuesta" value={m.conversionFunnel.medianFirstResponseMin ?? 0} foot={<span className="text-slate-500">{m.conversionFunnel.medianFirstResponseMin === null ? "sin datos" : "min · mediana"}</span>} />
-              <WebStat label="Followups" value={m.conversionFunnel.followupEffectivenessPct} foot={<span className="text-slate-500">{m.conversionFunnel.followupResponded} de {m.conversionFunnel.followupSent} respondieron · %</span>} />
+              <WebStat label="Followups: siguen interesados" value={m.conversionFunnel.followupEffectivenessPct} foot={<span className="text-slate-500">{m.conversionFunnel.followupStillInterested} de {m.conversionFunnel.followupSent} · {m.conversionFunnel.followupDeclined} rechazó · {m.conversionFunnel.followupNoResponse} sin responder</span>} />
             </div>
             {m.conversionFunnel.revenueByOrigin.length > 0 && (
               <BarList

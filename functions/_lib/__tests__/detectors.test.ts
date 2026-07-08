@@ -81,6 +81,14 @@ describe("isNotInterested — cerrar sin insistir", () => {
   it("'gracias, ¿cómo pago?' NO es desinterés", () => {
     expect(isNotInterested("gracias, ¿cómo pago?")).toBe(false);
   });
+  it("'no tengo dinero' es rechazo aunque venga con un 'gracias' pegado (hueco de la métrica B3)", () => {
+    expect(isNotInterested("gracias pero no tengo dinero")).toBe(true);
+    expect(isNotInterested("no tengo esa cantidad ahorita")).toBe(true);
+    expect(isNotInterested("no cuento con el presupuesto por ahora")).toBe(true);
+  });
+  it("'no tengo tarjeta' NO es rechazo (es un problema de método de pago, no de plata)", () => {
+    expect(isNotInterested("no tengo tarjeta")).toBe(false);
+  });
 });
 
 describe("isLegitimacyQuestion — la objeción más cara antes de transferir", () => {

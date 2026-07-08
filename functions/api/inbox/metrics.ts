@@ -16,6 +16,7 @@
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
 import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
+import { isNotInterested } from "../../_lib/detectors";
 
 interface Env extends IcalEnv {
   DB: D1Database;
@@ -206,21 +207,31 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         ? responseMinutes[(responseMinutes.length - 1) / 2]
         : (responseMinutes[responseMinutes.length / 2 - 1] + responseMinutes[responseMinutes.length / 2]) / 2;
 
-  // Efectividad de followups (30d): de los que se mandaron, ¿cuántos leads
-  // volvieron a escribir después? (followup_sent_at ya existe, schema 0014/0017)
-  const followupRow = await db
+  // Efectividad de followups (30d): "respondió" NO es lo mismo que "se recuperó"
+  // — un "gracias pero no tengo dinero" es una respuesta, pero es un rechazo, no
+  // una recuperación (corrección de César tras ver la card: el 42% original
+  // mezclaba ambas cosas). Traemos el PRIMER texto de respuesta de cada followup
+  // y lo clasificamos en JS con isNotInterested (mismo detector que usa el bot en
+  // el paso de pago) — no se puede clasificar dentro del SQL.
+  const followupReplyRows = await db
     .prepare(`
-      SELECT
-        COUNT(*) AS sent,
-        SUM(CASE WHEN EXISTS (
-          SELECT 1 FROM whatsapp_messages m
+      SELECT cs.phone AS phone,
+        (SELECT m.body FROM whatsapp_messages m
            WHERE m.direction='in' AND m.from_phone = cs.phone AND m.created_at > cs.followup_sent_at
-        ) THEN 1 ELSE 0 END) AS responded
+           ORDER BY m.created_at ASC LIMIT 1) AS reply_body
       FROM conversation_state cs
       WHERE cs.followup_sent_at IS NOT NULL AND cs.followup_sent_at >= datetime('now','-30 days')
     `)
-    .first<{ sent: number; responded: number }>()
-    .catch(() => ({ sent: 0, responded: 0 }));
+    .all<{ phone: string; reply_body: string | null }>()
+    .catch(() => ({ results: [] }));
+
+  let followupSent = 0, followupDeclined = 0, followupStillInterested = 0, followupNoResponse = 0;
+  for (const r of rowsOf<{ phone: string; reply_body: string | null }>(followupReplyRows)) {
+    followupSent++;
+    if (!r.reply_body) followupNoResponse++;
+    else if (isNotInterested(r.reply_body)) followupDeclined++;
+    else followupStillInterested++;
+  }
 
   // Revenue por origen del lead (30d, por check_in de la reserva) — cruza
   // reservations con whatsapp_lead_source (ads Click-to-WhatsApp).
@@ -492,9 +503,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       leadsPaid: numOf(funnelRow, "leadsPaid"),
       leadsPaidPct: numOf(funnelRow, "leadsNew") > 0 ? Math.round((numOf(funnelRow, "leadsPaid") / numOf(funnelRow, "leadsNew")) * 100) : 0,
       medianFirstResponseMin: medianFirstResponseMin === null ? null : Math.round(medianFirstResponseMin * 10) / 10,
-      followupSent: numOf(followupRow, "sent"),
-      followupResponded: numOf(followupRow, "responded"),
-      followupEffectivenessPct: numOf(followupRow, "sent") > 0 ? Math.round((numOf(followupRow, "responded") / numOf(followupRow, "sent")) * 100) : 0,
+      // "Efectividad" = sigue interesado (NO es la tasa de respuesta cruda — un
+      // "gracias pero no tengo dinero" respondió, pero es un rechazo, no una
+      // recuperación). Los otros dos buckets quedan visibles para no esconder nada.
+      followupSent,
+      followupStillInterested,
+      followupDeclined,
+      followupNoResponse,
+      followupEffectivenessPct: followupSent > 0 ? Math.round((followupStillInterested / followupSent) * 100) : 0,
       revenueByOrigin: rowsOf<{ origin: string; revenue: number; reservas: number }>(revenueByOriginRows),
     },
     reservations: {

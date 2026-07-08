@@ -161,6 +161,11 @@ export function isNotInterested(text: string): boolean {
     // rechazo por precio
     /\b(no me conviene|muy caro|esta caro|carisimo|fuera de (mi )?presupuesto|no me alcanza|esta fuera de)\b/.test(t) ||
     /\bse (me )?(pasa|va|sale)\b.{0,8}presupuesto\b/.test(t) ||
+    // no tiene el dinero (distinto de "no me alcanza" — acá el cliente dice que
+    // directamente no cuenta con la plata, no que el precio se pasa de su presupuesto).
+    // Caso real: "gracias pero no tengo dinero" contado como RESPUESTA positiva en el
+    // reporte de followups de la pista B3 — era un rechazo, no una recuperación.
+    /\b(no tengo|no cuento con|no traigo|ando corto de)\b.{0,10}\b(dinero|plata|efectivo|presupuesto|esa cantidad|ese dinero)\b/.test(t) ||
     // rechazo directo / no quiere reservar (era el bucle: "no me interesa", "no le e pedido").
     // Cubre pasado/presente/futuro y el typo "e" por "he": pedido/pedi/pido/pedir/solicité…
     /\b(no me interesa|ya no me interesa|no me sirve|no quiero (reservar|nada)|no voy a reservar|no (le )?(he |e |voy a |quiero )?(ped\w*|pid[eo]|solicit\w*)|no he (solicitado|reservado))\b/.test(t) ||
