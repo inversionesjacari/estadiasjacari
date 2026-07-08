@@ -14,6 +14,7 @@ import {
   cityFromText,
   hasInScopeSignal,
   TERMINAL_RULES,
+  isFarewell,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -152,5 +153,24 @@ describe("cityFromText / hasInScopeSignal — caso Alisson + su hueco corregido"
     expect(hasInScopeSignal("y para 8?", "Tegucigalpa", null, null, null)).toBe(true);
     expect(hasInScopeSignal("y para 8?", null, null, "Tela", null)).toBe(true);
     expect(hasInScopeSignal("y para 8?", null, "casa-brisa", null, null)).toBe(true);
+  });
+});
+
+describe("isFarewell — 'no' suelto o con texto extra no se reconocía como cierre (bug 7-jul-2026)", () => {
+  it("un 'No' suelto es cierre", () => {
+    expect(isFarewell("No")).toBe(true);
+    expect(isFarewell("no.")).toBe(true);
+  });
+  it("'no' + razón corta + 'gracias' es cierre, aunque haya texto en medio", () => {
+    expect(isFarewell("No, pue son nustros dias libres gracias")).toBe(true);
+    expect(isFarewell("no puedo esos dias, gracias")).toBe(true);
+  });
+  it("'no' + despedida directa es cierre", () => {
+    expect(isFarewell("No, hasta luego")).toBe(true);
+    expect(isFarewell("no, adios")).toBe(true);
+  });
+  it("una negación con contenido SUSTANTIVO (no es un cierre) sigue sin matchear", () => {
+    expect(isFarewell("no tengo tarjeta, solo efectivo")).toBe(false);
+    expect(isFarewell("no me llegó la ubicación")).toBe(false);
   });
 });
