@@ -20,7 +20,7 @@ import { findActiveReservation } from "../../_lib/whatsapp-bot";
 import { handleQuoteIncoming, type QuoteFlowEnv } from "../../_lib/quote-flow";
 import { sendTextMessage, sendImageMessage, type WhatsAppEnv } from "../../_lib/whatsapp";
 import { sendEscalationEmail } from "../../_lib/whatsapp-escalation";
-import { pauseBot } from "../../_lib/bot-pause";
+import { pauseBot, globalBotPausedSince } from "../../_lib/bot-pause";
 import { withCronMonitor } from "../../_lib/cron-monitor";
 
 type Env = QuoteFlowEnv & WhatsAppEnv & {
@@ -64,6 +64,12 @@ export const onRequestPost: PagesFunction<Env> = (context) =>
 const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = requireBearerAuth(request, env.CRON_SECRET, "CRON_SECRET");
   if (!auth.ok) return auth.response!;
+
+  // Interruptor GENERAL apagado → no reprocesar ni responder nada. La cola de
+  // reintentos queda intacta: al volver a encender, el cron la retoma solo.
+  if (await globalBotPausedSince(env.DB)) {
+    return json({ ok: true, skipped: "bot_apagado_general" });
+  }
 
   // ── FRENO (circuit breaker): si la IA falló hace muy poco, NO reproceses ──
   // Reintentar mientras Workers AI está saturado/caído solo lo empeora: es un

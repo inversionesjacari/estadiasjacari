@@ -30,6 +30,7 @@ import { todayHn } from "../../_lib/dates";
 import { T } from "../../_lib/i18n";
 import { withCronMonitor } from "../../_lib/cron-monitor";
 import { TERMINAL_RULES } from "../../_lib/detectors";
+import { globalBotPausedSince } from "../../_lib/bot-pause";
 
 interface Env extends AvailabilityEnv {
   DB: D1Database;
@@ -175,6 +176,12 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
 
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
     return json({ ok: false, error: "Faltan credenciales de WhatsApp" }, 500);
+  }
+
+  // Interruptor GENERAL apagado → ni followups ni last_call (el `NOT IN bot_pauses`
+  // de las queries solo filtra números individuales, no la fila '*' del apagado).
+  if (await globalBotPausedSince(env.DB)) {
+    return json({ ok: true, skipped: "bot_apagado_general", sent: 0 });
   }
 
   const url = new URL(request.url);

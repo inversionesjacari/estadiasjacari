@@ -21,6 +21,7 @@ import { requireBearerAuth } from "../../_lib/admin-auth";
 import { notifyOwners, type OwnerAlertEnv } from "../../_lib/owner-alerts";
 import { TERMINAL_RULES } from "../../_lib/detectors";
 import { lastRealOutRule } from "./quote-followups";
+import { globalBotPausedSince } from "../../_lib/bot-pause";
 
 interface Env extends OwnerAlertEnv {
   DB: D1Database;
@@ -121,6 +122,11 @@ const MUDO_MAX_AGE_HOURS = 24;
  */
 async function checkBotMudo(env: Env): Promise<{ phones: string[]; alerted: boolean }> {
   try {
+    // Interruptor GENERAL apagado → el silencio es INTENCIONAL (César atendiendo a
+    // mano por las ads). No gritar "bot mudo" mientras el apagado esté puesto.
+    if (await globalBotPausedSince(env.DB)) {
+      return { phones: [], alerted: false };
+    }
     const rows = await env.DB.prepare(
       `SELECT DISTINCT m.from_phone AS phone
          FROM whatsapp_messages m

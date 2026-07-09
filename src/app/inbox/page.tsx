@@ -693,6 +693,45 @@ export default function InboxPage() {
   const [pendientesOpen, setPendientesOpen] = useState(false); // panel Pendientes en celular (overlay)
   const [menuOpen, setMenuOpen] = useState(false); // menú ⋯ del header en celular
 
+  // ── Interruptor GENERAL del bot (shut on/off) ───────────────────────────────
+  // null = estado aún no cargado (el botón se deshabilita hasta saber la verdad).
+  const [botGlobalPaused, setBotGlobalPaused] = useState<boolean | null>(null);
+  const [botGlobalBusy, setBotGlobalBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/inbox/bot-global", { credentials: "include" });
+        if (!r.ok) return;
+        const d = (await r.json()) as { paused?: boolean };
+        if (alive && typeof d.paused === "boolean") setBotGlobalPaused(d.paused);
+      } catch { /* red caída: se reintenta en el próximo tick */ }
+    };
+    load();
+    const t = setInterval(load, 30_000); // otro dispositivo pudo apretar el botón
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const toggleGlobalBot = async () => {
+    if (botGlobalPaused === null || botGlobalBusy) return;
+    const turningOn = botGlobalPaused; // estaba apagado → encender
+    const msg = turningOn
+      ? "¿Encender el bot? Vuelve a responder solo a TODOS los chats (los pausados individualmente siguen pausados)."
+      : "¿APAGAR el bot ENTERO? Deja de responder a TODOS los chats — los mensajes se siguen guardando acá y el equipo atiende a mano. Los avisos de check-in de reservas confirmadas NO se apagan.";
+    if (!confirm(msg)) return;
+    setBotGlobalBusy(true);
+    try {
+      const r = await fetch("/api/inbox/bot-global", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: turningOn }),
+      });
+      const d = (await r.json()) as { ok?: boolean; paused?: boolean };
+      if (d.ok && typeof d.paused === "boolean") setBotGlobalPaused(d.paused);
+    } catch { /* sin red: el estado real se refresca en el próximo tick */ }
+    setBotGlobalBusy(false);
+  };
+
   // ── Pull-to-refresh (jalar la lista hacia abajo para actualizar) ───────────
   const [pull, setPull] = useState(0);
   const [pulling, setPulling] = useState(false);
@@ -1375,6 +1414,22 @@ export default function InboxPage() {
           <p className="hidden sm:block text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-3 text-sm">
+          {/* Interruptor GENERAL del bot: apaga/enciende TODO el bot de un botón.
+              Rojo pulsante cuando está apagado para que nadie lo olvide puesto. */}
+          <button
+            type="button"
+            onClick={toggleGlobalBot}
+            disabled={botGlobalPaused === null || botGlobalBusy}
+            className={
+              botGlobalPaused
+                ? "px-2.5 py-1.5 rounded-lg font-bold text-white bg-red-600 hover:bg-red-700 animate-pulse whitespace-nowrap"
+                : "px-2.5 py-1.5 rounded-lg font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-slate-800 whitespace-nowrap disabled:opacity-40"
+            }
+            aria-label={botGlobalPaused ? "Encender el bot" : "Apagar el bot entero"}
+            title={botGlobalPaused ? "El bot está APAGADO para todos — tocá para encenderlo" : "Bot encendido — tocá para apagarlo ENTERO (atender a mano)"}
+          >
+            {botGlobalPaused === null ? "🤖 …" : botGlobalPaused ? "🔴 BOT APAGADO" : "🤖 ON"}
+          </button>
           {/* Pendientes — solo en celular (en escritorio está la columna fija a la derecha) */}
           <button
             type="button"
