@@ -71,6 +71,7 @@ const HANDOFF_RULES = new Set<string>([
   "transfer_proof_received",    // mandó comprobante de transferencia
   "paypal_usd_requested",       // pidió el monto en USD del link PayPal
   "escalar_humano",             // pidió hablar con un humano (rule-based)
+  "event_inquiry_handoff",      // lead de EVENTO (Valle de Ángeles) → el equipo arma la propuesta
 ]);
 import type { IcalEnv } from "../_lib/availability";
 
@@ -748,6 +749,8 @@ async function processIncomingMessage(
         reservation,
         reason: quoteResult?.ruleName === "long_term_inquiry"
           ? "Renta a LARGO PLAZO (estadía de un mes o más) — el bot lo pausó para que vos evalúes la propuesta a medida con el cliente."
+          : quoteResult?.ruleName === "event_inquiry_handoff"
+          ? "🎉 Lead de EVENTO (Valle de Ángeles) — el bot le preguntó tipo/fecha/personas (mirá el chat) y pausó la conversación para que el equipo mande la propuesta."
           : quoteResult?.ruleName === "out_of_scope_redirect"
           ? "Fuera de alcance — el bot redirigió al cliente a tu WhatsApp (+504 9764-9035). Escribile vos si querés cerrarlo."
           : quoteResult?.ruleName === "existing_guest_escalation"

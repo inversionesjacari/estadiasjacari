@@ -66,6 +66,8 @@ import {
   cityFromText,
   hasInScopeSignal,
   isUnverifiedQuoteClaim,
+  isEventInquiry,
+  mentionsValleDeAngeles,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -302,6 +304,43 @@ export async function handleQuoteIncoming(
 
   // Idioma del cliente persistido en el estado (para responder en su idioma).
   const lang = asLang(existing?.data.language);
+
+  // ── EVENTOS (Valle de Ángeles) — flujo aparte del de estadías ──────────────
+  // El venue de Valle de Ángeles se promociona SOLO para eventos (bodas,
+  // cumpleaños, corporativos — ads "Jacarí eventos", jul-2026). El bot NO cotiza
+  // eventos: junta tipo + fecha aproximada + personas en UNA pregunta y deriva
+  // al equipo (escalación + pausa vía HANDOFF_RULES del webhook). Determinístico
+  // y PRIMERO que todo: "quiero info para una boda" jamás debe caer al cotizador
+  // de noches ni a out_of_scope, y en estado event_inquiry ningún otro handler
+  // (fotos/ubicación/teléfono) debe robarse la respuesta del cliente.
+
+  // Turno 2: ya preguntamos los 3 datos → sea cual sea su respuesta, derivar al
+  // equipo (el detalle queda en el chat del inbox y en la alerta) y cerrar.
+  if (existing?.state === "event_inquiry") {
+    await clearState(phone, env.DB);
+    return {
+      reply:           T.eventHandoff(lang),
+      escalateToOwner: true,
+      ruleName:        "event_inquiry_handoff",
+      tokensUsed:      0,
+    };
+  }
+
+  // Turno 1: detección. Valle de Ángeles nombrado SIEMPRE gana; los tipos de
+  // evento (boda, corporativo…) solo si no hay ya una estadía en curso con
+  // ciudad/propiedad fijada (ej. "es para una boda" alquilando Casa Brisa).
+  if (
+    isEventInquiry(text) &&
+    (mentionsValleDeAngeles(text) || !existing || (!existing.data.property && !existing.data.city))
+  ) {
+    await upsertState(phone, "event_inquiry", existing?.data ?? emptyQuoteData(), env.DB);
+    return {
+      reply:           T.eventIntake(lang),
+      escalateToOwner: false,
+      ruleName:        "event_inquiry_intake",
+      tokensUsed:      0,
+    };
+  }
 
   // ── Cliente pide la UBICACIÓN → mandar el link del mapa ────────────────────
   // "Siempre debe enviarse la ubicación" (César). Funciona en CUALQUIER estado:

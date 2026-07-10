@@ -19,7 +19,7 @@
 export const TERMINAL_RULES = new Set([
   "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
   "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
-  "escalar_humano", "call_requested", "farewell",
+  "escalar_humano", "call_requested", "farewell", "event_inquiry_handoff",
 ]);
 
 /** Detecta si un texto tiene intención de pedir cotización / precio. */
@@ -350,6 +350,44 @@ export function cityFromText(text: string): "La Ceiba" | "Tela" | "Tegucigalpa" 
   if (/\b(la\s*)?ceiba\b/.test(t)) return "La Ceiba";
   if (/\b(tegucigalpa|tegus|tgu)\b/.test(t)) return "Tegucigalpa";
   return undefined;
+}
+
+/**
+ * Valle de Ángeles nombrado en el texto. Es el venue de EVENTOS (bodas, cumpleaños,
+ * corporativos — ads "Jacarí eventos", jul-2026): ahí NO se cotizan noches, así que
+ * mencionarlo SIEMPRE manda al flujo de eventos, nunca al cotizador de estadías.
+ */
+export function mentionsValleDeAngeles(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return /\bvalle de (los )?angeles\b/.test(t);
+}
+
+/**
+ * ¿El mensaje es una consulta de EVENTO (boda, bautizo, corporativo…) y no de
+ * estadía? El bot NO cotiza eventos: junta tipo + fecha + personas y deriva al
+ * equipo. Diseño en capas para no robarle leads al cotizador de noches:
+ *   1. Valle de Ángeles nombrado → SIEMPRE evento (el venue es solo de eventos).
+ *   2. Ciudad/propiedad NUESTRA nombrada → NUNCA evento ("queremos Casa Brisa
+ *      para el cumpleaños de mi mamá" es una estadía que se cotiza normal).
+ *   3. Tipo de evento FUERTE (boda, bautizo, quinceañera, corporativo…) → evento.
+ *   4. Palabras DÉBILES ("evento", "cumpleaños", "celebrar"…) solo con contexto
+ *      de VENUE ("salón", "espacio", "local", "alquilan"…) — un "es para un
+ *      cumpleaños" suelto en medio de una cotización no debe desviar el flujo.
+ */
+export function isEventInquiry(text: string): boolean {
+  if (mentionsValleDeAngeles(text)) return true;
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // Señal de alojamiento nuestro → es una estadía, no un evento.
+  if (cityFromText(text) !== undefined) return false;
+  if (/\b(casa\s*(brisa|marea|lara)|villa\s*b\s*-?\s*11|palma real|morazan|la florida|gemelas)\b/.test(t)) return false;
+  // Tipos de evento fuertes → evento aunque no nombre el venue.
+  if (/\b(bodas?|bautizos?|quincean\w*|xv anos|quince anos|baby shower|despedida de solter[oa]|eventos? corporativos?|weddings?|corporate events?)\b/.test(t)) {
+    return true;
+  }
+  // Débiles: requieren además contexto de venue/alquiler de espacio.
+  const weak  = /\b(eventos?|cumplean\w*|cumple|brunch|celebracion(es)?|celebrar|graduacion(es)?|aniversario)\b/.test(t);
+  const venue = /\b(salon(es)?|espacio|local|lugar|alquil\w*|rent\w*|jardin|venue)\b/.test(t);
+  return weak && venue;
 }
 
 /**

@@ -15,6 +15,8 @@ import {
   hasInScopeSignal,
   TERMINAL_RULES,
   isFarewell,
+  isEventInquiry,
+  mentionsValleDeAngeles,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -172,5 +174,35 @@ describe("isFarewell — 'no' suelto o con texto extra no se reconocía como cie
   it("una negación con contenido SUSTANTIVO (no es un cierre) sigue sin matchear", () => {
     expect(isFarewell("no tengo tarjeta, solo efectivo")).toBe(false);
     expect(isFarewell("no me llegó la ubicación")).toBe(false);
+  });
+});
+
+describe("isEventInquiry — eventos (Valle de Ángeles) vs estadías (ads Jacarí eventos, 9-jul-2026)", () => {
+  it("Valle de Ángeles nombrado SIEMPRE es evento (con y sin acentos)", () => {
+    expect(mentionsValleDeAngeles("Vi su anuncio de Valle de Ángeles")).toBe(true);
+    expect(mentionsValleDeAngeles("info del espacio en valle de angeles")).toBe(true);
+    expect(isEventInquiry("Vi su anuncio de Valle de Ángeles y quiero más información")).toBe(true);
+  });
+  it("tipos de evento FUERTES disparan sin nombrar el venue", () => {
+    expect(isEventInquiry("Quiero información para una boda")).toBe(true);
+    expect(isEventInquiry("hacen eventos corporativos?")).toBe(true);
+    expect(isEventInquiry("precio para un bautizo")).toBe(true);
+    expect(isEventInquiry("es para una quinceañera")).toBe(true);
+    expect(isEventInquiry("do you host weddings?")).toBe(true);
+  });
+  it("palabras DÉBILES necesitan contexto de venue — 'cumpleaños' suelto NO desvía", () => {
+    expect(isEventInquiry("busco un salón para un cumpleaños")).toBe(true);
+    expect(isEventInquiry("alquilan para eventos?")).toBe(true);
+    expect(isEventInquiry("tienen local para eventos?")).toBe(true);
+    expect(isEventInquiry("es el cumpleaños de mi esposa")).toBe(false);
+    expect(isEventInquiry("venimos a celebrar")).toBe(false);
+  });
+  it("señal de ALOJAMIENTO nuestro gana → una estadía con celebración NO es evento", () => {
+    expect(isEventInquiry("queremos Casa Brisa para el cumpleaños de mi mamá, somos 6")).toBe(false);
+    expect(isEventInquiry("una casa en Tela para celebrar un cumpleaños")).toBe(false);
+    expect(isEventInquiry("casa en La Ceiba para una boda")).toBe(false);
+  });
+  it("la regla del handoff es terminal (sin followups ni falso 'bot mudo')", () => {
+    expect(TERMINAL_RULES.has("event_inquiry_handoff")).toBe(true);
   });
 });

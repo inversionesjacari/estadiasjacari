@@ -112,6 +112,18 @@ export const T = {
       ? "How nice that you'd like a longer stay! 🙌 For long-term stays we put together a custom proposal — I'm connecting you with our team and they'll reach out shortly to work out the details with you. 🙏"
       : "¡Qué bueno que quieras quedarte una temporada larga! 🙌 Para estadías largas armamos una propuesta a tu medida — te paso con nuestro equipo y te contactan en breve para coordinar los detalles. 🙏",
 
+  // EVENTOS (Valle de Ángeles): el bot no cotiza eventos — junta los 3 datos clave
+  // en UNA pregunta y en el siguiente turno deriva al equipo (eventHandoff).
+  eventIntake: (l: Lang): string =>
+    l === "en"
+      ? "How exciting! 🎉 Our venue in Valle de Ángeles is perfect for special celebrations. So our events team can put together a proposal for you, tell me:\n\n1️⃣ What kind of event is it? (wedding, birthday, corporate…)\n2️⃣ Around what date?\n3️⃣ Roughly how many guests?"
+      : "¡Qué emoción! 🎉 Nuestro espacio en Valle de Ángeles es ideal para celebraciones especiales. Para que nuestro equipo de eventos te arme una propuesta, contame:\n\n1️⃣ ¿Qué tipo de evento es? (boda, cumpleaños, corporativo…)\n2️⃣ ¿Para qué fecha aproximada?\n3️⃣ ¿Cuántas personas estiman?",
+
+  eventHandoff: (l: Lang): string =>
+    l === "en"
+      ? "Perfect, thank you! 🙌 I've passed your info to our events team — they'll write to you right here shortly to put together a proposal made just for you. 🌿"
+      : "¡Perfecto, mil gracias! 🙌 Ya le pasé tu información a nuestro equipo de eventos — te van a escribir por acá en breve para armarte una propuesta a tu medida. 🌿",
+
   paymentReported: (l: Lang): string =>
     l === "en"
       ? "Perfect! 🙏 Let me verify the payment with the team and we'll confirm your booking right away."

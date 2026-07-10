@@ -25,6 +25,9 @@ import {
   cityFromText,
   hasInScopeSignal,
   isUnverifiedQuoteClaim,
+  isEventInquiry,
+  mentionsValleDeAngeles,
+  TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
@@ -422,5 +425,57 @@ describe("Elección de método de pago (tarjeta vs transferencia)", () => {
   it("transferencia/BAC/depósito → transferencia", () => {
     expect(isTransferChoice("transferencia")).toBe(true);
     expect(isTransferChoice("hago el depósito al BAC")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT: Lead de EVENTOS — Valle de Ángeles (ads "Jacarí eventos", 9-jul-2026)
+//
+// No nace de un fallo sino de una CAPACIDAD nueva: el venue de Valle de Ángeles
+// se promociona SOLO para eventos (bodas, cumpleaños, corporativos). El bot no
+// cotiza eventos: detecta la consulta, junta tipo + fecha + personas en UNA
+// pregunta (event_inquiry_intake) y en el siguiente turno deriva al equipo con
+// escalación + pausa (event_inquiry_handoff). El riesgo a blindar es DOBLE:
+// (1) un lead de evento cayendo al cotizador de noches u out_of_scope, y
+// (2) el detector robándose estadías legítimas que mencionan una celebración.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CHAT: Lead de eventos Valle de Ángeles — detección y handoff", () => {
+  it("el mensaje prellenado del ad de eventos dispara el flujo de eventos", () => {
+    expect(
+      isEventInquiry("¡Hola! 👋 Vi su anuncio de Valle de Ángeles y quiero información sobre eventos. 🎉"),
+    ).toBe(true);
+  });
+
+  it("consultas orgánicas de evento también disparan (sin nombrar el venue)", () => {
+    expect(isEventInquiry("Hola, quiero cotizar una boda para 80 personas")).toBe(true);
+    expect(isEventInquiry("¿Alquilan el espacio para eventos corporativos?")).toBe(true);
+    expect(isEventInquiry("busco un lugar para celebrar un cumpleaños")).toBe(true);
+  });
+
+  it("una ESTADÍA que menciona celebración NO se desvía al flujo de eventos", () => {
+    // ciudad/propiedad nuestra nombrada = señal de alojamiento → cotizador normal
+    expect(isEventInquiry("queremos Casa Brisa para el cumpleaños de mi mamá, somos 6")).toBe(false);
+    expect(isEventInquiry("una casa en Tela del 7 al 9 para celebrar un cumple")).toBe(false);
+    // "cumpleaños"/"celebrar" sueltos, sin contexto de venue → tampoco
+    expect(isEventInquiry("es el cumpleaños de mi esposa")).toBe(false);
+  });
+
+  it("Valle de Ángeles nombrado gana SIEMPRE (aun a mitad de otra conversación)", () => {
+    expect(mentionsValleDeAngeles("y el lugar de valle de angeles para eventos?")).toBe(true);
+    expect(isEventInquiry("y el lugar de valle de angeles?")).toBe(true);
+  });
+
+  it("los mensajes del flujo existen en ambos idiomas y piden los 3 datos", () => {
+    for (const l of ["es", "en"] as const) {
+      expect(T.eventIntake(l)).toContain("1️⃣");
+      expect(T.eventIntake(l)).toContain("2️⃣");
+      expect(T.eventIntake(l)).toContain("3️⃣");
+      expect(T.eventHandoff(l).length).toBeGreaterThan(30);
+    }
+    expect(T.eventIntake("es")).toContain("Valle de Ángeles");
+  });
+
+  it("el handoff es regla TERMINAL: sin followups de cotización ni falso 'bot mudo'", () => {
+    expect(TERMINAL_RULES.has("event_inquiry_handoff")).toBe(true);
   });
 });

@@ -25,7 +25,10 @@ export type ConvState =
   | "quote_provided"
   | "awaiting_payment_method"
   | "awaiting_paypal_capture"
-  | "awaiting_transfer_proof";
+  | "awaiting_transfer_proof"
+  // Lead de EVENTO (Valle de Ángeles): el bot ya preguntó tipo/fecha/personas;
+  // la PRÓXIMA respuesta del cliente se deriva al equipo (handoff + pausa).
+  | "event_inquiry";
 
 export interface ConversationStateRow {
   phone: string;
