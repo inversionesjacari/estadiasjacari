@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isConfirmation,
+  isAvailabilityDatesRequest,
   isBankAccountRequest,
   isBedroomPhotoRequest,
   isPhotoRequest,
@@ -230,5 +231,40 @@ describe("detectPackageInquiry — Family pack / Love Trip / Friends Trip (ads 9
   });
   it("mención de ciudad SIN 'oferta' no dispara (no todo mensaje de Tela es un paquete)", () => {
     expect(detectPackageInquiry("quiero ir a Tela con mi familia")).toBeNull();
+  });
+});
+
+describe("isAvailabilityDatesRequest — pregunta INVERSA de disponibilidad (bug Carlos Meza, 10-jul-2026)", () => {
+  it("los mensajes EXACTOS de Carlos disparan (pide que NOSOTROS propongamos fechas)", () => {
+    // Turno 12 y 14 del chat real, Villa B11. "b11" NO cuenta como fecha concreta.
+    expect(isAvailabilityDatesRequest("Y que fecha si tienes disponible para villa B11?")).toBe(true);
+    expect(isAvailabilityDatesRequest("Dame fechas que tengas disponibles en Villa B11!")).toBe(true);
+  });
+
+  it("otras formas de la pregunta inversa (es/en)", () => {
+    expect(isAvailabilityDatesRequest("¿qué fechas tienen disponibles?")).toBe(true);
+    expect(isAvailabilityDatesRequest("cuáles días están libres")).toBe(true);
+    expect(isAvailabilityDatesRequest("decime las fechas que tengas libres")).toBe(true);
+    expect(isAvailabilityDatesRequest("fechas disponibles?")).toBe(true);
+    expect(isAvailabilityDatesRequest("¿cuándo está disponible?")).toBe(true);
+    expect(isAvailabilityDatesRequest("what dates do you have available?")).toBe(true);
+    expect(isAvailabilityDatesRequest("which days are free")).toBe(true);
+  });
+
+  it("un chequeo con fecha CONCRETA NO es la pregunta inversa → va al cotizador real", () => {
+    // Trae rango/día → el guard lo descarta (debe cotizarse, no reformular).
+    expect(isAvailabilityDatesRequest("¿está disponible del 13 al 17 de julio?")).toBe(false);
+    expect(isAvailabilityDatesRequest("hay disponibilidad para el 20 de julio")).toBe(false);
+    expect(isAvailabilityDatesRequest("tienen libre el 15?")).toBe(false);
+    expect(isAvailabilityDatesRequest("Tienes disponibilidad en la semana del 13 al 17 de julio?")).toBe(false);
+  });
+
+  it("NO se confunde con preguntas que no son de disponibilidad de fechas", () => {
+    expect(isAvailabilityDatesRequest("¿qué día es el check-in?")).toBe(false);
+    expect(isAvailabilityDatesRequest("¿a qué hora puedo entrar?")).toBe(false);
+    expect(isAvailabilityDatesRequest("¿cuándo puedo hacer el check in?")).toBe(false);
+    expect(isAvailabilityDatesRequest("Villa B11")).toBe(false);
+    expect(isAvailabilityDatesRequest("somos 6 personas")).toBe(false);
+    expect(isAvailabilityDatesRequest("¿qué precio tiene?")).toBe(false);
   });
 });

@@ -74,6 +74,57 @@ export function isDateChangeOrAvailabilityQuestion(text: string): boolean {
 }
 
 /**
+ * ¿El cliente nos pide a NOSOTROS que le digamos qué fechas hay libres? (la pregunta
+ * INVERSA de disponibilidad). Ej: "¿qué fechas tenés disponibles?", "dame las fechas
+ * que tengas libres para Villa B11", "¿cuándo está disponible?", "what dates do you
+ * have available?". A diferencia de un chequeo con fechas concretas ("¿está libre del
+ * 13 al 17?"), acá el cliente NO propone un rango — quiere que el equipo se lo proponga.
+ *
+ * Bug real (Carlos Meza, 10-jul-2026, Villa B11): ante "dame fechas que tengas
+ * disponibles" el bot (a) repitió el "no disponible del 13 al 17" viejo —re-cotizó un
+ * rango que el cliente ya sabía ocupado— y (b) cayó al LLM, que respondió "no puedo
+ * verificar la disponibilidad de fechas específicas" → callejón sin salida, lead frío.
+ * El bot NO puede enumerar el calendario de forma confiable (el iCal de Airbnb
+ * sincroniza cada 2-24 h); su respuesta HONESTA es pedir un rango concreto para
+ * chequearlo al instante — nunca repetir un "no disponible" viejo ni decir "no puedo".
+ *
+ * Guard: si el mensaje ya trae una fecha CONCRETA (día+mes, "del 13 al 17", "el 20"),
+ * NO es la pregunta inversa: es un chequeo puntual y debe ir al cotizador real.
+ */
+export function isAvailabilityDatesRequest(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[¿¡]/g, "")
+    .trim();
+
+  // Trae una fecha concreta → es un chequeo puntual, no "decime qué hay libre".
+  // (\b\d evita falsos positivos con "villa b11": no hay boundary dentro de "b11".)
+  const hasConcreteDate =
+    /\b\d{1,2}\s*(al|a|-|hasta)\s*\d{1,2}\b/.test(t) ||
+    /\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/.test(t) ||
+    /\b(el|del|para|desde|llego|llegamos|entro|entramos)\s+\d{1,2}\b/.test(t);
+  if (hasConcreteDate) return false;
+
+  // Pide que ENUMEREMOS fechas/días ("qué fechas", "dame los días…", "what dates…").
+  const asksWhichDates =
+    /\b(que|cual|cuales|cuanta|cuantas|cuantos|q|what|which)\s+(fechas?|dias?|dates?|days?)\b/.test(t) ||
+    /\b(dame|deme|decime|dec[ií]|pasame|pasa\s?me|mandame|env[ií]a\s?me|mostrame|muestrame|indicame|dime|digame|give|send|tell)\b[^]*\b(fechas?|dias?|dates?|days?)\b/.test(t);
+  // Señal de disponibilidad (para no confundir "¿qué día es el check-in?").
+  const availabilityCue =
+    /\b(disponible|disponibles|disponibilidad|libre|libres|tenes|tienes|tienen|tengas|tenga|hay|queda|quedan|abiert|available|availability|free|open|have)\b/.test(t);
+
+  return (
+    (asksWhichDates && availabilityCue) ||
+    /\b(fechas?|dias?)\s+(disponibles?|libres?)\b/.test(t) ||
+    /\b(available|free|open)\s+(dates?|days?)\b/.test(t) ||
+    /\b(dates?|days?)\s+(available|free|open)\b/.test(t) ||
+    /\b(cuando|when)\b[^]*\b(disponible|libre|disponibilidad|available|free|open)\b/.test(t)
+  );
+}
+
+/**
  * Confirmación CLARA de la cotización. Conservador: una NEGACIÓN, una PREGUNTA, o un
  * CAMBIO DE FECHA/disponibilidad lo descartan. Acá "si" suele ser "if", no "sí" — bug
  * real (caso Zedileth): "Pero si estaría disponible para el 17 de junio?" hizo que el

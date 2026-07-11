@@ -33,12 +33,14 @@ import {
   formatQuoteMessage,
   addDayPass,
   applyVillaB11PackagePrice,
+  PROPERTY_PRICING,
   type PropertyPricing,
   type QuoteOutput,
 } from "./quote-builder";
 import { extractPartySize } from "./party-size";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
-import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "./availability";
+import { checkRangeAvailable, checkGemelasAvailable, getBlockedDates, type AvailabilityEnv } from "./availability";
+import { findAlternativeDates } from "./suggest-dates";
 import type { PropertySlug, City } from "./quote-extractor";
 import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
 import {
@@ -48,10 +50,11 @@ import {
 } from "./bank-transfer";
 import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
-import { T, asLang } from "./i18n";
+import { T, asLang, type Lang } from "./i18n";
 import type { QuoteData } from "./quote-extractor";
 import {
   indicatesNotDoneYet,
+  isAvailabilityDatesRequest,
   isBankAccountRequest,
   isBareAck,
   isBedroomPhotoRequest,
@@ -215,6 +218,27 @@ export function isEventInquiryTurn2(
   lastOutRule: string,
 ): boolean {
   return state === "event_inquiry" || lastOutRule === "event_inquiry_intake";
+}
+
+/** Las Gemelas de Tela (`las-gemelas-tela`) = las DOS casas juntas, el producto de
+ *  7-12 personas. Un grupo que CUENTA ≤6 (los bebés no cuentan — ver party-size.ts)
+ *  entra en UNA sola casa, así que ofrecer/cotizar las gemelas lo sobre-vende (dos
+ *  casas donde alcanza una; la oferta Friends Trip está pensada para una casa + day
+ *  pass). Devuelve true si `property` es las gemelas pero el grupo cabe en una casa
+ *  → hay que degradar y dejar que el auto-asignado elija marea→brisa. Función pura
+ *  para blindarla en el golden. (Caso D'Karoll, 11-jul-2026: 5 adultos + 1 niña + 1
+ *  bebé = 6 que cuentan → 1 casa; el bot ofreció las dos porque el LLM había fijado
+ *  property=las-gemelas del contexto del Friends Trip.) */
+export function gemelasOverSized(
+  property: string | null | undefined,
+  guests: number | null | undefined,
+): boolean {
+  return (
+    property === "las-gemelas-tela" &&
+    typeof guests === "number" &&
+    guests >= 1 &&
+    guests <= 6
+  );
 }
 
 
@@ -648,6 +672,28 @@ export async function handleQuoteIncoming(
     }
   }
 
+  // ── "¿Qué fechas tenés disponibles?" (pregunta INVERSA de disponibilidad) ──
+  // El cliente nos pide a NOSOTROS que le propongamos fechas libres, en vez de dar un
+  // rango para chequear. El bot no puede enumerar el calendario de forma confiable
+  // (iCal de Airbnb con lag de 2-24 h), así que su respuesta honesta es pedir un rango
+  // concreto para verificarlo al instante — NUNCA repetir un "no disponible" viejo ni
+  // decir "no puedo verificar la disponibilidad" (caso Carlos Meza, Villa B11: pidió
+  // "dame fechas que tengas disponibles", el bot repitió el "no disponible del 13 al 17"
+  // y luego se atascó en "no puedo verificar" → lead frío). Determinístico y ANTES de
+  // la máquina de estados: si tiene una fecha CONCRETA el detector no dispara y sigue
+  // al cotizador normal. Si ya hay propiedad en el estado, la nombramos.
+  if (isAvailabilityDatesRequest(text)) {
+    const propName = existing?.data.property
+      ? PROPERTY_PRICING[existing.data.property]?.name
+      : undefined;
+    return {
+      reply:           T.availabilityDatesAsk(lang, propName),
+      escalateToOwner: false,
+      ruleName:        "availability_dates_ask",
+      tokensUsed:      0,
+    };
+  }
+
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────
   if (!existing) {
     // Huésped existente sin quote flow en curso → dejar que el rule-bot responda
@@ -767,6 +813,41 @@ export async function handleQuoteIncoming(
 // ─────────────────────────────────────────────────────────────────────────────
 // Sub-handlers
 // ─────────────────────────────────────────────────────────────────────────────
+
+const BEACH_SLUGS = new Set<PropertySlug>([
+  "villa-b11-palma-real", "casa-brisa", "casa-marea", "las-gemelas-tela",
+]);
+
+/**
+ * "No disponible" que PROPONE fechas en vez de solo decir que no y esperar (lead
+ * frío — pedido de César): (1) la ventana libre más cercana a lo pedido y (2) otros
+ * fines de semana libres. Lee el MISMO `getBlockedDates` (iCal + D1) con el que el
+ * bot ya decidió que no hay cupo → las sugerencias son tan confiables como la
+ * cotización. Si no pudimos leer el calendario o no hay ninguna ventana libre en el
+ * horizonte, cae al mensaje simple (`T.unavailable`).
+ */
+async function buildUnavailableReply(
+  slug: PropertySlug,
+  checkIn: string,
+  checkOut: string,
+  propertyName: string,
+  lang: Lang,
+  todayIso: string,
+  env: AvailabilityEnv,
+): Promise<string> {
+  try {
+    const res = await getBlockedDates(slug, env);
+    if (res && res.airbnbSyncStatus !== "unavailable") {
+      const alt = findAlternativeDates(res.blocked, checkIn, checkOut, todayIso);
+      if (alt.nearest || alt.weekends.length > 0) {
+        return T.unavailableWithAlternatives(lang, propertyName, alt, BEACH_SLUGS.has(slug));
+      }
+    }
+  } catch {
+    /* best-effort: si el calendario falla, cae al mensaje simple */
+  }
+  return T.unavailable(lang, propertyName);
+}
 
 /**
  * Recolección de datos de cotización vía bot conversacional.
@@ -1011,6 +1092,19 @@ async function gatherQuoteData(
       mergedData.guests = (mergedData.adults ?? 0) + (mergedData.children ?? 0);
     }
   }
+
+  // ── Las Gemelas (las 2 casas) es el producto de 7-12. Si el LLM la fijó para un
+  // grupo que CUENTA ≤6 (bebés no cuentan), fitean en UNA sola casa → la soltamos
+  // para que el auto-asignado de abajo elija marea→brisa y NO sobre-vendamos las dos.
+  // El LLM la extrae del contexto del Friends Trip ("Las Gemelas (Tela)") aunque el
+  // grupo entre en una casa. Con property nula: un turno con fechas completas cae al
+  // auto-asignado; uno con solo llegada ya NO manda la tarjeta de las gemelas
+  // (getPropertyPhotos(null)=[] → el bloque property_card_proactive se saltea solo).
+  // (Caso D'Karoll, 11-jul-2026.)
+  if (gemelasOverSized(mergedData.property, mergedData.guests)) {
+    mergedData.property = null;
+  }
+
   if (packageIsNew) {
     await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
     return {
@@ -1259,7 +1353,10 @@ async function gatherQuoteData(
         // Confirmado: las fechas están ocupadas en Airbnb → NO disponible
         await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
         return {
-          reply: T.unavailable(lang, quote.propertyName),
+          reply: await buildUnavailableReply(
+            mergedData.property!, mergedData.checkIn!, mergedData.checkOut!,
+            quote.propertyName, lang, todayIso, env,
+          ),
           escalateToOwner: false,
           ruleName: "quote_unavailable_airbnb",
           tokensUsed: botResult.tokensUsed,
@@ -1270,6 +1367,24 @@ async function gatherQuoteData(
         availabilityNote = T.availabilityNote(lang);
         escalateUnverified = true;
       }
+    }
+
+    // ── No disponible en esas fechas (D1) → PROPONER alternativas ────────────
+    // En vez de solo "no disponible del X al Y", buscamos en el calendario y
+    // ofrecemos la ventana libre más cercana + otros fines de semana (pedido de
+    // César). exceedsCapacity NO entra: ahí el problema es el CUPO, no la fecha, y
+    // formatQuoteMessage tiene su mensaje de capacidad dedicado.
+    if (!quote.available && !quote.exceedsCapacity) {
+      await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+      return {
+        reply: await buildUnavailableReply(
+          mergedData.property!, mergedData.checkIn!, mergedData.checkOut!,
+          quote.propertyName, lang, todayIso, env,
+        ),
+        escalateToOwner: false,
+        ruleName:        "quote_unavailable",
+        tokensUsed:      botResult.tokensUsed,
+      };
     }
 
     const quoteMsg = formatQuoteMessage(

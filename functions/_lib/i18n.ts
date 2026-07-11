@@ -12,6 +12,8 @@
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
 
+import { formatWindowHuman, type AltDates } from "./suggest-dates";
+
 export type Lang = "es" | "en";
 
 /** Normaliza cualquier valor a un Lang válido (default "es"). */
@@ -44,6 +46,58 @@ export const T = {
     l === "en"
       ? "\n\n⚠️ Let me confirm those dates are still open and I'll get right back to you."
       : "\n\n⚠️ Déjame confirmar que esas fechas sigan libres y te confirmo enseguida.",
+
+  // Respuesta a "¿qué fechas tenés disponibles?" (pregunta INVERSA). El bot no puede
+  // enumerar el calendario de forma confiable → pide un rango concreto para chequearlo
+  // al instante. NUNCA dice "no puedo verificar" ni repite un "no disponible" viejo
+  // (caso Carlos Meza, Villa B11). Sin 🌴: es neutral y sirve para cualquier zona.
+  availabilityDatesAsk: (l: Lang, propertyName?: string): string => {
+    const prop = propertyName ? (l === "en" ? ` for ${propertyName}` : ` de ${propertyName}`) : "";
+    return l === "en"
+      ? `Happy to check availability${prop}! 🗓️ Just tell me the exact dates you have in mind — your check-in and check-out — and I'll confirm right away whether they're open and the price. If you're flexible, send me a couple of options and I'll tell you which works.`
+      : `¡Con gusto reviso la disponibilidad${prop}! 🗓️ Decime las fechas exactas que tenés en mente — el día de llegada y el de salida — y te confirmo al instante si están libres y el precio. Si tenés flexibilidad, pasame un par de opciones y te digo cuál te queda.`;
+  },
+
+  // Propiedad NO disponible en las fechas pedidas, pero el bot BUSCÓ en el calendario
+  // y PROPONE (en vez de solo "no disponible, ¿otras fechas?" y esperar → lead frío):
+  // (1) la ventana libre MÁS CERCANA a lo pedido y (2) otros FINES DE SEMANA libres.
+  // Las fechas vienen de findAlternativeDates (suggest-dates.ts), que lee el MISMO
+  // origen (getBlockedDates: iCal + D1) con el que el bot decidió "no disponible" →
+  // son tan confiables como la cotización misma. beach: 🌴 solo en playa (Tela/La
+  // Ceiba), nunca Tegucigalpa. El caller garantiza que hay al menos una alternativa.
+  unavailableWithAlternatives: (
+    l: Lang,
+    propertyName: string,
+    alt: AltDates,
+    beach: boolean,
+  ): string => {
+    const tail = beach ? " 🌴" : "";
+    const lines: string[] = [];
+    if (alt.nearest) {
+      lines.push(
+        l === "en"
+          ? `📅 Closest to your dates: *${formatWindowHuman(alt.nearest, l)}*`
+          : `📅 Lo más cercano a tus fechas: *${formatWindowHuman(alt.nearest, l)}*`,
+      );
+    }
+    for (const w of alt.weekends) {
+      lines.push(
+        l === "en"
+          ? `🗓️ Free weekend: *${formatWindowHuman(w, l)}*`
+          : `🗓️ Fin de semana libre: *${formatWindowHuman(w, l)}*`,
+      );
+    }
+    if (lines.length === 0) {
+      // Red de seguridad: sin alternativas, el mensaje genérico (no debería pasar).
+      return l === "en"
+        ? `Unfortunately ${propertyName} isn't available for those dates 😔\n\nWould you like me to check other dates or another property?`
+        : `Lamentablemente ${propertyName} no está disponible en esas fechas 😔\n\n¿Querés que revise otras fechas u otra propiedad?`;
+    }
+    const body = lines.join("\n");
+    return l === "en"
+      ? `Ah, ${propertyName} isn't free for those exact dates 😔 — but I checked the calendar and here's what's open:\n\n${body}\n\nWant me to hold any of these? I can also check another property if you'd prefer.${tail}`
+      : `Uy, ${propertyName} no está libre en esas fechas exactas 😔 — pero te busqué en el calendario y esto sí tengo abierto:\n\n${body}\n\n¿Te aparto alguna? También puedo ver otra propiedad si preferís.${tail}`;
+  },
 
   paypalLink: (
     l: Lang,

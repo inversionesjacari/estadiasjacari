@@ -4,6 +4,7 @@ import {
   isConfirmation,
   isNotInterested,
   isCheckinTimeRequest,
+  isAvailabilityDatesRequest,
   isDateChangeOrAvailabilityQuestion,
   isBankAccountRequest,
   isLegitimacyQuestion,
@@ -34,9 +35,10 @@ import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
 import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos } from "../../property-photos";
-import { locationFromText, isEventInquiryTurn2 } from "../../quote-flow";
+import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
 import { fechaEnPalabras } from "../../conversational-bot";
 import { extractPartySize, partyHeadcount } from "../../party-size";
+import { findAlternativeDates, formatWindowHuman } from "../../suggest-dates";
 
 //
 // GOLDEN DATASET — la especificación VIVA del bot.
@@ -628,5 +630,126 @@ describe("CHAT: Karen López — Friends Trip perdía el day pass de la oferta (
       expect(T.packageFriendsTripIntake(l).toLowerCase()).toContain("day pass");
       expect(T.packageVillaB11Fixed(l)).toContain("5,400");
     }
+  });
+
+  // CHAT: Dime (+504 9759-6115, 11-jul-2026) — MISMA familia (Friends Trip/day pass).
+  // El cliente dio el desglose en VARIOS grupos: "2 adultos / 1 niño de 12 / 2 niñas
+  // de 15". El bot cobró un day pass de "2 adultos + 1 niño" (L.650): se comió las 2
+  // niñas de 15 porque extractPartySize solo tomaba el PRIMER grupo de niños.
+  it("desglose en varios grupos: '2 adultos, 1 niño de 12, 2 niñas de 15' → 2 adultos + 3 niños (caso Dime)", () => {
+    const p = extractPartySize("2 adultos\n1 niño de 12\n2 niñas de 15");
+    expect(p.adults).toBe(2);
+    expect(p.children).toBe(3);
+    expect(partyHeadcount(p)).toBe(5);
+  });
+
+  it("el day pass de ese grupo entre semana da L.950 (antes daba L.650, faltaban las 2 niñas)", () => {
+    // 14→16 jul 2026 = martes/miércoles (entre semana): adulto L.250, niño L.150.
+    const r = computeDayPassHNL({ adults: 2, children: 3, checkIn: "2026-07-14", checkOut: "2026-07-16" });
+    expect(r.isWeekend).toBe(false);
+    expect(r.hnl).toBe(950); // 2×250 + 3×150 — NO 650 (2×250 + 1×150)
+  });
+});
+
+describe("CHAT: Carlos Meza — '¿qué fechas tenés disponibles?' (pregunta inversa, 10-jul-2026)", () => {
+  // 🐛 CASO REAL — Carlos Meza (+504 9926-1852), Villa B11. El cliente ya sabía que
+  // el 13–17 jul estaba ocupado y pidió que le PROPUSIÉRAMOS fechas ("Y que fecha si
+  // tienes disponible para villa B11?" → "Dame fechas que tengas disponibles en Villa
+  // B11!"). El bot (a) re-cotizó el 13–17 viejo y repitió "no disponible del 13 al 17"
+  // —contestó una pregunta que el cliente no hizo— y (b) cayó al LLM, que respondió
+  // "no puedo verificar la disponibilidad de fechas específicas" → callejón sin salida,
+  // lead frío. Clase: el bot no tenía handler para la pregunta INVERSA de disponibilidad.
+  it("los mensajes EXACTOS de Carlos disparan el handler inverso ('villa B11' no es una fecha)", () => {
+    expect(isAvailabilityDatesRequest("Y que fecha si tienes disponible para villa B11?")).toBe(true);
+    expect(isAvailabilityDatesRequest("Dame fechas que tengas disponibles en Villa B11!")).toBe(true);
+  });
+
+  it("un chequeo CON fecha concreta NO dispara el handler inverso → sigue al cotizador real", () => {
+    // El mismo cliente, turno 4, SÍ dio fechas → eso debe cotizarse, no reformularse.
+    expect(isAvailabilityDatesRequest("Tienes disponibilidad en la semana del 13 al 17 de julio?")).toBe(false);
+  });
+
+  it("la respuesta determinística pide un rango concreto y NUNCA dice 'no puedo verificar'", () => {
+    for (const l of ["es", "en"] as const) {
+      const msg = T.availabilityDatesAsk(l, PROPERTY_PRICING["villa-b11-palma-real"].name);
+      expect(msg).toContain("Villa B11 — Palma Real"); // nombra la propiedad del estado
+      expect(msg.toLowerCase()).not.toContain("no puedo");
+      expect(msg.toLowerCase()).not.toContain("can't");
+      expect(msg.toLowerCase()).not.toContain("no está disponible");
+      expect(msg.toLowerCase()).not.toContain("not available");
+    }
+    // Sin propiedad conocida también responde (genérico, sin nombre).
+    expect(T.availabilityDatesAsk("es").length).toBeGreaterThan(30);
+    // Marca: es neutral (sirve para Tegucigalpa) → sin palmera.
+    expect(T.availabilityDatesAsk("es")).not.toContain("🌴");
+  });
+});
+
+// 🐛 CASO REAL — D'Karoll (+504 3202-4132), 11-jul-2026. Friends Trip Tela. La
+// clienta dio "5 adultos 1 niña y una bebé" y el bot contó BIEN ("6 huéspedes",
+// la bebé no cuenta 👶), pero con la fecha mandó la tarjeta de `las-gemelas-tela`
+// = las DOS casas. Para 6 que cuentan alcanza UNA sola casa (y la oferta L.6,700 es
+// para una casa + day pass). Causa: el LLM fijó property=las-gemelas del contexto
+// del Friends Trip → esquivó el auto-asignado por headcount. Blindaje determinístico:
+// las gemelas SOLO valen para 7-12; con ≤6 se degrada a una casa (marea→brisa).
+describe("CHAT: D'Karoll — Friends Trip Tela: 6 que cuentan caben en UNA casa, no en las gemelas", () => {
+  it("'5 adultos 1 niña y una bebé' → 5+1=6 que cuentan (la bebé NO cuenta para cupo)", () => {
+    const p = extractPartySize("5 adultos 1 niña y una bebé");
+    expect(p.adults).toBe(5);
+    expect(p.children).toBe(1);
+    expect(partyHeadcount(p)).toBe(6);
+  });
+  it("con 6 (o menos) que cuentan, las gemelas (2 casas) se degrada a UNA casa", () => {
+    expect(gemelasOverSized("las-gemelas-tela", 6)).toBe(true);
+    expect(gemelasOverSized("las-gemelas-tela", 1)).toBe(true);
+  });
+  it("7-12 SÍ son las gemelas (no se toca el producto de grupo)", () => {
+    expect(gemelasOverSized("las-gemelas-tela", 7)).toBe(false);
+    expect(gemelasOverSized("las-gemelas-tela", 12)).toBe(false);
+  });
+  it("una casa individual nunca se degrada, y sin headcount tampoco", () => {
+    expect(gemelasOverSized("casa-marea", 6)).toBe(false);
+    expect(gemelasOverSized("casa-brisa", 4)).toBe(false);
+    expect(gemelasOverSized("las-gemelas-tela", null)).toBe(false);
+    expect(gemelasOverSized(null, 6)).toBe(false);
+  });
+});
+
+describe("CHAT: +504 9872-6411 — Villa B11 OCUPADO 16–18 jul: PROPONER fechas, no solo 'no disponible' (11-jul-2026)", () => {
+  // 🐛 CASO REAL — familia de 5, jueves 16 → sábado 18 jul (2 noches). La villa estaba
+  // ocupada y el bot solo dijo "no disponible del 16 al 18 jul 😔 ¿otras fechas o
+  // propiedad?" y se quedó esperando → lead frío. César: si buscan 2 noches de finde
+  // y no hay, el bot debe PROPONER (1) lo más cercano libre y (2) otros fines de
+  // semana libres. Es matemática de calendario → CÓDIGO (findAlternativeDates), no
+  // prompt: lee el MISMO set de fechas ocupadas con el que se decide "no disponible".
+  const TODAY = "2026-07-11";
+  const REQ_IN = "2026-07-16"; // jueves
+  const REQ_OUT = "2026-07-18"; // 2 noches
+
+  it("con las fechas pedidas ocupadas, propone ventana cercana + otros findes (mismo día de semana)", () => {
+    const blocked = new Set(["2026-07-16", "2026-07-17"]);
+    const alt = findAlternativeDates(blocked, REQ_IN, REQ_OUT, TODAY);
+    expect(alt.nearest).not.toBeNull();
+    expect(alt.nearest!.nights).toBe(2);
+    expect(alt.weekends.length).toBeGreaterThanOrEqual(1);
+    // los findes propuestos son jueves (mismo día que pidió) y están libres
+    const reqDow = new Date(REQ_IN + "T00:00:00Z").getUTCDay();
+    for (const w of alt.weekends) {
+      expect(new Date(w.checkIn + "T00:00:00Z").getUTCDay()).toBe(reqDow);
+    }
+  });
+
+  it("el mensaje nombra la propiedad, da fechas concretas y NUNCA se cuelga ('no puedo')", () => {
+    const alt = findAlternativeDates(new Set(["2026-07-16", "2026-07-17"]), REQ_IN, REQ_OUT, TODAY);
+    for (const l of ["es", "en"] as const) {
+      const msg = T.unavailableWithAlternatives(l, "Villa B11 — Palma Real", alt, true);
+      expect(msg).toContain("Villa B11 — Palma Real");
+      expect(msg).toContain(formatWindowHuman(alt.nearest!, l));
+      expect(msg.toLowerCase()).not.toContain("no puedo");
+      expect(msg.toLowerCase()).not.toContain("can't");
+    }
+    // Tegucigalpa (no playa) → sin 🌴
+    const teg = findAlternativeDates(new Set(["2026-07-16", "2026-07-17"]), REQ_IN, REQ_OUT, TODAY);
+    expect(T.unavailableWithAlternatives("es", "Centro Morazán", teg, false)).not.toContain("🌴");
   });
 });
