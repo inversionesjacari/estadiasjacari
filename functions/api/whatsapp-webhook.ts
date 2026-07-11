@@ -769,6 +769,7 @@ async function processIncomingMessage(
         EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
         WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
         WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+        DB: env.DB, // para que la alerta WhatsApp deje rastro (B8: heartbeat + bot_trace)
       },
     );
 
@@ -963,6 +964,7 @@ async function handleMediaMessage(
                 EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
                 WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
                 WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+                DB: env.DB, // B8: rastro de la alerta WhatsApp
               },
             );
           } catch { /* best-effort */ }
@@ -1011,6 +1013,7 @@ async function handleMediaMessage(
       EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
       WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
       WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+      DB: env.DB, // B8: rastro de la alerta WhatsApp
     },
   );
 }

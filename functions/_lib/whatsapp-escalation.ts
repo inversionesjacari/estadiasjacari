@@ -21,6 +21,20 @@ import type { ActiveReservation } from "./whatsapp-bot";
 const SUPPORT_EMAIL = "hola@estadiasjacari.com";
 const CESAR_PERSONAL_WA = "50497649035";
 
+/**
+ * Prefijo de severidad para el ASUNTO del email (B8, 2026-07-11): mientras el
+ * canal WhatsApp se diagnostica, el email es el aviso principal — que el filtro
+ * de Gmail de César pueda distinguir "hay plata en juego" de "mirá cuando puedas".
+ *   🔴 pago/comprobante (plata en la mano)  ·  🟠 escalado que espera un humano
+ *   ⚪ resto (informativo). Función pura, testeada en owner-alerts.test.ts.
+ */
+export function severityPrefix(reason: string): string {
+  const r = reason.toLowerCase();
+  if (/pag[oó]|comprobante|transferencia|deposit/i.test(r)) return "🔴";
+  if (/humano|escal|soporte|evento|largo plazo|llamada|sin responder|recuperarse/i.test(r)) return "🟠";
+  return "⚪";
+}
+
 const PROPERTY_NAMES: Record<string, string> = {
   "villa-b11-palma-real": "Villa B11 — Palma Real",
   "casa-brisa": "Casa Brisa",
@@ -60,7 +74,7 @@ export async function sendEscalationEmail(
   // Para que César abra su WhatsApp personal (referencia, normalmente no se usa)
   const cesarUrl = `https://wa.me/${CESAR_PERSONAL_WA}`;
 
-  const subject = `WhatsApp: ${guestName} · ${propertyName}`;
+  const subject = `${severityPrefix(data.reason)} WhatsApp: ${guestName} · ${propertyName}`;
   const text = buildText(data, propertyName, guestName, replyToGuestUrl);
   const html = buildHtml(data, propertyName, guestName, replyToGuestUrl, cesarUrl);
 
