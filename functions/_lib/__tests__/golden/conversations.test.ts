@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveDates, extractNights } from "../../date-parser";
+import { resolveDates, extractNights, extractDatePhrases } from "../../date-parser";
 import {
   isConfirmation,
   isNotInterested,
@@ -27,14 +27,16 @@ import {
   isUnverifiedQuoteClaim,
   isEventInquiry,
   mentionsValleDeAngeles,
+  detectPackageInquiry,
   TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
-import { PROPERTY_PRICING } from "../../quote-builder";
+import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos } from "../../property-photos";
-import { locationFromText } from "../../quote-flow";
+import { locationFromText, isEventInquiryTurn2 } from "../../quote-flow";
 import { fechaEnPalabras } from "../../conversational-bot";
+import { extractPartySize, partyHeadcount } from "../../party-size";
 
 //
 // GOLDEN DATASET — la especificación VIVA del bot.
@@ -477,5 +479,104 @@ describe("CHAT: Lead de eventos Valle de Ángeles — detección y handoff", () 
 
   it("el handoff es regla TERMINAL: sin followups de cotización ni falso 'bot mudo'", () => {
     expect(TERMINAL_RULES.has("event_inquiry_handoff")).toBe(true);
+  });
+
+  // 🐛 CASO REAL — Santi (+504 9389-2082), 9-jul-2026. El bot mandó el intake
+  // ("¡Qué emoción! Nuestro espacio en Valle de Ángeles es ideal…") y cuando el
+  // cliente respondió "Cumpleaños infantil, octubre, 50 personas", en vez de derivar
+  // al equipo se CONTRADIJO con out_of_scope ("no contamos con esa opción"). Causa:
+  // una webhook concurrente (un "Hola" casi simultáneo respondido con saludo
+  // genérico) pisó el estado `event_inquiry` → el turno 2 no lo encontró, y la
+  // respuesta del cliente NO vuelve a disparar isEventInquiry (palabra débil sin
+  // contexto de venue). El ancla en la última regla del bot lo salva.
+  it("turno 2 con el estado INTACTO deriva al equipo", () => {
+    expect(isEventInquiryTurn2("event_inquiry", "")).toBe(true);
+  });
+
+  it("turno 2 SOBREVIVE a que se pierda el estado: se ancla en la última regla (bug Santi)", () => {
+    // Por qué se perdía: la respuesta al intake no vuelve a ser detectable como evento.
+    expect(isEventInquiry("Cumpleaños infantil, octubre, 50 personas")).toBe(false);
+    // Red de seguridad: si el intake fue lo último que dijo el bot, sigue siendo turno 2
+    // aunque el estado haya quedado en awaiting_quote_data (o se haya borrado).
+    expect(isEventInquiryTurn2("awaiting_quote_data", "event_inquiry_intake")).toBe(true);
+    expect(isEventInquiryTurn2(undefined, "event_inquiry_intake")).toBe(true);
+    expect(isEventInquiryTurn2(null, "event_inquiry_intake")).toBe(true);
+  });
+
+  it("NO deriva a eventos si el intake NO fue lo último del bot (no roba estadías)", () => {
+    expect(isEventInquiryTurn2("awaiting_quote_data", "quote_provided")).toBe(false);
+    expect(isEventInquiryTurn2("quote_provided", "quote_provided")).toBe(false);
+    expect(isEventInquiryTurn2(undefined, "")).toBe(false);
+  });
+});
+
+describe("CHAT: Villa B11 (Jasmin) — fechas mezcladas entre turnos + falso 'estadía larga' (10-jul-2026)", () => {
+  // Conversación real: "16,17 y 18" (jul) → "7,8y 9 de agosto" → "entrar el viernes
+  // y salir el domingo" → "viernes 21, sábado y domingo 23". El bot terminó
+  // devolviendo "no disponible del 17 jul al 9 ago" (mezcla de un check-in del
+  // turno actual con un check-out sobrante de un turno viejo) y clasificó un fin
+  // de semana de 2 noches como estadía LARGA (30+ noches), pausando el bot y
+  // dejando a la clienta sin respuesta.
+  const TODAY = "2026-07-10"; // viernes (verificado: nextWeekday da 17-jul, como en el chat real)
+
+  it("'7,8y 9 de agosto' (lista sin 'del...al') se toma como 3 NOCHES: check-in 7, check-out 10", () => {
+    const r = extractDatePhrases("Y para el 7,8y 9 de agosto", TODAY);
+    expect(r.checkIn).toBe("2026-08-07");
+    expect(r.checkOut).toBe("2026-08-10");
+  });
+
+  it("'entrar el viernes y salir el domingo' resuelve AMBAS fechas del mensaje actual (ya no mezcla un check-out viejo)", () => {
+    const r = extractDatePhrases("serían 2 una noches entrar el viernes y salir el domingo", TODAY);
+    expect(r.checkIn).toBe("2026-07-17");
+    expect(r.checkOut).toBe("2026-07-19"); // 2 noches — NO "9 de agosto" de un turno anterior
+  });
+
+  it("'viernes 21, sábado y domingo 23' usa el propio día de semana para elegir el MES correcto", () => {
+    // 21 de julio 2026 es MARTES (no viernes); 21 de agosto 2026 SÍ es viernes.
+    const r = extractDatePhrases("Y para el viernes 21, sábado y domingo 23?", TODAY);
+    expect(r.checkIn).toBe("2026-08-21");
+    expect(r.checkOut).toBe("2026-08-23");
+    const n = nightsBetween(r.checkIn!, r.checkOut!);
+    expect(n).toBe(2); // NO 37 noches → nunca debe disparar long_term_inquiry
+    expect(n < LONG_TERM_NIGHTS).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT: Karen López — paquete "Friends Trip" (Las Gemelas + day pass, 10-jul-2026)
+//
+// El botón del anuncio de Click-to-WhatsApp prellenó "quiero información sobre
+// la oferta de Tela, Atlántida de L. 6,700" — sin nombrar el paquete ni la
+// propiedad. El bot solo veía "Tela" y cotizaba la tarifa PELADA de Casa
+// Brisa/Casa Marea (L.2,500/noche), sin mencionar ni cobrar el day pass del
+// Hotel Honduras Shores Plantation que la oferta prometía — el valor de la
+// oferta se perdía en el camino.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CHAT: Karen López — Friends Trip perdía el day pass de la oferta (10-jul-2026)", () => {
+  it("el mensaje real del anuncio se reconoce como Friends Trip aunque no nombre el paquete", () => {
+    expect(
+      detectPackageInquiry("¡Hola! 👋 Quiero más información sobre la oferta de Tela, Atlántida de L. 6,700"),
+    ).toBe("friends_trip");
+  });
+
+  it("'4 adultos 2 niños 1bb' (mensaje real de Karen) se desglosa correcto — el bebé no cuenta", () => {
+    const p = extractPartySize("Es que quiero saber precios para ir a tela con 4 adultos 2 niños 1bb.");
+    expect(p.adults).toBe(4);
+    expect(p.children).toBe(2);
+    expect(p.babies).toBe(1);
+    expect(partyHeadcount(p)).toBe(6); // cabe en UNA casa (cupo 6) — no hace falta Las Gemelas combinadas
+  });
+
+  it("el day pass de ese grupo en fin de semana da L.1,700 (antes se perdía por completo)", () => {
+    const r = computeDayPassHNL({ adults: 4, children: 2, checkIn: "2024-01-05", checkOut: "2024-01-07" }); // viernes a domingo
+    expect(r.isWeekend).toBe(true);
+    expect(r.hnl).toBe(1700);
+  });
+
+  it("los mensajes de intake/precio fijo existen en ambos idiomas y mencionan el day pass / el monto", () => {
+    for (const l of ["es", "en"] as const) {
+      expect(T.packageFriendsTripIntake(l).toLowerCase()).toContain("day pass");
+      expect(T.packageVillaB11Fixed(l)).toContain("5,400");
+    }
   });
 });

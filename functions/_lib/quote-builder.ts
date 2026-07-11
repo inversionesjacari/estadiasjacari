@@ -126,6 +126,11 @@ export interface QuoteOutput {
   city: City;
   capacity: number;
   exceedsCapacity: boolean;
+  /** Si el paquete "Friends Trip" agregó un day pass, monto YA incluido en totalHNL/USD (para desglosarlo en el mensaje). */
+  dayPassHNL?: number;
+  dayPassIsWeekend?: boolean;
+  dayPassAdults?: number;
+  dayPassChildren?: number;
 }
 
 /** Calcula la cantidad de noches entre dos fechas YYYY-MM-DD (inclusive→exclusive). */
@@ -234,6 +239,75 @@ export async function buildQuote(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Paquetes de marketing (9-jul-2026, "Family pack" / "Love Trip" / "Friends Trip")
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tasa implícita del catálogo (Villa B11/Casa Brisa/Casa Marea: 2,500 HNL ≈ 90
+ *  USD/noche) — se reusa para convertir el day pass a USD con el mismo criterio. */
+const LODGING_HNL_PER_USD = 2500 / 90;
+
+export interface DayPassParty {
+  adults: number;
+  /** Bebés NO se pasan acá — son gratis y no cuentan (decisión de César). */
+  children: number;
+  checkIn: string;  // YYYY-MM-DD
+  checkOut: string; // YYYY-MM-DD
+}
+
+/**
+ * Day pass Hotel Honduras Shores Plantation (paquete "Friends Trip", Las Gemelas
+ * de Tela): adulto L.250 entre semana / L.350 fin de semana; niño L.150 cualquier
+ * día. "Fin de semana" = la estadía incluye una noche de viernes, sábado o domingo.
+ */
+export function computeDayPassHNL(p: DayPassParty): { hnl: number; isWeekend: boolean } {
+  const start = new Date(p.checkIn + "T00:00:00Z").getTime();
+  const end = new Date(p.checkOut + "T00:00:00Z").getTime();
+  let isWeekend = false;
+  for (let t = start; t < end; t += 86_400_000) {
+    const dow = new Date(t).getUTCDay(); // 0=domingo … 6=sábado
+    if (dow === 5 || dow === 6 || dow === 0) { isWeekend = true; break; }
+  }
+  const adultRate = isWeekend ? 350 : 250;
+  return { hnl: p.adults * adultRate + p.children * 150, isWeekend };
+}
+
+/** Suma el day pass a una cotización YA verificada (Total/depósito/saldo quedan
+ *  inclusive) — usar SIEMPRE que `packageType === "friends_trip"`, en cada lugar
+ *  donde se muestre el monto a pagar (si no, el depósito queda corto). */
+export function addDayPass(quote: QuoteOutput, party: DayPassParty): QuoteOutput {
+  if (!quote.available) return quote;
+  const { hnl, isWeekend } = computeDayPassHNL(party);
+  const totalHNL = quote.totalHNL + hnl;
+  const totalUSD = quote.totalUSD + Math.round(hnl / LODGING_HNL_PER_USD);
+  const depositHNL = Math.ceil(totalHNL / 2);
+  const depositUSD = Math.ceil(totalUSD / 2);
+  return {
+    ...quote,
+    totalHNL, depositHNL, balanceHNL: totalHNL - depositHNL,
+    totalUSD, depositUSD, balanceUSD: totalUSD - depositUSD,
+    dayPassHNL: hnl,
+    dayPassIsWeekend: isWeekend,
+    dayPassAdults: party.adults,
+    dayPassChildren: party.children,
+  };
+}
+
+/** Precio FIJO del paquete "Family pack"/"Love Trip" (Villa B11, La Ceiba): no
+ *  varía sean 2 o 6 personas — solo aplica cuando la estadía es EXACTAMENTE de
+ *  2 noches (la duración del paquete); para otra duración se cotiza normal. */
+export const VILLA_B11_PACKAGE_TOTAL_HNL = 5400;
+const VILLA_B11_PACKAGE_TOTAL_USD = Math.round(VILLA_B11_PACKAGE_TOTAL_HNL / LODGING_HNL_PER_USD);
+
+export function applyVillaB11PackagePrice(quote: QuoteOutput): QuoteOutput {
+  if (!quote.available || quote.nights !== 2) return quote;
+  const totalHNL = VILLA_B11_PACKAGE_TOTAL_HNL;
+  const totalUSD = VILLA_B11_PACKAGE_TOTAL_USD;
+  const depositHNL = Math.ceil(totalHNL / 2);
+  const depositUSD = Math.ceil(totalUSD / 2);
+  return { ...quote, totalHNL, depositHNL, balanceHNL: totalHNL - depositHNL, totalUSD, depositUSD, balanceUSD: totalUSD - depositUSD };
+}
+
 /** Formato HNL con separador de miles. */
 function fmtHnl(n: number): string {
   return `HNL ${n.toLocaleString("es-HN")}`;
@@ -268,6 +342,17 @@ export function formatQuoteMessage(
 ): string {
   const closingEmoji = q.city === "Tegucigalpa" ? "" : " 🌴";
 
+  // Día pass (paquete "Friends Trip") — línea extra entre limpieza y total.
+  const dayPassLine = q.dayPassHNL
+    ? lang === "en"
+      ? `Day pass Honduras Shores Plantation Hotel (${q.dayPassAdults} adult${q.dayPassAdults === 1 ? "" : "s"}${
+          q.dayPassChildren ? ` + ${q.dayPassChildren} kid${q.dayPassChildren === 1 ? "" : "s"}` : ""
+        }, ${q.dayPassIsWeekend ? "weekend" : "weekday"}): ${fmtHnl(q.dayPassHNL)}\n`
+      : `Day pass Hotel Honduras Shores Plantation (${q.dayPassAdults} adulto${q.dayPassAdults === 1 ? "" : "s"}${
+          q.dayPassChildren ? ` + ${q.dayPassChildren} niño${q.dayPassChildren === 1 ? "" : "s"}` : ""
+        }, ${q.dayPassIsWeekend ? "fin de semana" : "entre semana"}): ${fmtHnl(q.dayPassHNL)}\n`
+    : "";
+
   // ── Inglés ────────────────────────────────────────────────────────────────
   if (lang === "en") {
     if (!q.available) {
@@ -285,7 +370,7 @@ Would you like to try other dates or another property?`;
 💰 *Quote:*
 ${q.nights} night${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
 Cleaning: ${fmtHnl(q.cleaningFeeHNL)}
-*Total: ${fmtHnl(q.totalHNL)}*
+${dayPassLine}*Total: ${fmtHnl(q.totalHNL)}*
 
 🪙 *To book:*
 50% now: *${fmtHnl(q.depositHNL)}*
@@ -311,7 +396,7 @@ Shall we confirm? You can pay the 50% by *bank transfer* or *card/PayPal*, which
 💰 *Cotización:*
 ${q.nights} noche${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
 Limpieza: ${fmtHnl(q.cleaningFeeHNL)}
-*Total: ${fmtHnl(q.totalHNL)}*
+${dayPassLine}*Total: ${fmtHnl(q.totalHNL)}*
 
 🪙 *Para reservar:*
 50% ahora: *${fmtHnl(q.depositHNL)}*

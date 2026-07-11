@@ -28,7 +28,15 @@ import {
   type ConvState,
   type ConversationStateRow,
 } from "./quote-state";
-import { buildQuote, formatQuoteMessage, type PropertyPricing } from "./quote-builder";
+import {
+  buildQuote,
+  formatQuoteMessage,
+  addDayPass,
+  applyVillaB11PackagePrice,
+  type PropertyPricing,
+  type QuoteOutput,
+} from "./quote-builder";
+import { extractPartySize } from "./party-size";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
 import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "./availability";
 import type { PropertySlug, City } from "./quote-extractor";
@@ -68,6 +76,7 @@ import {
   isUnverifiedQuoteClaim,
   isEventInquiry,
   mentionsValleDeAngeles,
+  detectPackageInquiry,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -154,6 +163,29 @@ function buildSocialReply(sel: { ig: boolean; fb: boolean; web: boolean }, lang:
 
 
 
+/**
+ * Envoltura de PAQUETE sobre una cotización YA verificada — day pass (Friends
+ * Trip) o precio fijo (Family pack/Love Trip). Usar SIEMPRE en vez de leer
+ * buildQuote() directo en cualquier lugar que muestre el monto a pagar
+ * (cotización, método de pago, transferencia, PayPal): si no, el depósito/saldo
+ * queda corto y no refleja el day pass (caso real Karen López, 10-jul-2026).
+ */
+function applyPackagePricing(quote: QuoteOutput | null, data: QuoteData): QuoteOutput | null {
+  if (!quote || !quote.available) return quote;
+  if (data.packageType === "friends_trip" && data.adults != null && data.checkIn && data.checkOut) {
+    return addDayPass(quote, {
+      adults: data.adults,
+      children: data.children ?? 0,
+      checkIn: data.checkIn,
+      checkOut: data.checkOut,
+    });
+  }
+  if (data.packageType === "family_pack" || data.packageType === "love_trip") {
+    return applyVillaB11PackagePrice(quote);
+  }
+  return quote;
+}
+
 /** Última regla saliente del bot para este número (o "" si no hay). Para saber si
  *  ya nos despedimos y no encimar otra despedida ante un "ok"/"gracias" de cierre. */
 async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
@@ -165,6 +197,24 @@ async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** ¿Estamos en el TURNO 2 del flujo de eventos (Valle de Ángeles): el cliente está
+ *  respondiendo al intake que ya le pedimos (tipo + fecha + personas)? Nos anclamos
+ *  en el ESTADO `event_inquiry` y, como RED DE SEGURIDAD, en la última regla saliente
+ *  del bot: si lo último que dijimos fue `event_inquiry_intake`, la respuesta del
+ *  cliente ES su respuesta al evento —aunque el estado se haya perdido—. El estado es
+ *  una fila mutable que una webhook concurrente puede pisar (dos mensajes casi
+ *  simultáneos → un saludo genérico que resetea el estado a awaiting_quote_data); el
+ *  log de `matched_rule` es append-only y no se pisa. Sin esto, el turno 2 caía al LLM
+ *  → `out_of_scope` y el bot se contradecía ("¡Valle de Ángeles es ideal!" → "no
+ *  contamos con esa opción"). Función pura para blindarla en el golden. (Caso Santi,
+ *  9-jul-2026.) */
+export function isEventInquiryTurn2(
+  state: string | null | undefined,
+  lastOutRule: string,
+): boolean {
+  return state === "event_inquiry" || lastOutRule === "event_inquiry_intake";
 }
 
 
@@ -315,8 +365,14 @@ export async function handleQuoteIncoming(
   // (fotos/ubicación/teléfono) debe robarse la respuesta del cliente.
 
   // Turno 2: ya preguntamos los 3 datos → sea cual sea su respuesta, derivar al
-  // equipo (el detalle queda en el chat del inbox y en la alerta) y cerrar.
-  if (existing?.state === "event_inquiry") {
+  // equipo (el detalle queda en el chat del inbox y en la alerta) y cerrar. Nos
+  // anclamos en el estado Y en la última regla del bot: si el intake fue lo último
+  // que dijimos, esta respuesta es la respuesta al evento aunque una webhook
+  // concurrente haya pisado el estado (si no, se contradecía con out_of_scope). El
+  // `||` corta antes de consultar la DB cuando el estado ya está intacto.
+  const eventLastRule =
+    existing?.state === "event_inquiry" ? "" : await getLastOutRule(phone, env.DB);
+  if (isEventInquiryTurn2(existing?.state, eventLastRule)) {
     await clearState(phone, env.DB);
     return {
       reply:           T.eventHandoff(lang),
@@ -604,7 +660,7 @@ export async function handleQuoteIncoming(
   if (existing.state === "quote_provided") {
     if (isConfirmation(text)) {
       await upsertState(phone, "awaiting_payment_method", existing.data, env.DB);
-      const quote = await buildQuote(
+      const quote = applyPackagePricing(await buildQuote(
         {
           property: existing.data.property!,
           checkIn:  existing.data.checkIn!,
@@ -613,7 +669,7 @@ export async function handleQuoteIncoming(
         },
         env.DB,
         pricingMap,
-      );
+      ), existing.data);
       const depositLine = quote
         ? `*HNL ${quote.depositHNL.toLocaleString("es-HN")}* (≈ USD ${quote.depositUSD.toFixed(2)})`
         : lang === "en" ? "the 50% deposit" : "el 50% de la cotización";
@@ -661,7 +717,7 @@ export async function handleQuoteIncoming(
   // ── CASO 2.7: Esperando comprobante de transferencia ──────────────────────
   if (existing.state === "awaiting_transfer_proof") {
     if (isUsdRequest(text)) {
-      const quote = await buildQuote(
+      const quote = applyPackagePricing(await buildQuote(
         {
           property: existing.data.property!,
           checkIn:  existing.data.checkIn!,
@@ -670,7 +726,7 @@ export async function handleQuoteIncoming(
         },
         env.DB,
         pricingMap,
-      );
+      ), existing.data);
       return {
         reply:           buildTransferMessageUSD(quote?.depositUSD ?? 0, lang),
         escalateToOwner: false,
@@ -737,11 +793,11 @@ async function gatherQuoteData(
   // → mandamos los datos EXACTOS del banco (bank-transfer.ts), SIN pasar por el
   // LLM. El bot estaba alucinando números de cuenta; esto lo blinda.
   if (isBankAccountRequest(text) && isQuoteDataComplete(previousData)) {
-    const tq = await buildQuote(
+    const tq = applyPackagePricing(await buildQuote(
       { property: previousData.property!, checkIn: previousData.checkIn!, checkOut: previousData.checkOut!, guests: previousData.guests! },
       env.DB,
       pricingMap,
-    );
+    ), previousData);
     if (tq && tq.available) {
       const lng = asLang(previousData.language);
       await upsertState(phone, "awaiting_transfer_proof", previousData, env.DB);
@@ -923,6 +979,61 @@ async function gatherQuoteData(
   mergedData.checkIn = resolved.checkIn;
   mergedData.checkOut = resolved.checkOut;
 
+  // ── ¿Este turno aportó un dato nuevo/distinto? (movido antes de lo normal para
+  // que el gate de paquetes de abajo también lo pueda usar). ─────────────────
+  const ex = botResult.extractedData;
+  const changedQuoteData =
+    (ex.property != null && ex.property !== previousData.property) ||
+    (ex.checkIn  != null && ex.checkIn  !== previousData.checkIn) ||
+    (ex.checkOut != null && ex.checkOut !== previousData.checkOut) ||
+    (ex.guests   != null && ex.guests   !== previousData.guests);
+
+  // ── PAQUETES de marketing (Family pack / Love Trip / Friends Trip, 9-jul-2026) ──
+  // El botón del anuncio Click-to-WhatsApp prellena algo como "quiero información
+  // sobre la oferta de Tela, Atlántida de L. 6,700" (caso real Karen López,
+  // 10-jul-2026): sin esto el bot solo veía "Tela" y cotizaba la tarifa pelada de
+  // la casa, perdiendo el day pass que la oferta prometía. `packageType` persiste
+  // en el estado (no hace falta repetirlo cada turno) y ancla la ciudad para que
+  // el auto-asignado de propiedad de abajo funcione sin preguntar de más.
+  const detectedPackage = detectPackageInquiry(text);
+  const packageIsNew = !previousData.packageType && detectedPackage != null;
+  mergedData.packageType = detectedPackage ?? previousData.packageType ?? null;
+  if (mergedData.packageType && !mergedData.city) {
+    mergedData.city = mergedData.packageType === "friends_trip" ? "Tela" : "La Ceiba";
+  }
+  if (mergedData.packageType === "friends_trip") {
+    // Adultos/niños se extraen aparte del `guests` genérico del LLM porque el day
+    // pass cobra distinto por cada uno (bebés gratis, no cuentan — ver party-size.ts).
+    const party = extractPartySize(text);
+    if (party.adults != null) mergedData.adults = party.adults;
+    if (party.children != null) mergedData.children = party.children;
+    if (party.adults != null || party.children != null) {
+      mergedData.guests = (mergedData.adults ?? 0) + (mergedData.children ?? 0);
+    }
+  }
+  if (packageIsNew) {
+    await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+    return {
+      reply: mergedData.packageType === "friends_trip" ? T.packageFriendsTripIntake(lang) : T.packageVillaB11Fixed(lang),
+      escalateToOwner: false,
+      ruleName: mergedData.packageType === "friends_trip" ? "package_friends_trip_intake" : "package_villa_b11_intake",
+      tokensUsed: botResult.tokensUsed,
+    };
+  }
+  // Friends Trip con fechas ya conocidas pero SIN el desglose adultos/niños →
+  // pedirlo específicamente en vez de dejar que se cotice con el `guests` genérico
+  // (eso quotearía SIN day pass, el mismo capture failure del caso real).
+  const packageMissingParty = mergedData.packageType === "friends_trip" && mergedData.adults == null;
+  if (packageMissingParty && mergedData.checkIn && mergedData.checkOut && changedQuoteData) {
+    await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+    return {
+      reply:           T.packageNeedPartyBreakdown(lang),
+      escalateToOwner: false,
+      ruleName:        "package_need_party_breakdown",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
   // ── Estadía LARGA por fechas (un mes+) → caso especial, NO cotizar por noche ──
   // Para una renta a largo plazo armamos una propuesta a medida (descuento mensual,
   // condiciones); la tarifa por noche × 142 no aplica, y la disponibilidad de 4 meses
@@ -1092,17 +1203,6 @@ async function gatherQuoteData(
     }
   }
 
-  // ── ¿Cotizar? Solo si el mensaje ACTUAL aportó un dato nuevo/distinto ─────
-  // Evita el bucle: si los datos ya estaban completos de antes y el cliente
-  // manda un saludo ("que onda") o pide alternativas ("¿qué otra tienen?"),
-  // NO recotizamos lo mismo — dejamos que el bot conversacional responda.
-  const ex = botResult.extractedData;
-  const changedQuoteData =
-    (ex.property != null && ex.property !== previousData.property) ||
-    (ex.checkIn  != null && ex.checkIn  !== previousData.checkIn) ||
-    (ex.checkOut != null && ex.checkOut !== previousData.checkOut) ||
-    (ex.guests   != null && ex.guests   !== previousData.guests);
-
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────
   // Entra si el turno trajo datos NUEVOS (changedQuoteData, el caso normal) O si el
   // LLM intentó AFIRMAR disponibilidad/precio total por su cuenta (replyHasClaim).
@@ -1115,7 +1215,7 @@ async function gatherQuoteData(
   // disponibilidad/total se reemplaza por el veredicto VERIFICADO (cotización real
   // o no-disponible real) — el LLM jamás tiene la última palabra sobre plata.
   const replyHasClaim = isUnverifiedQuoteClaim(botResult.reply ?? "");
-  if (isQuoteDataComplete(mergedData) && (changedQuoteData || replyHasClaim)) {
+  if (isQuoteDataComplete(mergedData) && !packageMissingParty && (changedQuoteData || replyHasClaim)) {
     if (!changedQuoteData && replyHasClaim) {
       // 📸 cámara: cuántas veces el LLM intenta afirmar plata sin cotizador
       // (aparece agrupado en el dashboard de fallos de /inbox/operacion).
@@ -1125,7 +1225,7 @@ async function gatherQuoteData(
         ).bind(phone, (botResult.reply ?? "").slice(0, 200)).run();
       } catch { /* best-effort */ }
     }
-    const quote = await buildQuote(
+    const quote = applyPackagePricing(await buildQuote(
       {
         property: mergedData.property!,
         checkIn:  mergedData.checkIn!,
@@ -1134,7 +1234,7 @@ async function gatherQuoteData(
       },
       env.DB,
       pricingMap,
-    );
+    ), mergedData);
 
     if (!quote) {
       return {
@@ -1370,7 +1470,7 @@ async function handlePaymentMethodChoice(
     };
   }
 
-  const quote = await buildQuote(
+  const quote = applyPackagePricing(await buildQuote(
     {
       property: data.property!,
       checkIn:  data.checkIn!,
@@ -1379,7 +1479,7 @@ async function handlePaymentMethodChoice(
     },
     env.DB,
     pricingMap,
-  );
+  ), data);
 
   if (!quote || !quote.available) {
     await cancelQuoteFlow(phone, env.DB);

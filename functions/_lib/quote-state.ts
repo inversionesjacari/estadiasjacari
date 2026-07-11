@@ -45,6 +45,9 @@ export function emptyQuoteData(): QuoteData {
     guests: null,
     property: null,
     city: null,
+    packageType: null,
+    adults: null,
+    children: null,
   };
 }
 

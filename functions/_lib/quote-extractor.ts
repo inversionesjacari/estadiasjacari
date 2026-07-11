@@ -45,6 +45,12 @@ export interface QuoteData {
   depositUsd?: number | null;
   /** Idioma del cliente ("es" | "en"). Para responder en su idioma. */
   language?: "es" | "en" | null;
+  /** Paquete de marketing detectado (Family pack/Love Trip/Friends Trip, 9-jul-2026). */
+  packageType?: "family_pack" | "love_trip" | "friends_trip" | null;
+  /** Adultos/niños del "Friends Trip" (day pass cobra distinto por cada uno; bebés
+   *  no se guardan acá — son gratis y no cuentan, ver party-size.ts). */
+  adults?: number | null;
+  children?: number | null;
 }
 
 export interface ExtractionResult {

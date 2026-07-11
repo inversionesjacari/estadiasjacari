@@ -390,6 +390,32 @@ export function isEventInquiry(text: string): boolean {
   return weak && venue;
 }
 
+export type PackageType = "family_pack" | "love_trip" | "friends_trip";
+
+/**
+ * ¿El mensaje se refiere a uno de los paquetes armados con marketing (9-jul-2026):
+ * "Family pack"/"Love Trip" (Villa B11, La Ceiba, precio FIJO L.5,400 sin importar
+ * cuántos son) o "Friends Trip" (Las Gemelas, Tela, + day pass del Hotel Honduras
+ * Shores Plantation — precio VARÍA por adultos/niños y día de semana). Caso real
+ * (Karen López, 10-jul-2026): el botón del anuncio de Click-to-WhatsApp prellena
+ * "quiero información sobre la oferta de Tela, Atlántida de L. 6,700" — sin nombrar
+ * el paquete ni la propiedad — así que además del nombre reconocemos ese patrón
+ * genérico "oferta de <ciudad>". Sin esto, el bot cotizaba la tarifa pelada de la
+ * casa y perdía el day pass que la oferta prometía (el capture failure real).
+ */
+export function detectPackageInquiry(text: string): PackageType | null {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/\bfriends?\s*trip\b/.test(t)) return "friends_trip";
+  if (/\bfamily\s*pack\b/.test(t)) return "family_pack";
+  if (/\blove\s*trip\b/.test(t)) return "love_trip";
+  // Patrón genérico del anuncio real: "oferta de <ciudad>" sin nombrar el paquete.
+  if (/\boferta\b/.test(t)) {
+    if (/\btela\b/.test(t)) return "friends_trip";
+    if (/\b(la\s+)?ceiba\b|\bpalma\s*real\b/.test(t)) return "family_pack";
+  }
+  return null;
+}
+
 /**
  * ¿El REPLY del LLM afirma disponibilidad o un precio TOTAL de estadía? Esas dos
  * cosas SOLO pueden salir del cotizador real (buildQuote + chequeo de Airbnb/D1),

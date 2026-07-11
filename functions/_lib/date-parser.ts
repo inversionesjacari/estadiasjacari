@@ -131,16 +131,40 @@ export function extractDatePhrases(text: string, today: string): ExtractedDates 
     }
   }
 
-  // ── 2. Fechas explícitas con mes sueltas: "17 de julio", "5 de agosto"
+  // ── 2. Fechas explícitas con mes: lista de días ("7,8 y 9 de agosto") o sueltas
   if (!checkIn) {
-    const singleRe = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${MONTH_ALT})\\b`, "g");
-    const found: string[] = [];
-    for (const m of t.matchAll(singleRe)) {
-      const iso = resolveYearFor(Number(m[1]), MONTHS[m[2]], today);
-      if (iso) found.push(iso);
+    // Lista de números pegados al mismo "de <mes>" ("7,8 y 9 de agosto",
+    // "16,17 y 18 de julio") → son NOCHES consecutivas: check-in = el menor,
+    // check-out = el día SIGUIENTE al mayor (misma convención que ya usa el LLM
+    // para listas sin mes explícito, ej. "16,17 y 18" solo — caso real Jasmin/Villa B11).
+    const listRe = new RegExp(`([\\d,\\sy]{1,20})\\bde\\s+(${MONTH_ALT})\\b`);
+    const lm = t.match(listRe);
+    const listNums = lm
+      ? [...lm[1].matchAll(/\d{1,2}/g)].map((m) => Number(m[0])).filter((n) => n >= 1 && n <= 31)
+      : [];
+
+    if (listNums.length >= 2) {
+      const month = MONTHS[lm![2]];
+      const lo = Math.min(...listNums);
+      const hi = Math.max(...listNums);
+      const ci = resolveYearFor(lo, month, today);
+      if (ci) {
+        checkIn = ci;
+        const co = addDaysIso(fromYMD(Number(ci.slice(0, 4)), month, hi), 1);
+        if (isValidIso(co)) checkOut = co;
+      }
+    } else {
+      // Fechas sueltas, cada una con su propio "de <mes>": "17 de julio", o dos
+      // fechas distintas sin ser una lista ("17 de julio" ... "2 de agosto").
+      const singleRe = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${MONTH_ALT})\\b`, "g");
+      const found: string[] = [];
+      for (const m of t.matchAll(singleRe)) {
+        const iso = resolveYearFor(Number(m[1]), MONTHS[m[2]], today);
+        if (iso) found.push(iso);
+      }
+      if (found.length >= 1) checkIn = found[0];
+      if (found.length >= 2 && found[1] > found[0]) checkOut = found[1];
     }
-    if (found.length >= 1) checkIn = found[0];
-    if (found.length >= 2 && found[1] > found[0]) checkOut = found[1];
   }
 
   // ── 3. Numérica D/M o D/M/Y: "17/07", "17-07-2026" (Honduras = día/mes)
@@ -180,9 +204,31 @@ export function extractDatePhrases(text: string, today: string): ExtractedDates 
       checkIn = fri;
       checkOut = addDaysIso(fri, 2);
     } else {
-      // día de semana nombrado: "el domingo", "este sábado"
-      const wd = t.match(new RegExp(`\\b(${Object.keys(WEEKDAYS).join("|")})\\b`));
-      if (wd) checkIn = nextWeekday(today, WEEKDAYS[wd[1]]);
+      // Día(s) de semana nombrados, con o sin número de día del mes pegado:
+      // "el domingo" · "viernes 21" · "entrar el viernes y salir el domingo" ·
+      // "viernes 21, sábado y domingo 23" (caso real Jasmin/Villa B11, 10-jul-2026:
+      // antes solo tomaba el PRIMER día mencionado e ignoraba el resto, dejando el
+      // check-out colgado — se resolvía con un check-out sobrante de otro turno).
+      const wdRe = new RegExp(`\\b(${Object.keys(WEEKDAYS).join("|")})\\b(?:\\s+(\\d{1,2}))?`, "g");
+      const wds = [...t.matchAll(wdRe)];
+      if (wds.length === 1) {
+        const [, name, dayStr] = wds[0];
+        checkIn = dayStr
+          ? resolveWeekdayWithDay(Number(dayStr), WEEKDAYS[name], today)
+          : nextWeekday(today, WEEKDAYS[name]);
+      } else if (wds.length >= 2) {
+        const first = wds[0];
+        const last = wds[wds.length - 1];
+        const ci = first[2]
+          ? resolveWeekdayWithDay(Number(first[2]), WEEKDAYS[first[1]], today)
+          : nextWeekday(today, WEEKDAYS[first[1]]);
+        if (ci) {
+          checkIn = ci;
+          checkOut = last[2]
+            ? resolveWeekdayWithDay(Number(last[2]), WEEKDAYS[last[1]], today)
+            : nextWeekday(ci, WEEKDAYS[last[1]]); // relativo al check-in, no a hoy
+        }
+      }
     }
   }
 
@@ -195,6 +241,26 @@ function nextWeekday(today: string, targetDow: number): string {
   let delta = (targetDow - cur + 7) % 7;
   if (delta === 0) delta = 7; // "el domingo" siendo hoy domingo = el próximo
   return addDaysIso(today, delta);
+}
+
+/**
+ * "viernes 21" — un día del mes SIN mes explícito es ambiguo (¿este mes o el que
+ * viene?). Se resuelve con el propio nombre del día de semana como pista: busca
+ * el próximo mes donde ese número de día caiga REALMENTE en ese día de semana
+ * (hasta 13 meses adelante). Caso real (Jasmin/Villa B11, 10-jul-2026): "viernes
+ * 21" con today=10-jul — el 21 de julio es MARTES, así que se descarta y el 21
+ * de agosto (que SÍ es viernes) gana.
+ */
+function resolveWeekdayWithDay(day: number, targetDow: number, today: string): string | null {
+  const [ty, tm] = today.slice(0, 7).split("-").map(Number);
+  for (let k = 0; k <= 13; k++) {
+    const m0 = tm - 1 + k;
+    const y = ty + Math.floor(m0 / 12);
+    const m = (m0 % 12) + 1;
+    const cand = fromYMD(y, m, day);
+    if (isValidIso(cand) && cand >= today && dowOfIso(cand) === targetDow) return cand;
+  }
+  return null;
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   isFarewell,
   isEventInquiry,
   mentionsValleDeAngeles,
+  detectPackageInquiry,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -204,5 +205,20 @@ describe("isEventInquiry — eventos (Valle de Ángeles) vs estadías (ads Jacar
   });
   it("la regla del handoff es terminal (sin followups ni falso 'bot mudo')", () => {
     expect(TERMINAL_RULES.has("event_inquiry_handoff")).toBe(true);
+  });
+});
+
+describe("detectPackageInquiry — Family pack / Love Trip / Friends Trip (ads 9-jul-2026)", () => {
+  it("nombre del paquete dispara directo", () => {
+    expect(detectPackageInquiry("quiero info del Family Pack")).toBe("family_pack");
+    expect(detectPackageInquiry("me interesa el Love Trip")).toBe("love_trip");
+    expect(detectPackageInquiry("hacen el Friends Trip?")).toBe("friends_trip");
+  });
+  it("patrón real del anuncio: 'oferta de <ciudad>' sin nombrar el paquete (caso Karen López, 10-jul-2026)", () => {
+    expect(detectPackageInquiry("¡Hola! 👋 Quiero más información sobre la oferta de Tela, Atlántida de L. 6,700")).toBe("friends_trip");
+    expect(detectPackageInquiry("quiero información sobre la oferta de La Ceiba de L. 5,400")).toBe("family_pack");
+  });
+  it("mención de ciudad SIN 'oferta' no dispara (no todo mensaje de Tela es un paquete)", () => {
+    expect(detectPackageInquiry("quiero ir a Tela con mi familia")).toBeNull();
   });
 });

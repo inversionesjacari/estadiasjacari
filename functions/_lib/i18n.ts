@@ -124,6 +124,25 @@ export const T = {
       ? "Perfect, thank you! 🙌 I've passed your info to our events team — they'll write to you right here shortly to put together a proposal made just for you. 🌿"
       : "¡Perfecto, mil gracias! 🙌 Ya le pasé tu información a nuestro equipo de eventos — te van a escribir por acá en breve para armarte una propuesta a tu medida. 🌿",
 
+  // PAQUETES de marketing (9-jul-2026). "Family pack"/"Love Trip" (Villa B11):
+  // precio fijo, se puede comunicar directo. "Friends Trip" (Las Gemelas + day
+  // pass): el precio varía por adultos/niños y día de semana — se pide el
+  // desglose para calcularlo bien (caso real Karen López, 10-jul-2026).
+  packageVillaB11Fixed: (l: Lang): string =>
+    l === "en"
+      ? "Awesome, that offer is our Villa B11 package at Hotel Palma Real 🏝️\n\n2 nights · full hotel access included for your whole group (2 or 6 guests, same price) · *L.5,400*\n\nWhat dates are you thinking of?"
+      : "¡Genial! Esa oferta es nuestro paquete de Villa B11 en Hotel Palma Real 🏝️\n\n2 noches · acceso completo al hotel incluido para todo tu grupo (sean 2 o 6 personas, el precio no cambia) · *L.5,400*\n\n¿Para qué fechas estás pensando?",
+
+  packageFriendsTripIntake: (l: Lang): string =>
+    l === "en"
+      ? "Awesome! 🌊 That offer is our Friends Trip: 2 nights at Las Gemelas (Tela) + a day pass to Hotel Honduras Shores Plantation. The day pass price depends on your group, so tell me:\n\n1️⃣ How many adults and how many kids? (babies are free)\n2️⃣ What dates are you thinking of?"
+      : "¡Genial! 🌊 Esa oferta es nuestro Friends Trip: 2 noches en Las Gemelas (Tela) + day pass al Hotel Honduras Shores Plantation. El precio del day pass depende del grupo, así que contame:\n\n1️⃣ ¿Cuántos adultos y cuántos niños son? (los bebés no cuentan)\n2️⃣ ¿Para qué fechas estás pensando?",
+
+  packageNeedPartyBreakdown: (l: Lang): string =>
+    l === "en"
+      ? "To calculate the day pass correctly I need the breakdown, not just the total — how many *adults* and how many *kids* are going? (babies are free) 🙏"
+      : "Para calcular bien el day pass necesito el desglose, no solo el total — ¿cuántos *adultos* y cuántos *niños* van? (los bebés no cuentan) 🙏",
+
   paymentReported: (l: Lang): string =>
     l === "en"
       ? "Perfect! 🙏 Let me verify the payment with the team and we'll confirm your booking right away."
