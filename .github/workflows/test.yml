@@ -1,0 +1,29 @@
+# CI del bot — la red de seguridad (plan maestro 4.2 / pista bot B1).
+#
+# Corre en cada push/PR: typecheck + TODOS los tests (incluido el GOLDEN DATASET
+# de chats reales en functions/_lib/__tests__/golden/). Si esto está rojo, NO se
+# mergea: cada test verde es un bug del bot que ya pasó y no puede volver.
+#
+# Node fijado por .node-version (22.16.0) — el mismo del build de Cloudflare
+# Pages, y su npm 10 es el que entiende el package-lock (ver JACARI_MEMORY:
+# el deploy se rompió 2 semanas por un lockfile de npm 11).
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
