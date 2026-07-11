@@ -332,11 +332,31 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
  * (ej. si read llega antes que delivered por orden de red).
  */
 async function handleStatusUpdate(stRaw: unknown, env: Env): Promise<void> {
-  const st = stRaw as { id?: string; status?: string };
+  const st = stRaw as {
+    id?: string;
+    status?: string;
+    recipient_id?: string;
+    errors?: Array<{ code?: number; title?: string; message?: string; error_data?: { details?: string } }>;
+  };
   const id = st?.id;
   const status = st?.status;
   if (!id || !status) return;
   if (!["sent", "delivered", "read", "failed"].includes(status)) return;
+
+  // Un `failed` de Meta trae el PORQUÉ exacto (código + título + detalle). Lo
+  // capturamos SIEMPRE en bot_trace, aunque el mensaje no tenga fila en
+  // whatsapp_messages — las alertas a dueños salen por fetch directo (notifyOwners)
+  // sin fila propia, así que sin esto el motivo real de "aceptado (200) pero no
+  // entregado" se pierde en silencio. (B8, 2026-07-11.)
+  if (status === "failed") {
+    try {
+      const e = st.errors?.[0];
+      const detail = `wamid=${id} to=${st.recipient_id ?? "?"} code=${e?.code ?? "?"} ${e?.title ?? ""} :: ${e?.error_data?.details ?? e?.message ?? ""}`;
+      await env.DB.prepare(
+        `INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'WA_DELIVERY_FAILED', ?)`,
+      ).bind(st.recipient_id ?? "", detail.slice(0, 500)).run();
+    } catch { /* best-effort */ }
+  }
 
   await env.DB.prepare(
     `UPDATE whatsapp_messages
