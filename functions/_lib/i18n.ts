@@ -197,6 +197,15 @@ export const T = {
       ? "To calculate the day pass correctly I need the breakdown, not just the total — how many *adults* and how many *kids* are going? (babies are free) 🙏"
       : "Para calcular bien el day pass necesito el desglose, no solo el total — ¿cuántos *adultos* y cuántos *niños* van? (los bebés no cuentan) 🙏",
 
+  // Variante de REINTENTO del desglose: solo cuando lo último que dijo el bot ya
+  // fue pedir el desglose y no le entendimos la respuesta — repetir la misma
+  // pregunta verbatim lee robótico ("ya te dije"); un ejemplo concreto del formato
+  // destraba. (Caso D'Karoll parte 2, 11-jul-2026.)
+  packageNeedPartyBreakdownRetry: (l: Lang): string =>
+    l === "en"
+      ? "Almost there! 🙏 Send it to me like this, for example: *2 adults and 3 kids (ages 12, 9 and 7)* — babies are free and don't count. With that I'll send you the exact total right away."
+      : "¡Ya casi! 🙏 Escribímelo así, por ejemplo: *2 adultos y 3 niños (de 12, 9 y 7 años)* — los bebés van gratis y no cuentan. Con eso te paso el total exacto enseguida.",
+
   paymentReported: (l: Lang): string =>
     l === "en"
       ? "Perfect! 🙏 Let me verify the payment with the team and we'll confirm your booking right away."

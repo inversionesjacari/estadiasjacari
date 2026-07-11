@@ -37,7 +37,7 @@ import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos } from "../../property-photos";
 import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
 import { fechaEnPalabras } from "../../conversational-bot";
-import { extractPartySize, partyHeadcount } from "../../party-size";
+import { extractPartySize, partyHeadcount, mergeFriendsTripParty } from "../../party-size";
 import { findAlternativeDates, formatWindowHuman } from "../../suggest-dates";
 
 //
@@ -712,6 +712,57 @@ describe("CHAT: D'Karoll — Friends Trip Tela: 6 que cuentan caben en UNA casa,
     expect(gemelasOverSized("casa-brisa", 4)).toBe(false);
     expect(gemelasOverSized("las-gemelas-tela", null)).toBe(false);
     expect(gemelasOverSized(null, 6)).toBe(false);
+  });
+});
+
+// 🐛 CASO REAL — D'Karoll PARTE 2 (+504 3202-4132), 11-jul-2026, mismo chat, horas
+// después. Ya con fechas (22–24 ago), el bot pidió el desglose y la clienta contestó
+// "3 adultos y me menores de 14 16 11 y la bebé de 2 años". El parser solo veía
+// "3 adultos" (lista de edades sin conteo + bebé sin dígito = invisibles) → (a) el
+// turno no contó como dato nuevo (changedQuoteData solo miraba al LLM) → NO cotizó y
+// el LLM prometió "te confirmo el total…" que nunca llegó; (b) al "Ok" siguiente el
+// merge PERDÍA adults/children (no se restauraban de previousData) → re-disparó
+// package_need_party_breakdown VERBATIM: re-preguntó lo que la clienta ya había
+// respondido y el propio bot había reconocido. Tres capas determinísticas: parser de
+// lista de edades, mergeFriendsTripParty (conserva el desglose + marca cambio) y
+// variante de reintento del pedido (nunca la misma pregunta dos veces seguidas).
+describe("CHAT: D'Karoll parte 2 — desglose por edades + 'Ok' repetía la pregunta (11-jul-2026)", () => {
+  const DESGLOSE = "3 adultos y me menores de 14 16 11 y la bebé de 2 años";
+
+  it("el mensaje real se desglosa: 4 adultos (el de 16 sube) + 2 niños + 1 bebé = 6 que cuentan", () => {
+    const p = extractPartySize(DESGLOSE);
+    expect(p.adults).toBe(4);   // 3 adultos + el menor de 16 (16+ paga tarifa adulto)
+    expect(p.children).toBe(2); // 14 y 11
+    expect(p.babies).toBe(1);   // "la bebé de 2 años" es bebé por etiqueta, gratis
+    expect(partyHeadcount(p)).toBe(6); // ≤6 → UNA casa (encaja con gemelasOverSized)
+  });
+
+  it("el turno del desglose CUENTA como dato nuevo → el cotizador corre (no más 'te confirmo el total' vacío)", () => {
+    const r = mergeFriendsTripParty({ adults: null, children: null }, DESGLOSE);
+    expect(r.changed).toBe(true);
+    expect(r.guests).toBe(6);
+  });
+
+  it("el 'Ok' posterior CONSERVA el desglose → package_need_party_breakdown no puede re-disparar", () => {
+    const r = mergeFriendsTripParty({ adults: 4, children: 2 }, "Ok");
+    expect(r.adults).not.toBeNull(); // el gate pregunta SOLO si adults == null
+    expect(r.children).toBe(2);
+    expect(r.changed).toBe(false);
+  });
+
+  it("day pass del grupo, 22–24 ago 2026 (sábado→lunes = finde): 4×350 + 2×150 = L.1,700", () => {
+    const r = computeDayPassHNL({ adults: 4, children: 2, checkIn: "2026-08-22", checkOut: "2026-08-24" });
+    expect(r.isWeekend).toBe(true);
+    expect(r.hnl).toBe(1700);
+  });
+
+  it("la variante de reintento existe en es/en, trae un EJEMPLO de formato y no es la pregunta original", () => {
+    for (const l of ["es", "en"] as const) {
+      const retry = T.packageNeedPartyBreakdownRetry(l);
+      expect(retry).not.toBe(T.packageNeedPartyBreakdown(l)); // nunca verbatim dos veces
+      expect(retry).toContain("2"); // ejemplo concreto ("2 adultos y 3 niños…")
+      expect(retry.length).toBeGreaterThan(40);
+    }
   });
 });
 

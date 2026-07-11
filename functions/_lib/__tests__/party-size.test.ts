@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractPartySize, partyHeadcount } from "../party-size";
+import { extractPartySize, partyHeadcount, mergeFriendsTripParty } from "../party-size";
 
 describe("extractPartySize — caso real Karen López (Friends Trip, 10-jul-2026)", () => {
   it("'4 adultos 2 niños 1bb' → adultos=4, niños=2, bebés=1 (bebé excluido del total)", () => {
@@ -61,5 +61,83 @@ describe("extractPartySize — caso real Karen López (Friends Trip, 10-jul-2026
     expect(p.adults).toBeNull();
     expect(p.children).toBeNull();
     expect(partyHeadcount(p)).toBeNull();
+  });
+});
+
+// Caso real D'Karoll parte 2 (11-jul-2026): el desglose vino como LISTA de edades
+// sin conteo ("me menores de 14 16 11") + bebé sin dígito ("la bebé de 2 años") →
+// el parser solo veía "3 adultos", el day pass no se podía calcular y el bot
+// terminó re-preguntando el desglose ya respondido.
+describe("extractPartySize — lista de edades sin conteo (caso D'Karoll parte 2)", () => {
+  it("'3 adultos y me menores de 14 16 11 y la bebé de 2 años' → 4 adultos + 2 niños + 1 bebé", () => {
+    const p = extractPartySize("3 adultos y me menores de 14 16 11 y la bebé de 2 años");
+    expect(p.adults).toBe(4);   // 3 adultos + el menor de 16 (16+ paga tarifa adulto)
+    expect(p.children).toBe(2); // los de 14 y 11
+    expect(p.babies).toBe(1);   // "la bebé" cuenta como bebé aunque venga sin dígito
+    expect(partyHeadcount(p)).toBe(6); // la bebé no suma al cupo
+  });
+  it("lista con comas e 'y': 'niños de 12, 9 y 7' → 3 niños", () => {
+    const p = extractPartySize("vamos 2 adultos y niños de 12, 9 y 7");
+    expect(p.adults).toBe(2);
+    expect(p.children).toBe(3);
+  });
+  it("la lista de edades respeta el umbral: 'menores de 17 y 12' → 1 adulto + 1 niño", () => {
+    const p = extractPartySize("llevamos menores de 17 y 12");
+    expect(p.adults).toBe(1);   // 17 > 15 → tarifa adulto
+    expect(p.children).toBe(1);
+  });
+  it("cantidades en palabra: 'dos adultos y tres niños' → 2 + 3", () => {
+    const p = extractPartySize("dos adultos y tres niños");
+    expect(p.adults).toBe(2);
+    expect(p.children).toBe(3);
+  });
+  it("'una bebé' (sin dígito) cuenta como bebé, no como niña", () => {
+    const p = extractPartySize("5 adultos 1 niña y una bebé");
+    expect(p.adults).toBe(5);
+    expect(p.children).toBe(1);
+    expect(p.babies).toBe(1);
+  });
+  it("una categoría suelta sin número ni edades no cuenta nada", () => {
+    const p = extractPartySize("van adultos y niños");
+    expect(p.adults).toBeNull();
+    expect(p.children).toBeNull();
+  });
+  it("la regresión de Dime sigue intacta: el '2' de '2 niñas' no se lee como edad del grupo anterior", () => {
+    const p = extractPartySize("2 adultos, 1 niño de 12, 2 niñas de 15");
+    expect(p.adults).toBe(2);
+    expect(p.children).toBe(3);
+  });
+});
+
+// El desglose dado en un turno ANTERIOR no puede perderse: el merge genérico de
+// quote-flow no conoce adults/children y un "Ok" posterior re-disparaba
+// package_need_party_breakdown (pregunta ya respondida, verbatim).
+describe("mergeFriendsTripParty — el desglose ya dado se conserva y cuenta como dato nuevo", () => {
+  const DESGLOSE = "3 adultos y me menores de 14 16 11 y la bebé de 2 años";
+
+  it("turno del desglose: parsea, recalcula guests y marca changed (el cotizador debe correr)", () => {
+    const r = mergeFriendsTripParty({ adults: null, children: null }, DESGLOSE);
+    expect(r.adults).toBe(4);
+    expect(r.children).toBe(2);
+    expect(r.guests).toBe(6);
+    expect(r.changed).toBe(true);
+  });
+  it("'Ok' posterior: CONSERVA el desglose previo (no se vuelve a pedir) y no marca changed", () => {
+    const r = mergeFriendsTripParty({ adults: 4, children: 2 }, "Ok");
+    expect(r.adults).toBe(4);   // ← adults != null → package_need_party_breakdown NO re-dispara
+    expect(r.children).toBe(2);
+    expect(r.guests).toBeNull(); // sin desglose nuevo no se toca el guests que ya había
+    expect(r.changed).toBe(false);
+  });
+  it("un desglose corregido pisa el anterior y marca changed (se re-cotiza)", () => {
+    const r = mergeFriendsTripParty({ adults: 4, children: 2 }, "mejor somos 2 adultos y 2 niños");
+    expect(r.adults).toBe(2);
+    expect(r.children).toBe(2);
+    expect(r.guests).toBe(4);
+    expect(r.changed).toBe(true);
+  });
+  it("repetir el MISMO desglose no marca changed (no fuerza re-cotización)", () => {
+    const r = mergeFriendsTripParty({ adults: 2, children: 3 }, "2 adultos y 3 niños");
+    expect(r.changed).toBe(false);
   });
 });

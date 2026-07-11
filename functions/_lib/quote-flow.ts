@@ -37,7 +37,7 @@ import {
   type PropertyPricing,
   type QuoteOutput,
 } from "./quote-builder";
-import { extractPartySize } from "./party-size";
+import { mergeFriendsTripParty } from "./party-size";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
 import { checkRangeAvailable, checkGemelasAvailable, getBlockedDates, type AvailabilityEnv } from "./availability";
 import { findAlternativeDates } from "./suggest-dates";
@@ -1063,7 +1063,10 @@ async function gatherQuoteData(
   // ── ¿Este turno aportó un dato nuevo/distinto? (movido antes de lo normal para
   // que el gate de paquetes de abajo también lo pueda usar). ─────────────────
   const ex = botResult.extractedData;
-  const changedQuoteData =
+  // `let` y no `const`: el bloque de Friends Trip de abajo también lo enciende
+  // cuando el DESGLOSE adultos/niños (parseado determinísticamente, no por el LLM)
+  // trae algo nuevo — sin eso el turno del desglose no contaba como dato nuevo.
+  let changedQuoteData =
     (ex.property != null && ex.property !== previousData.property) ||
     (ex.checkIn  != null && ex.checkIn  !== previousData.checkIn) ||
     (ex.checkOut != null && ex.checkOut !== previousData.checkOut) ||
@@ -1085,12 +1088,18 @@ async function gatherQuoteData(
   if (mergedData.packageType === "friends_trip") {
     // Adultos/niños se extraen aparte del `guests` genérico del LLM porque el day
     // pass cobra distinto por cada uno (bebés gratis, no cuentan — ver party-size.ts).
-    const party = extractPartySize(text);
-    if (party.adults != null) mergedData.adults = party.adults;
-    if (party.children != null) mergedData.children = party.children;
-    if (party.adults != null || party.children != null) {
-      mergedData.guests = (mergedData.adults ?? 0) + (mergedData.children ?? 0);
-    }
+    // El desglose de turnos ANTERIORES se CONSERVA: el merge genérico de arriba no
+    // conoce adults/children, y sin restaurarlos un "Ok" posterior los perdía y
+    // re-disparaba package_need_party_breakdown — el bot volvía a preguntar lo ya
+    // respondido, verbatim (caso D'Karoll parte 2, 11-jul-2026). Y si el desglose
+    // recién parseado trae algo nuevo, cuenta como dato nuevo del turno: el
+    // cotizador debe correr aunque el LLM no haya extraído ningún campo (antes el
+    // LLM improvisaba un "te confirmo el total" que nunca llegaba).
+    const party = mergeFriendsTripParty(previousData, text);
+    mergedData.adults = party.adults;
+    mergedData.children = party.children;
+    if (party.guests != null) mergedData.guests = party.guests;
+    if (party.changed) changedQuoteData = true;
   }
 
   // ── Las Gemelas (las 2 casas) es el producto de 7-12. Si el LLM la fijó para un
@@ -1120,8 +1129,13 @@ async function gatherQuoteData(
   const packageMissingParty = mergedData.packageType === "friends_trip" && mergedData.adults == null;
   if (packageMissingParty && mergedData.checkIn && mergedData.checkOut && changedQuoteData) {
     await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+    // Si LO ÚLTIMO que dijimos ya fue pedir el desglose, el cliente intentó
+    // responder y no le entendimos — repetir la MISMA pregunta palabra por palabra
+    // lee robótico ("ya te dije"). La variante de reintento da un ejemplo concreto
+    // del formato para destrabar. (Caso D'Karoll parte 2, 11-jul-2026.)
+    const askedAlready = (await getLastOutRule(phone, env.DB)) === "package_need_party_breakdown";
     return {
-      reply:           T.packageNeedPartyBreakdown(lang),
+      reply:           askedAlready ? T.packageNeedPartyBreakdownRetry(lang) : T.packageNeedPartyBreakdown(lang),
       escalateToOwner: false,
       ruleName:        "package_need_party_breakdown",
       tokensUsed:      botResult.tokensUsed,
