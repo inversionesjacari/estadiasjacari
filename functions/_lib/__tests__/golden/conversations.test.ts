@@ -508,6 +508,30 @@ describe("CHAT: Lead de eventos Valle de Ángeles — detección y handoff", () 
     expect(isEventInquiryTurn2("quote_provided", "quote_provided")).toBe(false);
     expect(isEventInquiryTurn2(undefined, "")).toBe(false);
   });
+
+  // 🐛 CASO REAL — Yolany Flores (+504 9747-9180), 9-jul-2026. MISMA clase que
+  // Santi pero con una arista que su caso NO cubre: Yolany respondió al intake de
+  // forma INCREMENTAL y con una KEYWORD FUERTE ("Boda civil"), no con los 3 datos
+  // juntos. Resultado en el chat viejo: el bot REPITIÓ el intake verbatim (turno 6)
+  // y luego se contradijo con out_of_scope al "70 personas" (turno 8). La trampa:
+  // "Boda civil" es isEventInquiry=TRUE → si el chequeo de turno 1 (intake) corriera
+  // ANTES del turno 2 (handoff), la respuesta re-dispararía el intake = repetición.
+  // El blindaje es el ORDEN: turno 2 gana, anclado en la última regla del bot.
+  it("respuesta de keyword FUERTE al intake ('Boda civil') deriva, NO repite el intake (bug Yolany)", () => {
+    // La frase coloquial de Yolany dispara el intake (turno 1) igual que cualquier VdA.
+    expect(mentionsValleDeAngeles("La de valle de angeles")).toBe(true);
+    // La trampa: su respuesta ES, por sí sola, un isEventInquiry (keyword fuerte).
+    // Sin la precedencia del turno 2, "Boda civil" volvería a caer en el intake.
+    expect(isEventInquiry("Boda civil")).toBe(true);
+    // Blindaje: con el intake como última regla del bot, "Boda civil" (o cualquier
+    // respuesta) es turno 2 → handoff, aunque el estado se haya perdido por concurrencia.
+    expect(isEventInquiryTurn2("event_inquiry", "")).toBe(true);
+    expect(isEventInquiryTurn2("awaiting_quote_data", "event_inquiry_intake")).toBe(true);
+    // Y el "70 personas" suelto (isEventInquiry=false) también se salva por el ancla,
+    // en vez de caer al LLM → out_of_scope (grupo grande, sin ciudad en alcance).
+    expect(isEventInquiry("70 personas")).toBe(false);
+    expect(isEventInquiryTurn2(undefined, "event_inquiry_intake")).toBe(true);
+  });
 });
 
 describe("CHAT: Villa B11 (Jasmin) — fechas mezcladas entre turnos + falso 'estadía larga' (10-jul-2026)", () => {
@@ -539,6 +563,32 @@ describe("CHAT: Villa B11 (Jasmin) — fechas mezcladas entre turnos + falso 'es
     const n = nightsBetween(r.checkIn!, r.checkOut!);
     expect(n).toBe(2); // NO 37 noches → nunca debe disparar long_term_inquiry
     expect(n < LONG_TERM_NIGHTS).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT: SSC + chat "." — un "Si" suelto con objeción/indecisión disparaba pago
+// (auditoría de inbox 10-jul-2026, ítems #5 y #6)
+//
+// #5: "Si andamos buscando casa con Piscina" (Casa Marea cotizada NO tiene) y
+// "Si, estoy a la espera de la confirmacion de otras personas" (no decidió nada)
+// se trataban como confirmación de reserva → el bot saltaba directo a pedir
+// método de pago, presionando al cliente.
+// #6: Gina Moncada dijo "Quiero reservar" / "quisiera saber qué debo hacer para
+// reservar" y el bot NO lo reconocía como confirmación → la respuesta salía del
+// flujo determinístico (LLM libre) y terminó mandando "**Número de cuenta:** [Te
+// lo enviaré en privado]" literal al cliente, en vez de los datos bancarios reales.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CHAT: 'Si' con objeción/indecisión no debe adelantar el pago (10-jul-2026)", () => {
+  it("objeción real (SSC): pide piscina, la casa cotizada no tiene — NO es un 'sí, reservo'", () => {
+    expect(isConfirmation("Si andamos buscando casa con Piscina")).toBe(false);
+  });
+  it("indecisión real (chat '.'): sigue esperando que otros decidan — NO confirma", () => {
+    expect(isConfirmation("Si, estoy  a la espera  de la.confirmacion de otras personas.")).toBe(false);
+  });
+  it("intención EXPLÍCITA de reservar (Gina Moncada) sí confirma, sin necesidad de decir 'sí'", () => {
+    expect(isConfirmation("Quiero reservar")).toBe(true);
+    expect(isConfirmation("Sii quisiera saber que debo hacer para reservar")).toBe(true);
   });
 });
 

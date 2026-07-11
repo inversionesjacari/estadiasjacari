@@ -41,6 +41,16 @@ describe("isConfirmation — 'si' suele ser 'if', no 'sí'", () => {
     expect(isConfirmation("no, mejor no")).toBe(false);
     expect(isConfirmation("ya no")).toBe(false);
   });
+  it("'si' + cláusula que sigue indecisa NO confirma (casos reales 10-jul-2026)", () => {
+    // SSC: objeción (Casa Marea cotizada no tiene piscina), no un "sí, reservo".
+    expect(isConfirmation("Si andamos buscando casa con Piscina")).toBe(false);
+    // Chat ".": todavía espera que otros decidan, no confirmó nada.
+    expect(isConfirmation("Si, estoy  a la espera  de la.confirmacion de otras personas.")).toBe(false);
+  });
+  it("intención explícita de reservar confirma aunque no diga 'sí' (caso real Gina Moncada)", () => {
+    expect(isConfirmation("Quiero reservar")).toBe(true);
+    expect(isConfirmation("Sii quisiera saber que debo hacer para reservar")).toBe(true);
+  });
 });
 
 describe("isBankAccountRequest — blinda contra inventar cuenta", () => {

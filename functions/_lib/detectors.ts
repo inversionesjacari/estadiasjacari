@@ -100,6 +100,25 @@ export function isConfirmation(text: string): boolean {
   if (farewell && !strongYes) {
     return false;
   }
+  // "Si" + una cláusula que en realidad sigue indecisa/pendiente → NO es confirmación
+  // (casos reales 10-jul-2026: "Si andamos buscando casa CON PISCINA" —objeción, la
+  // casa cotizada no tiene—; "Si, estoy a la espera de la confirmacion de otras
+  // personas" —todavía no decide—). El "si" acá es muletilla conversacional ("sí,
+  // así es que..."), no un asentimiento a la reserva. Mismo espíritu que el guard de
+  // despedida: un "si" suelto pesa poco si el resto de la frase dice lo contrario.
+  const stillDeciding = /\b(andamos\s+buscando|estamos\s+buscando|seguimos\s+buscando|a\s+la\s+espera\s+de|esperando\s+(la\s+|una\s+)?confirmacion|esperando\s+que|todavia\s+(estamos|no)|aun\s+(estamos|no))\b/.test(norm);
+  if (stillDeciding) {
+    return false;
+  }
+  // Intención EXPLÍCITA de reservar ("quiero reservar", "qué debo hacer para
+  // reservar") también confirma, aunque no diga "sí" — caso real Gina Moncada,
+  // 10-jul-2026: sin esto, el bot no reconocía "Quiero reservar"/"quisiera saber
+  // qué debo hacer para reservar" como confirmación, la LLM improvisaba la
+  // respuesta por fuera del flujo determinístico y terminó mandando el placeholder
+  // "[Te lo enviaré en privado]" en vez de los datos bancarios reales.
+  if (/\b(quiero|quisiera|deseo|necesito)\b[^.!]*\breservar\b|\bpara reservar\b|\bhacer la reserva\b/.test(norm)) {
+    return true;
+  }
   return /\b(si|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
 }
 
