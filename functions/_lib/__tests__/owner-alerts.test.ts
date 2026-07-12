@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildAlertComponents } from "../owner-alerts";
-import { severityPrefix } from "../whatsapp-escalation";
+import { severityPrefix, shouldPingOwner, guestSignalsCritical } from "../whatsapp-escalation";
 
 //
 // B8 "Las alertas mudas" (2026-07-11) — César reportó que los WhatsApp de
@@ -67,5 +67,73 @@ describe("severityPrefix — el asunto del email distingue plata de ruido", () =
   });
   it("⚪ para lo informativo", () => {
     expect(severityPrefix("Mensaje desde un número sin reserva activa")).toBe("⚪");
+  });
+});
+
+//
+// "Menos alertas" (César, 2026-07-12): el teléfono solo debe sonar (ping de
+// WhatsApp) para lo estrictamente necesario. El email sigue saliendo para todo;
+// shouldPingOwner es el filtro del ping.
+//
+describe("shouldPingOwner — el teléfono solo suena para lo estrictamente necesario", () => {
+  it("PINGA plata en juego (pago reportado / comprobante a verificar)", () => {
+    expect(shouldPingOwner("💳 Comprobante de transferencia para verificar")).toBe(true);
+    expect(shouldPingOwner("Reportó pago, verificá")).toBe(true);
+    expect(shouldPingOwner("Quote flow: payment_reported — Cliente quiere reservar / mandar link de pago")).toBe(true);
+  });
+
+  it("PINGA cuando esperan a un humano (pidió hablar, evento, largo plazo, bot caído)", () => {
+    expect(shouldPingOwner("El huésped pidió hablar con un humano")).toBe(true);
+    expect(shouldPingOwner("Huésped existente pidiendo soporte de su estadía")).toBe(true);
+    expect(shouldPingOwner("🎉 Lead de EVENTO (Valle de Ángeles)")).toBe(true);
+    expect(shouldPingOwner("Renta a LARGO PLAZO (estadía de un mes o más)")).toBe(true);
+  });
+
+  it("NO pinga media suelta (foto, nota de voz, sticker, documento, contacto)", () => {
+    expect(shouldPingOwner("El cliente mandó 📷 Imagen — míralo en el inbox")).toBe(false);
+    expect(shouldPingOwner("El cliente mandó una nota de voz (transcrita abajo) — respondele", '🎤 Nota de voz: "hola, mil gracias, buenísimo, nos vemos"')).toBe(false);
+    expect(shouldPingOwner("El cliente mandó 🌟 Sticker — míralo en el inbox")).toBe(false);
+    expect(shouldPingOwner("El cliente compartió un contacto — míralo en el inbox")).toBe(false);
+  });
+
+  it("NO pinga cuando el bot solo no matcheó una regla / info sin acción", () => {
+    expect(shouldPingOwner("Bot no pudo matchear ninguna regla")).toBe(false);
+    expect(shouldPingOwner("Mensaje desde un número sin reserva activa")).toBe(false);
+  });
+
+  it("RED DE SEGURIDAD: una nota de voz que PIDE humano o AVISA pago sí pinga", () => {
+    // aunque la razón del sistema sea genérica ("mandó nota de voz"), el CONTENIDO manda.
+    expect(shouldPingOwner("El cliente mandó una nota de voz — respondele", '🎤 Nota de voz: "hola, quiero que me llamen por favor, es urgente"')).toBe(true);
+    expect(shouldPingOwner("El cliente mandó 📷 Imagen — míralo en el inbox", "aquí está mi comprobante, ya deposité el total")).toBe(true);
+  });
+});
+
+describe("guestSignalsCritical — detecta pago/pedido-de-humano en el texto del huésped", () => {
+  it("detecta pago en varias formas (incl. HN 'cancelé'/'aboné' = pagar)", () => {
+    for (const s of ["ya pagué", "hice el pago", "voy a pagar", "está pagado", "ya deposité", "te mando el comprobante", "adjunto comprobante", "ya cancelé el total", "cancele el pago", "ya aboné el saldo", "abono 500"]) {
+      expect(guestSignalsCritical(s)).toBe(true);
+    }
+  });
+  it("detecta pedido de humano/llamada (incl. formas que solo cachan los detectores)", () => {
+    for (const s of ["quiero que me llamen", "me pueden llamar?", "¿podrían llamarme?", "me podrian llamar", "necesito hablar con alguien", "quiero hablar con una persona", "es urgente", "necesito un asesor", "quiero una persona real"]) {
+      expect(guestSignalsCritical(s)).toBe(true);
+    }
+  });
+  it("NO se dispara con charla normal", () => {
+    for (const s of ["hola buenas", "gracias, nos vemos", "qué lindo lugar", "", "🎤 Nota de voz: \"perfecto, ahí llego\""]) {
+      expect(guestSignalsCritical(s)).toBe(false);
+    }
+  });
+  // Falsos positivos que la revisión adversaria cazó: NO deben sonar (reintroducían ruido).
+  it("NO confunde 'llam-' de presentarse/nombrar con un pedido de llamada", () => {
+    for (const s of ["hola, me llamo Ana", "¿cómo se llama la propiedad?", "qué lugar tan llamativo", "me llamo Carlos y quiero info"]) {
+      expect(guestSignalsCritical(s)).toBe(false);
+    }
+  });
+  it("NO confunde el verbo 'recibir' con un recibo de pago", () => {
+    expect(guestSignalsCritical("¿a qué hora recibo las llaves?")).toBe(false);
+  });
+  it("NO confunde 'cancelar una reserva' (infinitivo) con pagar", () => {
+    expect(guestSignalsCritical("quiero cancelar mi reserva")).toBe(false);
   });
 });

@@ -855,6 +855,12 @@ async function processIncomingMessage(
             : reservation
               ? "Bot no pudo matchear ninguna regla"
               : "Mensaje desde un número sin reserva activa",
+        // Handoff iniciado por una REGLA (el bot ya le prometió un humano al
+        // huésped: wifi/llaves/cómo-llegar/soporte/evento/pago/llamada) → siempre
+        // pinga, aunque la razón no traiga palabra clave. Solo el fallback "no
+        // matcheó ninguna regla" (ruleName null) se clasifica y puede quedar mudo.
+        // (Revisión adversaria 2026-07-12, hallazgo ALTA A2.)
+        forcePing: ruleName !== null,
       },
       {
         RESEND_API_KEY: env.RESEND_API_KEY ?? "",
@@ -1050,6 +1056,7 @@ async function handleMediaMessage(
                 guestPhone: fromE164,
                 reservation,
                 reason: "💳 Comprobante de transferencia para verificar",
+                forcePing: true, // es plata en la mano: siempre suena el teléfono
               },
               {
                 RESEND_API_KEY: env.RESEND_API_KEY ?? "",
@@ -1114,6 +1121,25 @@ async function handleMediaMessage(
   }
 
   const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
+
+  // ── ¿Suena el teléfono por esta media, o basta el email + inbox? ─────────────
+  // (César, 2026-07-12: "que solo me llame para lo estrictamente necesario".) Se
+  // FUERZA el ping solo donde el email no basta y podría ser plata/humano:
+  //   • Nota de voz que NO se pudo transcribir → César no puede leerla; podría ser
+  //     un pedido de humano o de pago hablado. (Rev. adversaria, hallazgo M1.)
+  //   • Foto/documento de alguien que YA está transaccionando (tiene reserva o un
+  //     flujo de cotización/pago abierto) → casi siempre es un comprobante suelto,
+  //     común en Honduras mandarlo sin caption. Una foto de un lead FRÍO (sin reserva
+  //     ni flujo) sí queda muda: ese es el ruido que César pidió callar. (Hallazgo A1.)
+  // El resto (video/sticker/contacto) y la voz transcrita se clasifican por texto.
+  const voiceUnreadable = mediaType === "audio" && !voiceText;
+  let hasOpenFlow = false;
+  if (!reservation && (mediaType === "image" || mediaType === "document")) {
+    try { hasOpenFlow = !!(await getState(fromE164, env.DB)); } catch { /* best-effort */ }
+  }
+  const looksLikeReceipt =
+    (mediaType === "image" || mediaType === "document") && (!!reservation || hasOpenFlow);
+
   await sendEscalationEmail(
     {
       guestMessage: voiceText
@@ -1124,6 +1150,7 @@ async function handleMediaMessage(
       reason: voiceText
         ? "El cliente mandó una nota de voz (transcrita abajo) — respondele"
         : rawType === "contacts" ? "El cliente compartió un contacto — míralo en el inbox" : `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
+      forcePing: voiceUnreadable || looksLikeReceipt,
     },
     {
       RESEND_API_KEY: env.RESEND_API_KEY ?? "",

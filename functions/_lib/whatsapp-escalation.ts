@@ -16,6 +16,7 @@
 
 import { sendViaResend, type ResendEnv, type SendEmailResult } from "./resend";
 import { notifyOwners, type OwnerAlertEnv } from "./owner-alerts";
+import { isCallRequested, isPaymentReported } from "./detectors";
 import type { ActiveReservation } from "./whatsapp-bot";
 
 const SUPPORT_EMAIL = "hola@estadiasjacari.com";
@@ -33,6 +34,61 @@ export function severityPrefix(reason: string): string {
   if (/pag[oó]|comprobante|transferencia|deposit/i.test(r)) return "🔴";
   if (/humano|escal|soporte|evento|largo plazo|llamada|sin responder|recuperarse/i.test(r)) return "🟠";
   return "⚪";
+}
+
+/**
+ * ¿Esta escalación merece SONAR el teléfono de César por WhatsApp, o basta con
+ * el email + el inbox? (César, 2026-07-12: "que solo me llame para lo
+ * estrictamente necesario".) El email SIEMPRE sale — es el respaldo filtrable en
+ * Gmail, con su prefijo 🔴/🟠/⚪. Esta función SOLO decide el ping de WhatsApp.
+ *
+ * PINGA (crítico, lo que César pidió que le llegue):
+ *   🔴 plata en juego     — reportó un pago, mandó comprobante/transferencia a verificar.
+ *   🟠 espera a un humano  — pidió hablar/llamada, huésped existente pide soporte,
+ *                            lead de evento, renta a largo plazo, o el bot quedó caído.
+ * NO PINGA (el ruido que pidió callar) → queda mudo en el email + inbox:
+ *   ⚪ media suelta (foto, nota de voz, video, sticker, documento, contacto) y
+ *      "el bot no matcheó ninguna regla".
+ *
+ * Red de seguridad: también mira el MENSAJE del huésped. Una nota de voz
+ * transcrita como "quiero que me llamen" o una foto con caption "ya hice el
+ * pago" SÍ pinga, aunque la razón del sistema sea genérica — así no se muta un
+ * pedido de humano hablado ni un comprobante mandado por fuera del flujo de pago.
+ */
+export function shouldPingOwner(reason: string, guestMessage = ""): boolean {
+  return severityPrefix(reason) !== "⚪" || guestSignalsCritical(guestMessage);
+}
+
+/**
+ * Señales críticas en el TEXTO libre del huésped (nota de voz transcrita, caption
+ * de una foto). Más amplio que severityPrefix a propósito: cubre las formas
+ * habladas de Honduras ("me llaman", "hablar con alguien", "ya deposité"). Ante
+ * la duda, pinga: perder un pedido de humano o un aviso de pago cuesta más que un
+ * ping de más. Función pura (testeable).
+ */
+export function guestSignalsCritical(msg: string): boolean {
+  if (!msg) return false;
+  // FUENTE ÚNICA de intención de pago/llamada: los MISMOS detectores que usa el
+  // bot (acento-insensibles y más completos que una regex a mano). Cubren
+  // "podrian llamarme", "que me llamen", "ya pague", "adjunto comprobante", etc.
+  // (Rev. adversaria 2026-07-12: reusar el detector cierra la regresión del
+  // huésped con reserva que pedía llamada/pago con vocabulario que una regex
+  // casera no cachaba.)
+  if (isCallRequested(msg) || isPaymentReported(msg)) return true;
+
+  // Suplemento SOLO para lo que los detectores NO cubren y en Honduras sí aparece.
+  const t = msg.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // Pago: verbos sueltos + formas hondureñas (cancelar/abonar = pagar) + comprobante.
+  // El infinitivo "cancelar"/"abonar" queda fuera a propósito ("cancelar" = anular
+  // reserva). "recibo" se ancla a "recibo de pago" para no chocar con el verbo
+  // recibir ("¿a qué hora recibo las llaves?").
+  const paymentExtra =
+    /\bpag(o|ue|ar|ados?|amos)\b|\bdeposit(e|o|ar|ados?)\b|\btransfer(i|encia|ir)\b|\bcomprobante\b|\bvoucher\b|\brecibo de pago\b|\bcancel(e|ado)\b|\bcancele el\b|\babon(e|o|ar|ados?)\b/.test(t);
+  // Pedido de HUMANO (no de llamada — eso ya lo cubre isCallRequested): persona
+  // real / asesor / agente / urgencia.
+  const humanExtra =
+    /\bhablar con (alguien|una persona|un humano|un asesor|un agente|el equipo)\b|\buna persona real\b|\bun (humano|asesor|agente)\b|\burgente\b|\bemergencia\b/.test(t);
+  return paymentExtra || humanExtra;
 }
 
 const PROPERTY_NAMES: Record<string, string> = {
@@ -53,6 +109,16 @@ export interface EscalationData {
   reservation: ActiveReservation | null;
   /** Razón de la escalación (no matcheó regla, pidió humano, etc.). */
   reason: string;
+  /**
+   * Fuerza el ping de WhatsApp aunque la clasificación por texto no lo marque
+   * crítico. Lo setean los call sites que YA SABEN que es crítico y no pueden
+   * confiar en el texto de la razón: un handoff a humano iniciado por una regla
+   * (el bot le prometió un humano al huésped), un comprobante mandado como foto
+   * suelta, o una nota de voz que no se pudo transcribir. Es la señal confiable;
+   * shouldPingOwner (texto) es solo la red de respaldo. (Revisión adversaria
+   * 2026-07-12: sin esto se mutaban pagos y handoffs reales.)
+   */
+  forcePing?: boolean;
 }
 
 /**
@@ -78,19 +144,40 @@ export async function sendEscalationEmail(
   const text = buildText(data, propertyName, guestName, replyToGuestUrl);
   const html = buildHtml(data, propertyName, guestName, replyToGuestUrl, cesarUrl);
 
-  // Email + aviso por WhatsApp (plantilla alerta_jacari, con botón que abre el inbox
-  // en ese chat) EN PARALELO, para no sumar latencia serial a la respuesta del webhook.
-  // Fail-soft: si la plantilla aún no está aprobada en Meta, no rompe nada y queda el
-  // email como respaldo.
+  // El email SIEMPRE sale (respaldo filtrable en Gmail, con prefijo de severidad).
+  // El ping de WhatsApp (que le SUENA el teléfono a César) solo sale para lo
+  // estrictamente necesario — pago/comprobante o algo que espera a un humano.
+  // Todo lo demás (foto/nota de voz/sticker suelto, "no matcheó regla") queda
+  // mudo aquí, pero visible en el email + inbox. (César, 2026-07-12.)
+  // EN PARALELO, para no sumar latencia serial a la respuesta del webhook.
+  // Fail-soft: si la plantilla aún no está aprobada en Meta, no rompe nada.
+  const ping = data.forcePing === true || shouldPingOwner(data.reason, data.guestMessage);
   const [emailResult] = await Promise.all([
     sendViaResend({ to: SUPPORT_EMAIL, subject, html, text }, env),
-    notifyOwners(env, {
-      tipo: data.reason || "Necesita tu atención",
-      cliente: `${guestName} (+${data.guestPhone})`,
-      detalle: data.guestMessage,
-      guestPhone: data.guestPhone,
-    }),
+    ping
+      ? notifyOwners(env, {
+          tipo: data.reason || "Necesita tu atención",
+          cliente: `${guestName} (+${data.guestPhone})`,
+          detalle: data.guestMessage,
+          guestPhone: data.guestPhone,
+        })
+      : Promise.resolve(),
   ]);
+
+  // Cámara best-effort: deja rastro de las alertas MUDAS para poder verificar en
+  // bot_trace que el filtro trabaja y QUÉ se está callando (patrón de instrumentación
+  // de B8). Nunca rompe el flujo.
+  if (!ping && env.DB) {
+    try {
+      await env.DB.prepare(
+        `INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'OWNER_PING_SKIPPED', ?)`,
+      )
+        .bind(data.guestPhone || "", `${data.reason}`.slice(0, 200))
+        .run();
+    } catch {
+      /* best-effort */
+    }
+  }
 
   return emailResult;
 }

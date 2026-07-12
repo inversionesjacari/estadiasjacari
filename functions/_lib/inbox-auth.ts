@@ -4,7 +4,7 @@
 //
 // Flujo:
 //   1. POST /api/inbox/login  con { password } → si matchea INBOX_PASSWORD,
-//      setea cookie HttpOnly + SameSite=Strict con el token (= sha256 del
+//      setea cookie HttpOnly + SameSite=Lax con el token (= sha256 del
 //      password + salt). El token va firmado por HMAC con CRON_SECRET para
 //      evitar falsificación.
 //   2. Cada endpoint del dashboard valida el cookie con `requireInboxAuth(env, request)`.
@@ -18,16 +18,26 @@
 // Para 1 usuario, INBOX_PASSWORD en env var es razonable.
 //
 // SEGURIDAD:
-//   - Cookie: HttpOnly + Secure + SameSite=Strict
+//   - Cookie: HttpOnly + Secure + SameSite=Lax
 //   - Token = HMAC-SHA256(payload, CRON_SECRET) donde payload = `${createdAt}:${userId}`
-//   - Expiración: 7 días (re-login después)
+//   - Expiración: 30 días (re-login después)
 //   - No expone INBOX_PASSWORD en ningún lado (solo se compara hash al login)
+//
+// Por qué SameSite=Lax y no Strict (César, 2026-07-12): la alerta de WhatsApp
+// abre el inbox con un link (`/inbox?c=...`). Con Strict, el navegador NO manda
+// la cookie de sesión en una navegación que viene de OTRO sitio (WhatsApp) → el
+// inbox lo ve deslogueado y le vuelve a pedir contraseña CADA vez, aunque la
+// sesión siga viva. Lax SÍ manda la cookie en navegaciones top-level GET (tocar
+// un link) pero la sigue reteniendo en POST/fetch cross-site → la protección
+// anti-CSRF de las mutaciones (responder, pausar) se mantiene: esas son POST y
+// nunca viajan cross-site. Único efecto: tocar la alerta abre el inbox ya
+// logueado, sin contraseña.
 //
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
 
 const COOKIE_NAME = "inbox_session";
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 días
 
 export interface InboxAuthEnv {
   CRON_SECRET?: string;
@@ -128,7 +138,7 @@ export async function buildLoginCookie(
 
   const token = await buildSessionToken(env);
   const maxAgeSec = Math.floor(SESSION_TTL_MS / 1000);
-  const setCookie = `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${maxAgeSec}`;
+  const setCookie = `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}`;
   return { ok: true, setCookie };
 }
 
@@ -169,7 +179,7 @@ export async function requireInboxAuth(
  * Header Set-Cookie para hacer logout (expira el cookie).
  */
 export function buildLogoutCookie(): string {
-  return `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`;
+  return `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
 }
 
 function parseCookies(header: string): Record<string, string> {
