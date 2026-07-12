@@ -3,12 +3,27 @@
 // GET /api/inbox/conversations
 //
 // Devuelve la lista de conversaciones (agrupadas por número del huésped) con
-// el último mensaje, timestamp y cantidad de mensajes sin leer (en este MVP
-// no hay "leído/no leído" — la cuenta es del total).
+// el último mensaje, timestamp y cantidad de mensajes.
 //
-// Diseño SQLite: usa subquery con MAX(created_at) para sacar el último mensaje
-// por número. Para 10k mensajes es OK; si crece a 100k+ habría que agregar
-// una tabla `conversations` materializada.
+// B9 "El inbox completo" (2026-07-11): antes esto era un `LIMIT 100` pelado sin
+// paginación ni búsqueda. Con >100 leads/día eso mostraba ~1 día y —el bug más
+// caro— un chat ESCALADO/PAUSADO/esperando-pago de hace 3 días caía fuera de los
+// 100 y desaparecía de la cola de trabajo de César. Ahora:
+//   - `?before=<last_at>`  → paginación por CURSOR (keyset sobre lm.created_at,
+//                            que ya ordena el query). Nada de OFFSET: no se
+//                            desalinea cuando entran mensajes nuevos entre páginas.
+//   - `?q=<texto>`         → búsqueda server-side por teléfono / nombre de perfil
+//                            / nombre de huésped (con historial largo, scrollear
+//                            no es buscar).
+//   - PENDIENTES SIEMPRE   → en la primera carga (sin cursor ni búsqueda) se traen
+//                            TODOS los chats escalados/pausados/en-pago aunque sean
+//                            viejos y estén fuera de los 100 recientes, y se
+//                            fusionan con el feed. splitPendientes() en el front los
+//                            recoge → la cola de trabajo nunca se corta.
+//
+// Diseño SQLite: subquery con ROW_NUMBER() para el último mensaje entrante por
+// número. Para 10k mensajes es OK; a 100k+ tocaría una tabla `conversations`
+// materializada.
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
@@ -42,15 +57,21 @@ interface ConversationRow {
   last_out_rule: string | null;
 }
 
-export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
-  if (!auth.ok) return auth.response!;
+// Cuántas conversaciones trae una página del feed cronológico.
+const FEED_LIMIT = 100;
+// Tope de seguridad de la cola de pendientes (escalados/pausados/en-pago). Es la
+// cola de trabajo, no un feed; en la práctica son decenas, no cientos.
+const PENDING_LIMIT = 300;
+// Estados de embudo de pago que cuentan como "pendiente" (en sync con PAY_STATES
+// del front, src/app/inbox/page.tsx).
+const PAY_STATES = ["awaiting_transfer_proof", "awaiting_paypal_capture", "awaiting_payment_method"];
 
-  try {
-    // Subconsulta: por cada phone, traer el mensaje más reciente.
-    // LEFT JOIN reservations para tener contexto del huésped si existe.
-    const { results } = await env.DB.prepare(
-      `WITH last_msg AS (
+/**
+ * Cuerpo del SELECT de conversaciones, parametrizable por el WHERE extra y el
+ * LIMIT. Se reusa para el feed, la búsqueda y los pendientes (mismo shape de fila).
+ */
+function conversationsQuery(whereExtra: string, limitClause: string): string {
+  return `WITH last_msg AS (
          SELECT m.from_phone AS phone,
                 m.body,
                 m.direction,
@@ -87,10 +108,88 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
          LEFT JOIN whatsapp_contacts c ON c.phone = lm.phone
          LEFT JOIN conversation_state st ON st.phone = lm.phone AND st.expires_at > datetime('now')
          LEFT JOIN conversation_tags ct ON ct.phone = lm.phone
-        WHERE lm.rn = 1
+        WHERE lm.rn = 1 ${whereExtra}
         ORDER BY lm.created_at DESC
-        LIMIT 100`,
-    ).all<ConversationRow>();
+        ${limitClause}`;
+}
+
+/**
+ * Fusiona pendientes + feed en una sola lista, deduplicada por teléfono, ordenada
+ * por último mensaje (desc). Los pendientes que también están en el feed no se
+ * duplican; los pendientes viejos que NO están en el feed quedan igual incluidos
+ * (ese es el punto: que la cola de trabajo no se corte). Función pura y testeable.
+ */
+export function mergeByPhone(pending: ConversationRow[], feed: ConversationRow[]): ConversationRow[] {
+  const byPhone = new Map<string, ConversationRow>();
+  for (const r of pending) byPhone.set(r.phone, r);
+  for (const r of feed) if (!byPhone.has(r.phone)) byPhone.set(r.phone, r);
+  return [...byPhone.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
+}
+
+/**
+ * Cursor para la siguiente página: el last_at del feed más viejo, SOLO si el feed
+ * vino lleno (o sea, probablemente hay más). null cuando no hay más que cargar.
+ * Función pura y testeable.
+ */
+export function nextCursorOf(feed: ConversationRow[], limit: number): string | null {
+  if (feed.length < limit) return null;
+  return feed[feed.length - 1]?.last_at ?? null;
+}
+
+export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
+  const auth = await requireInboxAuth(request, env);
+  if (!auth.ok) return auth.response!;
+
+  const url = new URL(request.url);
+  const q = (url.searchParams.get("q") || "").trim();
+  const before = (url.searchParams.get("before") || "").trim();
+
+  try {
+    let feed: ConversationRow[];
+    let pending: ConversationRow[] = [];
+    let nextCursor: string | null = null;
+
+    if (q) {
+      // ── Modo BÚSQUEDA: por teléfono / nombre de perfil / nombre de huésped.
+      const like = `%${q.replace(/[%_]/g, (m) => "\\" + m)}%`;
+      const res = await env.DB.prepare(
+        conversationsQuery(
+          `AND (lm.phone LIKE ?1 ESCAPE '\\' OR c.profile_name LIKE ?1 ESCAPE '\\' OR r.guest_name LIKE ?1 ESCAPE '\\')`,
+          `LIMIT 60`,
+        ),
+      ).bind(like).all<ConversationRow>();
+      feed = res.results ?? [];
+    } else {
+      // ── Modo NORMAL: feed paginado por cursor.
+      const feedRes = before
+        ? await env.DB.prepare(conversationsQuery(`AND lm.created_at < ?1`, `LIMIT ${FEED_LIMIT}`)).bind(before).all<ConversationRow>()
+        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`)).all<ConversationRow>();
+      feed = feedRes.results ?? [];
+      nextCursor = nextCursorOf(feed, FEED_LIMIT);
+
+      // Solo en la PRIMERA carga (sin cursor) traemos la cola de pendientes completa,
+      // sin importar antigüedad, para que un escalado/pausado/en-pago viejo NO
+      // desaparezca. Fail-soft: si `bot_pauses` no existe o la query falla, el inbox
+      // sigue con el feed (comportamiento previo).
+      if (!before) {
+        try {
+          const payList = PAY_STATES.map((s) => `'${s}'`).join(",");
+          const pendRes = await env.DB.prepare(
+            conversationsQuery(
+              `AND (lm.escalated = 1
+                    OR lm.phone IN (SELECT phone FROM bot_pauses)
+                    OR st.state IN (${payList}))`,
+              `LIMIT ${PENDING_LIMIT}`,
+            ),
+          ).all<ConversationRow>();
+          pending = pendRes.results ?? [];
+        } catch {
+          /* bot_pauses ausente u otro fallo → sin cola extra, solo feed */
+        }
+      }
+    }
+
+    const rows = mergeByPhone(pending, feed);
 
     // Teléfonos con el bot pausado (handoff a humano). Query aparte y fail-soft
     // para no romper el inbox si la tabla `bot_pauses` todavía no está aplicada.
@@ -113,36 +212,37 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
     return json({
       ok: true,
-      conversations: (results ?? []).map((r) => {
+      nextCursor,
+      conversations: rows.map((r) => {
         // Preview = el mensaje MÁS RECIENTE del chat, sea del cliente (in) o
         // ENVIADO por el bot/equipo (out). Pedido de César: ver en la lista la
         // última respuesta enviada, no solo lo último que escribió el cliente.
         const outNewer = r.last_out_at != null && r.last_out_at >= r.last_at;
         const preview = (outNewer ? r.last_out_body : r.last_message)?.slice(0, 200) ?? "";
         return {
-        phone: r.phone,
-        lastMessage: preview,
-        lastDirection: outNewer ? "out" : "in",
-        lastAt: r.last_at,
-        messageCount: r.message_count,
-        lastMatchedRule: r.last_matched_rule,
-        escalated: r.last_escalated === 1,
-        botPaused: paused.has(r.phone),
-        dismissed: ((da) => da != null && da >= r.last_at)(dismissed.get(r.phone)),
-        state: r.conv_state,
-        tag: r.tag_outcome ? { outcome: r.tag_outcome, propertySlug: r.tag_property ?? null, by: r.tag_by ?? "manual" } : null,
-        lastOutAt: r.last_out_at,
-        lastOutRule: r.last_out_rule,
-        contactName: r.contact_name,
-        reservation: r.reservation_id
-          ? {
-              id: r.reservation_id,
-              guestName: r.guest_name,
-              propertySlug: r.property_slug,
-              checkIn: r.check_in,
-              checkOut: r.check_out,
-            }
-          : null,
+          phone: r.phone,
+          lastMessage: preview,
+          lastDirection: outNewer ? "out" : "in",
+          lastAt: r.last_at,
+          messageCount: r.message_count,
+          lastMatchedRule: r.last_matched_rule,
+          escalated: r.last_escalated === 1,
+          botPaused: paused.has(r.phone),
+          dismissed: ((da) => da != null && da >= r.last_at)(dismissed.get(r.phone)),
+          state: r.conv_state,
+          tag: r.tag_outcome ? { outcome: r.tag_outcome, propertySlug: r.tag_property ?? null, by: r.tag_by ?? "manual" } : null,
+          lastOutAt: r.last_out_at,
+          lastOutRule: r.last_out_rule,
+          contactName: r.contact_name,
+          reservation: r.reservation_id
+            ? {
+                id: r.reservation_id,
+                guestName: r.guest_name,
+                propertySlug: r.property_slug,
+                checkIn: r.check_in,
+                checkOut: r.check_out,
+              }
+            : null,
         };
       }),
     });

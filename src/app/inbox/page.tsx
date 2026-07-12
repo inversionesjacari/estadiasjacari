@@ -85,6 +85,7 @@ interface QuickReply {
 interface ConversationsResponse {
   ok: boolean;
   conversations?: Conversation[];
+  nextCursor?: string | null;
   error?: string;
 }
 interface MessagesResponse {
@@ -747,6 +748,8 @@ export default function InboxPage() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [quickOpen, setQuickOpen] = useState(false);
   // Snapshot de la última lista de conversaciones, para detectar novedades entre
@@ -867,6 +870,7 @@ export default function InboxPage() {
       const data = (await resp.json()) as ConversationsResponse;
       if (data.ok && data.conversations) {
         setConversations(data.conversations);
+        setNextCursor(data.nextCursor ?? null);
         setAuthenticated(true);
       }
     } catch (err) {
@@ -875,6 +879,55 @@ export default function InboxPage() {
       setLoadingConv(false);
     }
   }, []);
+
+  // Fusiona conversaciones nuevas (de "cargar más" o de una búsqueda server-side)
+  // con las que ya están en pantalla, sin duplicar por teléfono y ordenadas por
+  // último mensaje. Preserva los pendientes viejos que ya vinieron en la 1ª carga.
+  const mergeConversations = useCallback((incoming: Conversation[]) => {
+    setConversations((prev) => {
+      const byPhone = new Map(prev.map((c) => [c.phone, c] as const));
+      for (const c of incoming) byPhone.set(c.phone, c);
+      return [...byPhone.values()].sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+    });
+  }, []);
+
+  // "Cargar más": siguiente página del feed cronológico (paginación por cursor,
+  // B9). No usa OFFSET: el cursor es el last_at del más viejo cargado.
+  const loadMore = useCallback(async (): Promise<void> => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const resp = await fetch(`/api/inbox/conversations?before=${encodeURIComponent(nextCursor)}`, { credentials: "include" });
+      if (!resp.ok) return;
+      const data = (await resp.json()) as ConversationsResponse;
+      if (data.ok && data.conversations) {
+        mergeConversations(data.conversations);
+        setNextCursor(data.nextCursor ?? null);
+      }
+    } catch (err) {
+      console.error("loadMore error", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, loadingMore, mergeConversations]);
+
+  // Búsqueda server-side (B9): el filtro instantáneo de abajo solo ve lo cargado;
+  // esto trae del historial COMPLETO los chats que coinciden por teléfono/nombre y
+  // los fusiona, para que buscar a alguien de hace semanas lo encuentre igual.
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) return;
+    let cancel = false;
+    const t = setTimeout(async () => {
+      try {
+        const resp = await fetch(`/api/inbox/conversations?q=${encodeURIComponent(q)}`, { credentials: "include" });
+        if (!resp.ok || cancel) return;
+        const data = (await resp.json()) as ConversationsResponse;
+        if (data.ok && data.conversations && !cancel) mergeConversations(data.conversations);
+      } catch { /* búsqueda best-effort: el filtro local sigue andando */ }
+    }, 350);
+    return () => { cancel = true; clearTimeout(t); };
+  }, [search, mergeConversations]);
 
   // Reservas por verificar (transferencias pendientes de confirmar).
   const fetchPendingReservations = useCallback(async (): Promise<void> => {
@@ -1696,6 +1749,18 @@ export default function InboxPage() {
               );
             })}
           </ul>
+          {!search.trim() && nextCursor && (
+            <div className="p-3 text-center border-t border-gray-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="text-sm text-secondary hover:text-primary dark:hover:text-slate-100 font-medium disabled:opacity-50"
+              >
+                {loadingMore ? "Cargando…" : "Cargar más conversaciones"}
+              </button>
+            </div>
+          )}
         </aside>
 
         {/* Detalle de conversación */}
