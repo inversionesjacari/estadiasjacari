@@ -26,6 +26,7 @@
 import { normalizePhone, isValidE164 } from "../_lib/phone";
 import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
 import { isDuplicateResend, parseSqliteUtcMs } from "../_lib/outbound-dedup";
+import { classifyCatalogSend } from "../_lib/catalog-trace";
 import { transcribeVoiceNote } from "../_lib/voice-transcribe";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
@@ -708,33 +709,62 @@ async function processIncomingMessage(
   // la mandamos (imagen + precio + botón "Ver" nativos). Si falla (catálogo no
   // listo, producto inexistente, env sin catalog_id), caemos al texto + fotos de
   // siempre (fallback) — el bot NUNCA queda mudo por esto.
+  //
+  // INSTRUMENTACIÓN (2026-07-11): cada intento deja una cámara en `bot_trace`
+  // (`CATALOG_CARD_SENT` cuando la nativa se comparte de verdad, `CATALOG_CARD_FALLBACK`
+  // cuando cae al texto — incluyendo el caso "falta env WHATSAPP_CATALOG_ID"). Así
+  // se puede consultar en D1 si el catálogo de Meta se está usando o si el fallback
+  // silencioso lo estaba tapando (auditoría doc 11 §3). El helper `classifyCatalogSend`
+  // decide qué escribir; el INSERT es best-effort y nunca rompe el envío.
   let productSent = false;
-  if (quoteResult?.productCard && env.WHATSAPP_CATALOG_ID) {
+  if (quoteResult?.productCard) {
     const pc = quoteResult.productCard;
-    const prodResult = await sendProductMessage(fromE164, pc.retailerId, env, pc.body);
-    if (prodResult.ok) {
-      productSent = true;
-      try {
-        await env.DB.prepare(
-          `INSERT INTO whatsapp_messages
-             (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
-           VALUES (?, ?, 'out', ?, ?, ?, ?, ?, 'sent')`,
-        )
-          .bind(
-            prodResult.messageId ?? null,
-            reservation?.id ?? null,
-            toE164,
-            fromE164,
-            pc.body && pc.body.trim().length > 0 ? pc.body : replyText,
-            ruleName,
-            escalate ? 1 : 0,
-          )
-          .run();
-      } catch (logErr) {
-        console.error("Error guardando producto saliente:", (logErr as Error).message);
-      }
+
+    let outcome;
+    if (!env.WHATSAPP_CATALOG_ID) {
+      outcome = classifyCatalogSend({ retailerId: pc.retailerId, hasCatalogId: false, sendOk: null });
     } else {
-      console.error(`Producto ${pc.retailerId} no se pudo enviar, fallback a texto:`, prodResult.error);
+      const prodResult = await sendProductMessage(fromE164, pc.retailerId, env, pc.body);
+      outcome = classifyCatalogSend({
+        retailerId: pc.retailerId,
+        hasCatalogId: true,
+        sendOk: prodResult.ok,
+        messageId: prodResult.messageId,
+        error: prodResult.error,
+      });
+      if (prodResult.ok) {
+        productSent = true;
+        try {
+          await env.DB.prepare(
+            `INSERT INTO whatsapp_messages
+               (meta_message_id, reservation_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+             VALUES (?, ?, 'out', ?, ?, ?, ?, ?, 'sent')`,
+          )
+            .bind(
+              prodResult.messageId ?? null,
+              reservation?.id ?? null,
+              toE164,
+              fromE164,
+              pc.body && pc.body.trim().length > 0 ? pc.body : replyText,
+              ruleName,
+              escalate ? 1 : 0,
+            )
+            .run();
+        } catch (logErr) {
+          console.error("Error guardando producto saliente:", (logErr as Error).message);
+        }
+      } else {
+        console.error(`Producto ${pc.retailerId} no se pudo enviar, fallback a texto:`, prodResult.error);
+      }
+    }
+
+    // Cámara best-effort: deja el veredicto en bot_trace para poder consultarlo.
+    try {
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, ?, ?)`)
+        .bind(fromE164, outcome.stage, outcome.detail)
+        .run();
+    } catch {
+      // Nunca romper el envío por no poder escribir la traza.
     }
   }
 
