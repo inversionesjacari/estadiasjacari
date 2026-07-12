@@ -3,10 +3,15 @@
 // POST /api/cron/watchdog
 //
 // Vigila que los OTROS crons sigan corriendo. Se dispara desde
-// scripts/cron-worker.js cada 30 min. Tres chequeos:
+// scripts/cron-worker.js cada 30 min. Chequeos:
 //   1. Staleness por cron_key: ¿corrió hace más de lo esperado + holgura? (system_heartbeat)
 //   2. Racha de fallos por cron_key: ¿las últimas 3 corridas fallaron? (cron_runs)
 //   3. "Bot mudo": ¿hay un cliente con un mensaje SIN responder hace rato? (whatsapp_messages)
+//   4. KB en fallback hardcode (latido de kb-store.ts).
+//   5. 📬 Salud de entrega: mensajes operativos al huésped que FALLARON (P1,
+//      alerta siempre), ráfaga sistémica de fallos (P2) y canal de avisos a
+//      dueños caído (P3). Los fallos sueltos de re-engagement (ventana 24h
+//      cerrada etc.) NO alertan — se ven en la card del inbox.
 // Si algo dispara, avisa por WhatsApp a César/socio (con cooldown de 6h por
 // alerta — el mismo mecanismo de heartbeat, con una key `watchdog_alert_*`,
 // para no mandar el mismo aviso cada 30 min mientras el problema siga vivo).
@@ -22,6 +27,7 @@ import { notifyOwners, type OwnerAlertEnv } from "../../_lib/owner-alerts";
 import { TERMINAL_RULES } from "../../_lib/detectors";
 import { lastRealOutRule } from "./quote-followups";
 import { globalBotPausedSince } from "../../_lib/bot-pause";
+import { GUEST_OPERATIONAL_RULES } from "../../_lib/wa-log";
 
 interface Env extends OwnerAlertEnv {
   DB: D1Database;
@@ -101,6 +107,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const kbFallback = await checkKbFallback(env);
   if (kbFallback.active) {
     findings.push({ key: "kb_fallback_hardcode", issue: "KB en modo hardcode", alerted: kbFallback.alerted });
+  }
+
+  const delivery = await checkDeliveryHealth(env);
+  if (delivery.issues.length > 0) {
+    findings.push({ key: "delivery", issue: delivery.issues.join(" · "), alerted: delivery.alerted });
   }
 
   return json({ ok: true, checked: Object.keys(EXPECTED_SCHEDULE), findings, botMudo: botMudo.phones });
@@ -216,6 +227,111 @@ async function checkKbFallback(env: Env): Promise<{ active: boolean; alerted: bo
   }
 }
 
+// ── 📬 Salud de entrega (check 5) ─────────────────────────────────────────────
+// Política anti-ruido (regla de la casa: no sobre-notificar):
+//   P1 — operativo a HUÉSPED fallido (check-in PDF, confirmación, avisos del día)
+//        → alerta SIEMPRE, dedupe por teléfono (el huésped se quedó sin info
+//        crítica; hay que contactarlo por otro canal).
+//   P2 — ráfaga: ≥DELIVERY_BURST_N fallos (cualquier regla) en la ventana
+//        → problema sistémico (billing/template/Meta), una sola alerta.
+//   P3 — canal de avisos a dueños caído (owner_alert_fail > owner_alert_ok)
+//        → best-effort: si el canal está caído esta alerta puede no llegar;
+//        el semáforo "Avisos a dueños" del inbox es la superficie garantizada.
+//   Fallos sueltos de re-engagement (auto_followup/last_call, típico 131047
+//   ventana cerrada) NO alertan solos — se ven en la card y cuentan para P2.
+// Lookback de P1 (6h) > período del watchdog (30 min) a propósito: una corrida
+// perdida no traga el fallo; el dedupe por teléfono hace inocuo el re-chequeo.
+const DELIVERY_GUEST_LOOKBACK_HOURS = 6;
+const DELIVERY_BURST_N = 3;
+const DELIVERY_BURST_WINDOW_MIN = 60;
+const DELIVERY_GUEST_MAX_ALERTS = 3; // por corrida — no inundar si fallan muchos a la vez (eso ya es P2)
+
+async function checkDeliveryHealth(env: Env): Promise<{ issues: string[]; alerted: boolean }> {
+  const issues: string[] = [];
+  let alertedAny = false;
+  try {
+    // P1 — operativos a huésped fallidos (una fila por huésped+regla, la más reciente).
+    const guestRules = [...GUEST_OPERATIONAL_RULES];
+    const placeholders = guestRules.map(() => "?").join(",");
+    const failed = await env.DB.prepare(
+      `SELECT to_phone, matched_rule, MAX(created_at) AS at
+         FROM whatsapp_messages
+        WHERE direction = 'out' AND status = 'failed'
+          AND matched_rule IN (${placeholders})
+          AND created_at >= datetime('now', '-${DELIVERY_GUEST_LOOKBACK_HOURS} hours')
+        GROUP BY to_phone, matched_rule
+        ORDER BY at DESC
+        LIMIT 10`,
+    )
+      .bind(...guestRules)
+      .all<{ to_phone: string; matched_rule: string; at: string }>();
+    let guestAlerts = 0;
+    for (const f of failed.results ?? []) {
+      issues.push(`guest_fail:${f.to_phone}`);
+      if (guestAlerts >= DELIVERY_GUEST_MAX_ALERTS) continue;
+      const alerted = await maybeAlert(
+        env,
+        `delivery_guest_${f.to_phone}`,
+        "🔴 WhatsApp al huésped NO llegó",
+        f.to_phone,
+        `Un mensaje operativo (${f.matched_rule}) a ${f.to_phone} FALLÓ. Motivo en la card 📬 del inbox — si es del check-in, contactalo por otro canal.`,
+        f.to_phone, // el botón del template abre ese chat
+      );
+      if (alerted) {
+        alertedAny = true;
+        guestAlerts++;
+      }
+    }
+
+    // P2 — ráfaga sistémica (cualquier regla, followups incluidos).
+    const burst = await env.DB.prepare(
+      `SELECT COALESCE(matched_rule, '(sin regla)') AS rule, COUNT(*) AS c
+         FROM whatsapp_messages
+        WHERE direction = 'out' AND status = 'failed'
+          AND created_at >= datetime('now', '-${DELIVERY_BURST_WINDOW_MIN} minutes')
+        GROUP BY matched_rule
+        ORDER BY c DESC`,
+    ).all<{ rule: string; c: number }>();
+    const burstRows = burst.results ?? [];
+    const burstTotal = burstRows.reduce((a, r) => a + r.c, 0);
+    if (burstTotal >= DELIVERY_BURST_N) {
+      issues.push(`burst:${burstTotal}`);
+      const desglose = burstRows.slice(0, 4).map((r) => `${r.rule}×${r.c}`).join(", ");
+      const alerted = await maybeAlert(
+        env,
+        "delivery_burst",
+        "🔴 WhatsApp fallando en ráfaga",
+        "entrega",
+        `${burstTotal} envíos fallaron en ${DELIVERY_BURST_WINDOW_MIN} min (${desglose}). Huele a billing/template/Meta — revisar la card 📬 del inbox.`,
+      );
+      if (alerted) alertedAny = true;
+    }
+
+    // P3 — canal de avisos a dueños caído.
+    const beats = await env.DB.prepare(
+      `SELECT key, last_at FROM system_heartbeat WHERE key IN ('owner_alert_ok','owner_alert_fail')`,
+    ).all<{ key: string; last_at: string }>();
+    const byKey: Record<string, string> = {};
+    for (const b of beats.results ?? []) byKey[b.key] = b.last_at;
+    const failAt = byKey["owner_alert_fail"];
+    const okAt = byKey["owner_alert_ok"];
+    if (failAt && (!okAt || failAt > okAt)) {
+      issues.push("owner_channel_down");
+      const alerted = await maybeAlert(
+        env,
+        "owner_channel",
+        "🟠 Avisos a dueños fallando",
+        "owner_alerts",
+        `El último envío de alertas a dueños FALLÓ. Diagnóstico: POST /api/admin/test-owner-alert. El semáforo "Avisos a dueños" del inbox tiene el estado.`,
+      );
+      if (alerted) alertedAny = true;
+    }
+  } catch (err) {
+    console.error("checkDeliveryHealth error:", (err as Error).message);
+  }
+  return { issues, alerted: alertedAny };
+}
+
 /** Avisa por WhatsApp si no se avisó lo mismo en las últimas ALERT_COOLDOWN_HOURS. */
 async function maybeAlert(
   env: Env,
@@ -223,6 +339,7 @@ async function maybeAlert(
   tipo: string,
   cronKey: string,
   detalle: string,
+  guestPhone = "",
 ): Promise<boolean> {
   const alertKey = `watchdog_alert_${cooldownKey}`;
   const recent = await env.DB.prepare(
@@ -232,7 +349,7 @@ async function maybeAlert(
     .first<{ x: number }>();
   if (recent) return false; // ya se avisó recientemente, no repetir
 
-  await notifyOwners(env, { tipo, cliente: cronKey, detalle, guestPhone: "" });
+  await notifyOwners(env, { tipo, cliente: cronKey, detalle, guestPhone });
   await env.DB.prepare(
     `INSERT INTO system_heartbeat (key, last_at) VALUES (?, datetime('now'))
        ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,

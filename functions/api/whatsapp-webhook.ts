@@ -183,8 +183,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 //   }]
 // }
 //
-// También llegan eventos `statuses` (sent/delivered/read de mensajes salientes).
-// Esos los ignoramos por ahora.
+// También llegan eventos `statuses` (sent/delivered/read/failed de salientes):
+// los procesa handleStatusUpdate — actualizan los checks (whatsapp_messages.status)
+// y los `failed` quedan en bot_trace (WA_DELIVERY_FAILED) con el motivo exacto de
+// Meta. Alimentan la card "📬 Salud de entrega" de /inbox/operacion y el check 5
+// del watchdog.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface MetaMediaObject {
