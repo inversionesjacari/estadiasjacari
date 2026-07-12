@@ -26,6 +26,7 @@
 import { normalizePhone, isValidE164 } from "../_lib/phone";
 import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
 import { isDuplicateResend, parseSqliteUtcMs } from "../_lib/outbound-dedup";
+import { transcribeVoiceNote } from "../_lib/voice-transcribe";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation, type ActiveReservation } from "../_lib/whatsapp-bot";
@@ -1039,6 +1040,27 @@ async function handleMediaMessage(
     }
   }
 
+  // ── Nota de voz → transcribir para LEERLA, no escucharla (B6) ───────────────
+  // En Honduras se manda muchísimo audio y hoy toda nota de voz escala a ciegas.
+  // La transcribimos con Workers AI: queda como texto en el cuerpo del mensaje
+  // (visible + buscable en el inbox) y va en la alerta, para que César responda
+  // sin abrir el audio. A propósito NO deja que el bot conteste solo (una
+  // transcripción imperfecta daría respuestas malas): sigue escalando a humano.
+  // Fail-soft: si Whisper no está o falla, `voiceText` queda null y el escalado
+  // de abajo sale genérico igual que hoy (cero regresión).
+  let voiceText: string | null = null;
+  if (mediaType === "audio" && mediaId) {
+    const tr = await transcribeVoiceNote(mediaId, env);
+    if (tr.ok) {
+      voiceText = tr.text;
+      try {
+        await env.DB.prepare(
+          `UPDATE whatsapp_messages SET body = ? WHERE meta_message_id = ? AND direction = 'in'`,
+        ).bind(`🎤 ${voiceText}`, msg.id).run();
+      } catch { /* best-effort: la transcripción en la alerta ya aporta */ }
+    }
+  }
+
   // El bot no interpreta audio/imagen — avisa cálido y escala para que César
   // lo vea en el inbox (clave para comprobantes de pago).
   const ackText = "¡Recibido! 🌴 En un momento una persona del equipo te atiende por aquí.";
@@ -1061,10 +1083,14 @@ async function handleMediaMessage(
   const reservation = await findActiveReservation(fromE164, env.DB, todayHn());
   await sendEscalationEmail(
     {
-      guestMessage: rawType === "contacts" ? body : caption ? `[${mediaType}] ${caption}` : `[${MEDIA_LABELS[mediaType] ?? "archivo"} recibido]`,
+      guestMessage: voiceText
+        ? `🎤 Nota de voz: "${voiceText}"`
+        : rawType === "contacts" ? body : caption ? `[${mediaType}] ${caption}` : `[${MEDIA_LABELS[mediaType] ?? "archivo"} recibido]`,
       guestPhone: fromE164,
       reservation,
-      reason: rawType === "contacts" ? "El cliente compartió un contacto — míralo en el inbox" : `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
+      reason: voiceText
+        ? "El cliente mandó una nota de voz (transcrita abajo) — respondele"
+        : rawType === "contacts" ? "El cliente compartió un contacto — míralo en el inbox" : `El cliente mandó ${MEDIA_LABELS[mediaType] ?? "un archivo"} — míralo en el inbox`,
     },
     {
       RESEND_API_KEY: env.RESEND_API_KEY ?? "",
