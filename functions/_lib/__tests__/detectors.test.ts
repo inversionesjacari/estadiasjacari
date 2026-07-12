@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isConfirmation,
   isAvailabilityDatesRequest,
+  isCapacityQuestion,
   isBankAccountRequest,
   isBedroomPhotoRequest,
   isPhotoRequest,
@@ -19,6 +20,7 @@ import {
   isEventInquiry,
   mentionsValleDeAngeles,
   detectPackageInquiry,
+  detectPackageByAdPrice,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -234,6 +236,37 @@ describe("detectPackageInquiry — Family pack / Love Trip / Friends Trip (ads 9
   });
 });
 
+// 🐛 CASO REAL — DVALL (+504 9963-0648), 11-jul-2026. Entró por el anuncio
+// "oferta de Tela, Atlántida de L. 6,700" (turno 1, pre-deploy del gate de
+// paquetes) y al día siguiente preguntó "Buen día 6,700 cuantas personas":
+// solo el PRECIO, sin "oferta" ni ciudad ni nombre del paquete →
+// detectPackageInquiry=null → el turno cayó al LLM, que NEGÓ la oferta
+// ("La tarifa de L. 6,700 no corresponde a nuestras propiedades") porque su
+// prompt solo conoce la tarifa por noche. El precio del anuncio ES el
+// identificador del paquete.
+describe("detectPackageByAdPrice — el precio del anuncio pelado identifica el paquete (caso DVALL, 11-jul-2026)", () => {
+  it("el mensaje REAL de DVALL dispara friends_trip (solo el monto, nada más)", () => {
+    expect(detectPackageByAdPrice("Buen día 6,700 cuantas personas", null)).toBe("friends_trip");
+  });
+  it("variantes de formato del monto (con L., punto de miles, sin separador) y el precio entre-semana 6,300", () => {
+    expect(detectPackageByAdPrice("info de la promo de 6700", null)).toBe("friends_trip");
+    expect(detectPackageByAdPrice("¿sigue la de L. 6.700?", null)).toBe("friends_trip");
+    expect(detectPackageByAdPrice("vi una de 6,300 entre semana", null)).toBe("friends_trip");
+    expect(detectPackageByAdPrice("la oferta de 5,400 de la villa", null)).toBe("family_pack");
+  });
+  it("guard anti-eco: con una propiedad YA fijada, el monto es eco de una cotización, no el anuncio (Morazán 3 noches = 2100×3+400 = 6,700 exactos)", () => {
+    expect(detectPackageByAdPrice("¿el total era 6,700 verdad?", "centro-morazan")).toBeNull();
+    expect(detectPackageByAdPrice("Buen día 6,700 cuantas personas", "casa-marea")).toBeNull();
+  });
+  it("no matchea montos ajenos ni números incrustados en otros", () => {
+    expect(detectPackageByAdPrice("somos 6 personas", null)).toBeNull();
+    expect(detectPackageByAdPrice("llegamos a las 6:30", null)).toBeNull();
+    expect(detectPackageByAdPrice("el total 16,700 me parece caro", null)).toBeNull();
+    expect(detectPackageByAdPrice("tengo presupuesto de 7,000", null)).toBeNull();
+    expect(detectPackageByAdPrice("mi número termina en 0648", null)).toBeNull();
+  });
+});
+
 describe("isAvailabilityDatesRequest — pregunta INVERSA de disponibilidad (bug Carlos Meza, 10-jul-2026)", () => {
   it("los mensajes EXACTOS de Carlos disparan (pide que NOSOTROS propongamos fechas)", () => {
     // Turno 12 y 14 del chat real, Villa B11. "b11" NO cuenta como fecha concreta.
@@ -266,5 +299,33 @@ describe("isAvailabilityDatesRequest — pregunta INVERSA de disponibilidad (bug
     expect(isAvailabilityDatesRequest("Villa B11")).toBe(false);
     expect(isAvailabilityDatesRequest("somos 6 personas")).toBe(false);
     expect(isAvailabilityDatesRequest("¿qué precio tiene?")).toBe(false);
+  });
+});
+
+describe("isCapacityQuestion — pregunta por el CUPO, no headcount propio (bug Méndez, 11-jul-2026)", () => {
+  it("reconoce la pregunta de capacidad en varias formas (es/en)", () => {
+    expect(isCapacityQuestion("Hasta cuanto es la capacidad de adultos")).toBe(true);
+    expect(isCapacityQuestion("¿cuál es la capacidad?")).toBe(true);
+    expect(isCapacityQuestion("cuántas personas caben")).toBe(true);
+    expect(isCapacityQuestion("para cuántas personas es")).toBe(true);
+    expect(isCapacityQuestion("cupo máximo?")).toBe(true);
+    expect(isCapacityQuestion("¿cuántos huéspedes admite?")).toBe(true);
+    expect(isCapacityQuestion("what's the capacity?")).toBe(true);
+    expect(isCapacityQuestion("how many people fit?")).toBe(true);
+    expect(isCapacityQuestion("max guests?")).toBe(true);
+  });
+  it("NO confunde el headcount propio del cliente con una pregunta de cupo", () => {
+    expect(isCapacityQuestion("Somos 4 adultos u una bb")).toBe(false);
+    expect(isCapacityQuestion("3 adultos ubs bb")).toBe(false);
+    expect(isCapacityQuestion("4 adultos")).toBe(false);
+    expect(isCapacityQuestion("si quiero")).toBe(false);
+    expect(isCapacityQuestion("cuántas noches")).toBe(false);
+    expect(isCapacityQuestion("cuánto cuesta")).toBe(false);
+  });
+  it("headcount + pregunta explícita de cupo SÍ dispara ('somos 5 personas, ¿caben?')", () => {
+    // El guard no suprime cuando hay una pregunta real de caber; pero exige señal de
+    // cupo (personas/cuántos/caber) — un "¿entran?"/"¿aceptan?" pelado NO alcanza, para
+    // no pisar horario de entrada ni política de mascotas.
+    expect(isCapacityQuestion("somos 5 personas, ¿caben?")).toBe(true);
   });
 });

@@ -58,6 +58,15 @@ export const T = {
       : `¡Con gusto reviso la disponibilidad${prop}! 🗓️ Decime las fechas exactas que tenés en mente — el día de llegada y el de salida — y te confirmo al instante si están libres y el precio. Si tenés flexibilidad, pasame un par de opciones y te digo cuál te queda.`;
   },
 
+  // Respuesta a "¿cuál es la capacidad / hasta cuántos caben?" — el bot da el CUPO
+  // EXACTO de la propiedad (PROPERTY_PRICING.capacity), sin LLM y sin re-cotizar (bug
+  // Méndez, Casa Brisa: re-mandaba la cotización en vez de contestar). Neutral (sin 🌴):
+  // sirve para cualquier zona; el caller ya conoce la propiedad y su cupo.
+  capacityAnswer: (l: Lang, propertyName: string, capacity: number): string =>
+    l === "en"
+      ? `${propertyName} sleeps up to *${capacity} guests* 👍 Want me to go ahead and lock in your dates?`
+      : `${propertyName} admite hasta *${capacity} huéspedes* 👍 ¿Seguimos con la reserva?`,
+
   // Propiedad NO disponible en las fechas pedidas, pero el bot BUSCÓ en el calendario
   // y PROPONE (en vez de solo "no disponible, ¿otras fechas?" y esperar → lead frío):
   // (1) la ventana libre MÁS CERCANA a lo pedido y (2) otros FINES DE SEMANA libres.

@@ -5,6 +5,7 @@ import {
   isNotInterested,
   isCheckinTimeRequest,
   isAvailabilityDatesRequest,
+  isCapacityQuestion,
   isDateChangeOrAvailabilityQuestion,
   isBankAccountRequest,
   isLegitimacyQuestion,
@@ -802,5 +803,25 @@ describe("CHAT: +504 9872-6411 — Villa B11 OCUPADO 16–18 jul: PROPONER fecha
     // Tegucigalpa (no playa) → sin 🌴
     const teg = findAlternativeDates(new Set(["2026-07-16", "2026-07-17"]), REQ_IN, REQ_OUT, TODAY);
     expect(T.unavailableWithAlternatives("es", "Centro Morazán", teg, false)).not.toContain("🌴");
+  });
+});
+
+describe("CHAT: Méndez — pregunta de capacidad tragada, el bot re-cotizó", () => {
+  // Casa Brisa, ya cotizado: "Hasta cuanto es la capacidad de adultos" → el bot re-mandó
+  // la cotización (quote_provided) en vez de responder el cupo. La capacidad es un DATO
+  // exacto de la propiedad → se responde por código (capacity_answer), no re-cotizando.
+  it("la pregunta por el cupo se detecta (y NO se confunde con el headcount propio)", () => {
+    expect(isCapacityQuestion("Hasta cuanto es la capacidad de adultos")).toBe(true);
+    expect(isCapacityQuestion("Somos 4 adultos u una bb")).toBe(false);
+  });
+  it("la capacidad sale del DATO exacto de la propiedad, no del LLM", () => {
+    // 4 adultos + 1 bebé (la bebé no cuenta) entran sobrados en las 6 de Casa Brisa.
+    expect(PROPERTY_PRICING["casa-brisa"].capacity).toBe(6);
+  });
+  it("el mensaje de capacidad nombra la propiedad y el cupo exacto", () => {
+    const p = PROPERTY_PRICING["casa-brisa"];
+    const msg = T.capacityAnswer("es", p.name, p.capacity);
+    expect(msg).toContain("Casa Brisa");
+    expect(msg).toContain("6");
   });
 });

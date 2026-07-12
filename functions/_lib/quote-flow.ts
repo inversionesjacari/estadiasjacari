@@ -59,6 +59,7 @@ import {
   isBareAck,
   isBedroomPhotoRequest,
   isCallRequested,
+  isCapacityQuestion,
   isCardChoice,
   isCheckinTimeRequest,
   isConfirmation,
@@ -692,6 +693,26 @@ export async function handleQuoteIncoming(
       ruleName:        "availability_dates_ask",
       tokensUsed:      0,
     };
+  }
+
+  // ── "¿Cuál es la capacidad? / ¿hasta cuántos caben?" (pregunta por el CUPO) ──
+  // El cliente pregunta cuántas personas caben y el bot re-cotizaba en vez de responder
+  // (bug Méndez, Casa Brisa: "Hasta cuánto es la capacidad de adultos" → re-mandó la
+  // cotización entera). Si ya sabemos la propiedad del estado, respondemos con su
+  // capacidad EXACTA (PROPERTY_PRICING) sin LLM. Si aún no hay propiedad, dejamos que el
+  // flujo normal la resuelva (no inventamos un número). "somos 4 adultos" NO dispara (es
+  // headcount propio, ver isCapacityQuestion). Determinístico y ANTES de la máquina de
+  // estados, igual que availability_dates_ask.
+  if (isCapacityQuestion(text) && existing?.data.property) {
+    const pricing = PROPERTY_PRICING[existing.data.property];
+    if (pricing) {
+      return {
+        reply:           T.capacityAnswer(lang, pricing.name, pricing.capacity),
+        escalateToOwner: false,
+        ruleName:        "capacity_answer",
+        tokensUsed:      0,
+      };
+    }
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────

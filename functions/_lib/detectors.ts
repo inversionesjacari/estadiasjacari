@@ -125,6 +125,44 @@ export function isAvailabilityDatesRequest(text: string): boolean {
 }
 
 /**
+ * ¿El cliente pregunta por el CUPO de la propiedad? ("¿hasta cuántas personas caben?",
+ * "¿cuál es la capacidad?", "cupo máximo?", "how many guests fit?"). Es una PREGUNTA por
+ * el máximo — NO el cliente diciendo cuántos son ("somos 4 adultos" es su headcount
+ * propio → NO dispara, salvo que además pregunte explícito por caber/capacidad).
+ *
+ * Bug real (Méndez, 11-jul-2026, Casa Brisa): ya cotizado, el cliente preguntó "Hasta
+ * cuánto es la capacidad de adultos" y el bot RE-MANDÓ la cotización entera
+ * (`quote_provided`) en vez de responder el cupo → la pregunta quedó sin contestar. La
+ * capacidad es un DATO EXACTO (`PROPERTY_PRICING.capacity`), así que el bot debe
+ * responderla por CÓDIGO, sin LLM y sin re-cotizar (método: capacidad → determinístico).
+ */
+export function isCapacityQuestion(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[¿¡]/g, "")
+    .trim();
+
+  // El cliente DICE cuántos son (headcount propio) ≠ PREGUNTA por el cupo.
+  const statesOwnHeadcount =
+    /\b(somos|seremos|seriamos|vamos a ser|iriamos|iremos|van a ser|voy con|llevo|llevamos)\b/.test(t);
+
+  const capacityWord = /\b(capacidad|cupo|capacity|occupancy)\b/.test(t);
+  const fitVerb =
+    /\b(caben?|entran?|admite|acepta|aloja|alojan|duermen?|sleeps?|fit|fits|hold|holds|accommodates?)\b/.test(t);
+  const howMany = /\b(cuant[oa]s?|maximo|max|maximum|how many)\b/.test(t);
+  const peopleWord =
+    /\b(personas?|gente|huespedes?|adultos?|ninos?|pax|people|persons?|guests?|adults?)\b/.test(t);
+
+  // "somos 4 adultos" (headcount) NO es pregunta de cupo — salvo que además diga
+  // caben/capacidad ("somos 5, ¿caben?").
+  if (statesOwnHeadcount && !capacityWord && !fitVerb) return false;
+
+  return capacityWord || (fitVerb && (howMany || peopleWord)) || (howMany && peopleWord);
+}
+
+/**
  * Confirmación CLARA de la cotización. Conservador: una NEGACIÓN, una PREGUNTA, o un
  * CAMBIO DE FECHA/disponibilidad lo descartan. Acá "si" suele ser "if", no "sí" — bug
  * real (caso Zedileth): "Pero si estaría disponible para el 17 de junio?" hizo que el
@@ -483,6 +521,35 @@ export function detectPackageInquiry(text: string): PackageType | null {
     if (/\btela\b/.test(t)) return "friends_trip";
     if (/\b(la\s+)?ceiba\b|\bpalma\s*real\b/.test(t)) return "family_pack";
   }
+  return null;
+}
+
+/**
+ * Variante del anuncio citada solo por PRECIO: el cliente pregunta por el monto
+ * pelado, sin decir "oferta", la ciudad ni el nombre del paquete. Caso real
+ * (DVALL, 11-jul-2026): "Buen día 6,700 cuantas personas" — nada de eso pasa
+ * `detectPackageInquiry`, el turno caía al LLM y este NEGABA la oferta ("la
+ * tarifa de L. 6,700 no corresponde a nuestras propiedades", su prompt solo
+ * conoce la tarifa por noche) — un lead del anuncio muerto en el segundo
+ * mensaje. Los precios publicados funcionan como identificador del paquete:
+ * L.6,300 / L.6,700 (ejemplos del anuncio Friends Trip, Tela) y L.5,400
+ * (Family pack / Love Trip, Villa B11 — `VILLA_B11_PACKAGE_TOTAL_HNL`).
+ *
+ * `previousProperty` es el guard anti-eco: un total YA cotizado puede valer
+ * exactamente un monto del anuncio (Centro Morazán 3 noches = 2100×3+400 =
+ * L.6,700) y el cliente puede repetirlo ("¿el total era 6,700?"). Como toda
+ * cotización previa implica una propiedad fijada en el estado, si ya hay
+ * propiedad el número se trata como eco de la cotización (null); en una
+ * conversación sin propiedad no hay nada cotizado que repetir — el monto solo
+ * puede venir del anuncio.
+ */
+export function detectPackageByAdPrice(
+  text: string,
+  previousProperty: string | null,
+): PackageType | null {
+  if (previousProperty != null) return null;
+  if (/\b6[.,]?700\b|\b6[.,]?300\b/.test(text)) return "friends_trip";
+  if (/\b5[.,]?400\b/.test(text)) return "family_pack";
   return null;
 }
 
