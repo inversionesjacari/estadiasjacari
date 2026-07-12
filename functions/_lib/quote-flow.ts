@@ -81,6 +81,7 @@ import {
   isEventInquiry,
   mentionsValleDeAngeles,
   detectPackageInquiry,
+  detectPackageByAdPrice,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -1100,7 +1101,12 @@ async function gatherQuoteData(
   // la casa, perdiendo el day pass que la oferta prometía. `packageType` persiste
   // en el estado (no hace falta repetirlo cada turno) y ancla la ciudad para que
   // el auto-asignado de propiedad de abajo funcione sin preguntar de más.
-  const detectedPackage = detectPackageInquiry(text);
+  // Fallback: el anuncio citado SOLO por precio ("Buen día 6,700 cuantas personas")
+  // no dice "oferta"/ciudad/nombre → detectPackageInquiry lo pierde y el LLM NIEGA la
+  // oferta. detectPackageByAdPrice lo rescata por el monto publicado (guard anti-eco:
+  // si ya hay propiedad cotizada, el número es eco, no anuncio). Caso DVALL, 11-jul.
+  const detectedPackage =
+    detectPackageInquiry(text) ?? detectPackageByAdPrice(text, previousData.property ?? null);
   const packageIsNew = !previousData.packageType && detectedPackage != null;
   mergedData.packageType = detectedPackage ?? previousData.packageType ?? null;
   if (mergedData.packageType && !mergedData.city) {

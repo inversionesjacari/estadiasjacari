@@ -30,6 +30,7 @@ import {
   isEventInquiry,
   mentionsValleDeAngeles,
   detectPackageInquiry,
+  detectPackageByAdPrice,
   TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
@@ -823,5 +824,20 @@ describe("CHAT: Méndez — pregunta de capacidad tragada, el bot re-cotizó", (
     const msg = T.capacityAnswer("es", p.name, p.capacity);
     expect(msg).toContain("Casa Brisa");
     expect(msg).toContain("6");
+  });
+});
+
+describe("CHAT: DVALL — la oferta citada solo por PRECIO no se niega (cableado del gate de paquetes)", () => {
+  // "Buen día 6,700 cuantas personas": detectPackageInquiry NO lo agarra (no dice
+  // "oferta"/ciudad/nombre) → el gate de paquetes cae al fallback detectPackageByAdPrice,
+  // que lo identifica como friends_trip en vez de dejar que el LLM niegue la oferta del
+  // anuncio ("la tarifa de L. 6,700 no corresponde a nuestras propiedades").
+  it("el precio pelado del anuncio identifica el paquete (fallback del gate)", () => {
+    expect(detectPackageInquiry("Buen día 6,700 cuantas personas")).toBeNull();
+    expect(detectPackageByAdPrice("Buen día 6,700 cuantas personas", null)).toBe("friends_trip");
+  });
+  it("guard anti-eco: con propiedad ya cotizada, el mismo monto NO re-dispara paquete", () => {
+    // Centro Morazán 3 noches = 2100×3+400 = 6,700 exactos; "¿el total era 6,700?" es eco.
+    expect(detectPackageByAdPrice("¿el total era 6,700?", "centro-morazan")).toBeNull();
   });
 });
