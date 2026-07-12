@@ -214,6 +214,26 @@ export async function getRules(db: D1Database): Promise<KbRule[]> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Heartbeat de fallback — el problema NO es caer al hardcode (es el diseño),
+// es caer EN SILENCIO: si kb_properties está vacía (migración sin aplicar) o la
+// query falla, el bot ignora el panel /inbox/conocimiento y nadie se entera
+// (lección del deploy roto 2 semanas). Este latido lo hace visible: el watchdog
+// lo chequea cada 30 min y avisa a los dueños con cooldown. Best-effort, nunca
+// throws (mismo patrón que beat() de owner-alerts.ts). Nota: si D1 entera está
+// caída el latido tampoco se escribe — ese escenario lo cubren las alertas de
+// cron/bot_mudo, no esta.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function beatKbFallback(db: D1Database): Promise<void> {
+  try {
+    await db.prepare(
+      `INSERT INTO system_heartbeat (key, last_at) VALUES ('kb_fallback_hardcode', datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
+    ).run();
+  } catch { /* best-effort */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // buildPricingMap — para quote-builder (precio + capacidad)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -226,6 +246,7 @@ export async function buildPricingMap(
 ): Promise<Record<PropertySlug, PropertyPricing>> {
   const props = await getProperties(db);
   if (props.length === 0) {
+    await beatKbFallback(db);
     return PROPERTY_PRICING; // fallback al código
   }
 
@@ -263,8 +284,11 @@ export async function buildKnowledgeBaseText(db: D1Database): Promise<string> {
     getRules(db),
   ]);
 
-  // Si no hay propiedades en D1, usar el respaldo completo del código
+  // Si no hay propiedades en D1, usar el respaldo completo del código.
+  // OJO: este return también DESCARTA policies/faqs/rules aunque tengan filas
+  // (el respaldo hardcoded no tiene sección de reglas) — por eso el latido.
   if (props.length === 0) {
+    await beatKbFallback(db);
     return PROPERTY_KNOWLEDGE_BASE;
   }
 
@@ -286,9 +310,14 @@ export async function buildKnowledgeBaseText(db: D1Database): Promise<string> {
     lines.push("");
   }
 
-  // Agrupar propiedades por ciudad
+  // Agrupar propiedades por ciudad. Todas INACTIVAS = otro "panel ignorado"
+  // silencioso (el prompt queda sin ninguna propiedad): latido igual que el
+  // fallback, pero SIN resucitar el hardcode — lo que el panel apagó, apagado
+  // queda; solo lo hacemos visible.
+  const activeProps = props.filter((x) => x.active === 1);
+  if (activeProps.length === 0) await beatKbFallback(db);
   const byCity = new Map<string, KbProperty[]>();
-  for (const p of props.filter((x) => x.active === 1)) {
+  for (const p of activeProps) {
     const arr = byCity.get(p.city) ?? [];
     arr.push(p);
     byCity.set(p.city, arr);

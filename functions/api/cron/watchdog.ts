@@ -98,6 +98,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     findings.push({ key: "bot_mudo", issue: `${botMudo.phones.length} cliente(s) sin respuesta`, alerted: botMudo.alerted });
   }
 
+  const kbFallback = await checkKbFallback(env);
+  if (kbFallback.active) {
+    findings.push({ key: "kb_fallback_hardcode", issue: "KB en modo hardcode", alerted: kbFallback.alerted });
+  }
+
   return json({ ok: true, checked: Object.keys(EXPECTED_SCHEDULE), findings, botMudo: botMudo.phones });
 };
 
@@ -172,6 +177,42 @@ async function checkBotMudo(env: Env): Promise<{ phones: string[]; alerted: bool
   } catch (err) {
     console.error("checkBotMudo error:", (err as Error).message);
     return { phones: [], alerted: false };
+  }
+}
+
+// Ventana de detección del fallback de la KB: el latido `kb_fallback_hardcode`
+// lo escribe kb-store.ts cada vez que una lectura cae al hardcode (kb_properties
+// vacía o query fallida) o el panel queda sin propiedades ACTIVAS. Si hubo un
+// latido en la última hora, el panel /inbox/conocimiento está siendo IGNORADO
+// por el bot — precios/reglas/FAQs editados ahí no aplican. Un latido puntual
+// puede ser un hiccup transitorio de D1; si el problema es real (migración sin
+// aplicar), el latido se repite con cada mensaje y la alerta vuelve tras el
+// cooldown hasta que alguien lo arregle.
+const KB_FALLBACK_WINDOW_MIN = 60;
+
+/** ¿La KB cayó al hardcode hace poco? (latido de kb-store.ts) */
+async function checkKbFallback(env: Env): Promise<{ active: boolean; alerted: boolean }> {
+  try {
+    const recent = await env.DB.prepare(
+      `SELECT 1 AS x FROM system_heartbeat WHERE key = 'kb_fallback_hardcode' AND last_at > datetime('now', ?)`,
+    )
+      .bind(`-${KB_FALLBACK_WINDOW_MIN} minutes`)
+      .first<{ x: number }>();
+    if (!recent) return { active: false, alerted: false };
+
+    // ⚠️ máx 250 chars: buildAlertComponents trunca el {{3}} del template ahí —
+    // más largo y Meta entrega la instrucción cortada a la mitad.
+    const alerted = await maybeAlert(
+      env,
+      "kb_fallback",
+      "🟠 KB en modo hardcode",
+      "kb_fallback_hardcode",
+      `El bot ignora el panel /inbox/conocimiento (kb_properties vacía, todas inactivas o error de D1): precios/reglas/FAQs del panel NO aplican. Si fue puntual, ignorá; si se repite, revisar schema/0011+0012 en D1.`,
+    );
+    return { active: true, alerted };
+  } catch (err) {
+    console.error("checkKbFallback error:", (err as Error).message);
+    return { active: false, alerted: false };
   }
 }
 

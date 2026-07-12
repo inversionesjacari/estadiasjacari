@@ -719,13 +719,14 @@ function RulesTab({
     <div className="space-y-3">
       <div className="bg-secondary/10 border border-secondary/30 rounded-xl p-4">
         <p className="text-sm text-primary font-medium mb-1">
-          ⚙️ Estas son las reglas de comportamiento del bot
+          ⚙️ Guía de tono y estilo del bot
         </p>
         <p className="text-sm text-muted">
-          Instrucciones que el bot sigue SIEMPRE, con máxima prioridad. Por ejemplo:
-          &quot;nunca des precios sin que los pidan&quot; o &quot;no recomiendes propiedades
-          fuera de la ciudad que pidió el cliente&quot;. Escribilas como si le hablaras a
-          un empleado nuevo.
+          El bot lee estas notas como guía al redactar sus respuestas libres (tono,
+          qué mencionar, qué evitar). Funcionan bien para cosas como &quot;no abrumes
+          con opciones&quot; o &quot;sé cálido y natural&quot;. ⚠️ Las reglas DURAS
+          (precios, disponibilidad, pagos, cuándo escalar a un humano) viven en el
+          código y NO se cambian desde acá — esas pedilas como cambio al bot.
         </p>
       </div>
 
@@ -834,7 +835,7 @@ function RuleEditor({
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Ej: Nunca des precios si el cliente no los ha pedido."
+          placeholder="Ej: No abrumes al cliente con opciones que no pidió."
           autoFocus
         />
       </Field>

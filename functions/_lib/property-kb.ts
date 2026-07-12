@@ -107,7 +107,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 
 ### Las Gemelas (Casa Brisa + Casa Marea juntas)
 - **Capacidad total:** hasta 12 huéspedes
-- **Tarifa combinada:** L.5,000 por noche + L.700 de limpieza (≈ USD 180/noche + USD 28 limpieza)
+- **Tarifa combinada:** L.4,900 por noche + L.700 de limpieza (≈ USD 176/noche + USD 28 limpieza)
 - **Cómo funciona:** Dos casas contiguas con jardín compartido. Ideal para una familia grande o dos grupos que se conocen.
 - **Ideal para:** familias grandes, grupos de amigos, retiros corporativos
 
