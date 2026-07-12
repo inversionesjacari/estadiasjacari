@@ -25,6 +25,7 @@
 
 import { normalizePhone, isValidE164 } from "../_lib/phone";
 import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
+import { isDuplicateResend, parseSqliteUtcMs } from "../_lib/outbound-dedup";
 import { getCheckinInfo } from "../_lib/checkin-info";
 import { todayHn } from "../_lib/dates";
 import { matchBotRule, buildEscalationReply, findActiveReservation, type ActiveReservation } from "../_lib/whatsapp-bot";
@@ -661,6 +662,44 @@ async function processIncomingMessage(
     }
   } catch {
     // Si el chequeo falla, seguimos y respondemos (mejor responder que callar)
+  }
+
+  // ── Dedup de salientes verbatim (ráfaga de concurrencia) ───────────────────
+  // Complemento de "última palabra gana": cuando el 2º mensaje del cliente llega
+  // DESPUÉS de que el 1º ya respondió (segundos de diferencia), ambos webhooks pasan
+  // el chequeo de "hay uno más nuevo" y mandan la MISMA respuesta → doble burbuja
+  // (chat Méndez: fotos ×2, check-in ×2, "no disponible" ×2, comprobante ×2). Si ya
+  // le mandamos a este cliente el MISMO matched_rule + body hace ≤2 min, NO reenviamos
+  // (el `return` también evita re-escalar/re-pausar: el 1º ya lo hizo). Ante cualquier
+  // error del chequeo → seguimos y respondemos (mejor responder que callar).
+  if (replyText && replyText.trim().length > 0) {
+    try {
+      const prevOut = await env.DB.prepare(
+        `SELECT body, matched_rule AS matchedRule, created_at AS createdAt
+           FROM whatsapp_messages
+          WHERE to_phone = ? AND direction = 'out' AND body <> ''
+          ORDER BY id DESC LIMIT 1`,
+      )
+        .bind(fromE164)
+        .first<{ body: string; matchedRule: string | null; createdAt: string }>();
+      const prevMs = prevOut ? parseSqliteUtcMs(prevOut.createdAt) : null;
+      if (
+        prevOut &&
+        prevMs != null &&
+        isDuplicateResend(
+          { matchedRule: prevOut.matchedRule, body: prevOut.body, createdAtMs: prevMs },
+          { matchedRule: ruleName, body: replyText },
+          Date.now(),
+        )
+      ) {
+        console.log(
+          `Saliente duplicado (${ruleName}) a ${fromE164} — omito reenvío verbatim (ráfaga de concurrencia).`,
+        );
+        return;
+      }
+    } catch {
+      // Si el chequeo falla, seguimos y respondemos (mejor responder que callar)
+    }
   }
 
   // ── Tarjeta NATIVA de producto (catálogo de WhatsApp) ──────────────────────
