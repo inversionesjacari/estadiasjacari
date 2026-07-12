@@ -208,6 +208,60 @@ function fmt(n: number): string {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Valle de Ángeles — venue de EVENTOS (pricing_type='events', schema/0039)
+// "En el mapa" para el LLM, pero NUNCA cotizable por noche.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Valle de Ángeles — venue de eventos (pricing_type='events')", () => {
+  const eventsRow = (overrides: Record<string, unknown> = {}) =>
+    propRow({
+      slug: "eventos-valle-angeles",
+      name: "Valle de Ángeles — Espacio para eventos",
+      city: "Valle de Ángeles",
+      capacity: 80,
+      price_night_hnl: 0,
+      cleaning_hnl: 0,
+      price_night_usd: 0,
+      cleaning_usd: 0,
+      pricing_type: "events",
+      ...overrides,
+    });
+
+  it("se renderiza como 'a cotizar', NUNCA una tarifa por noche ni un L.0", async () => {
+    const { db } = makeFakeDb({ properties: [eventsRow()] });
+    const text = await buildKnowledgeBaseText(db);
+    expect(text).toContain("## Propiedades de Valle de Ángeles");
+    expect(text).toContain("Valle de Ángeles — Espacio para eventos");
+    expect(text).toContain("Eventos — precio a cotizar");
+    expect(text).toContain("NO se cotiza por noche");
+    expect(text).toContain("hasta 80 personas"); // eventos → "personas", no "huéspedes"
+    expect(text).not.toContain("por noche + L."); // ni un fragmento de la línea de tarifa
+    expect(text).not.toContain("L.0");
+    expect(text).not.toMatch(/USD 0\/noche/);
+  });
+
+  it("buildPricingMap lo IGNORA → nunca cotizable (su slug no está en PROPERTY_PRICING)", async () => {
+    const { db } = makeFakeDb({ properties: [propRow(), eventsRow()] });
+    const map = await buildPricingMap(db);
+    expect((map as Record<string, unknown>)["eventos-valle-angeles"]).toBeUndefined();
+    expect(map["casa-brisa"].pricePerNightHNL).toBe(2500); // la fila normal queda intacta
+  });
+
+  it("regresión: el slug de eventos NO debe estar en PROPERTY_PRICING (agregarlo lo haría cotizable)", () => {
+    expect("eventos-valle-angeles" in PROPERTY_PRICING).toBe(false);
+  });
+
+  it("convive con estadías normales: cada ciudad con su formato (tarifa vs a-cotizar)", async () => {
+    const { db } = makeFakeDb({ properties: [propRow(), eventsRow()] });
+    const text = await buildKnowledgeBaseText(db);
+    expect(text).toContain("## Propiedades de Tela");
+    expect(text).toContain("L.2,500 por noche"); // Casa Brisa: tarifa normal
+    expect(text).toContain("## Propiedades de Valle de Ángeles");
+    expect(text).toContain("Eventos — precio a cotizar"); // VdA: a cotizar
+  });
+});
+
 // Ancla cada chequeo a la SECCIÓN de esa propiedad en la prosa (header ###).
 // Sin el ancla, los precios repetidos (tres casas a L.2,500) dejan pasar drift
 // de una sección cubierto por la vecina. Si un header se renombra, el test

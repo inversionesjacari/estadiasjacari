@@ -29,6 +29,9 @@ export interface KbProperty {
   slug: string;
   name: string;
   city: string;
+  /** 'per_night' (las 7 propiedades de estadía) o 'events' (venue de eventos,
+   *  ej. Valle de Ángeles): precio a cotizar a medida, NUNCA por noche. */
+  pricingType: string;
   capacity: number;
   bedrooms: number | null;
   bathrooms: number | null;
@@ -76,6 +79,7 @@ interface KbPropertyRow {
   slug: string;
   name: string;
   city: string;
+  pricing_type: string | null;
   capacity: number;
   bedrooms: number | null;
   bathrooms: number | null;
@@ -102,6 +106,9 @@ function rowToProperty(r: KbPropertyRow): KbProperty {
     slug: r.slug,
     name: r.name,
     city: r.city,
+    // Default 'per_night' para filas previas a la migración 0039 y para los
+    // tests que omiten la columna → siguen renderizando la tarifa por noche.
+    pricingType: r.pricing_type ?? "per_night",
     capacity: r.capacity,
     bedrooms: r.bedrooms,
     bathrooms: r.bathrooms,
@@ -331,13 +338,27 @@ export async function buildKnowledgeBaseText(db: D1Database): Promise<string> {
       lines.push(`- Slug interno: ${p.slug}`);
       if (p.aliases) lines.push(`- También conocida como: ${p.aliases}`);
       lines.push(`- Ciudad: ${p.city}`);
-      lines.push(`- Capacidad: hasta ${p.capacity} huéspedes`);
+      const isEvents = p.pricingType === "events";
+      lines.push(
+        `- Capacidad: hasta ${p.capacity} ${isEvents ? "personas" : "huéspedes"}`,
+      );
       if (p.bedrooms != null) lines.push(`- Habitaciones: ${p.bedrooms}`);
       if (p.bathrooms != null) lines.push(`- Baños: ${p.bathrooms}`);
       if (p.beds) lines.push(`- Camas: ${p.beds}`);
-      lines.push(
-        `- Tarifa: L.${p.priceNightHnl.toLocaleString("es-HN")} por noche + L.${p.cleaningHnl.toLocaleString("es-HN")} de limpieza (≈ USD ${p.priceNightUsd}/noche + USD ${p.cleaningUsd} limpieza)`,
-      );
+      // Venue de eventos: precio a cotizar a medida — NUNCA una tarifa por noche
+      // (mostrar "L.0/noche" le diría al LLM que el espacio es gratis). El flujo
+      // determinístico de eventos (detectors.ts + quote-flow.ts) sigue siendo la
+      // autoridad; esta línea solo refuerza la posición si un mensaje mal escrito
+      // esquiva el detector y llega al LLM.
+      if (isEvents) {
+        lines.push(
+          `- Eventos — precio a cotizar según el tipo de evento, la fecha y el número de personas; nuestro equipo de eventos arma la propuesta (este espacio NO se cotiza por noche).`,
+        );
+      } else {
+        lines.push(
+          `- Tarifa: L.${p.priceNightHnl.toLocaleString("es-HN")} por noche + L.${p.cleaningHnl.toLocaleString("es-HN")} de limpieza (≈ USD ${p.priceNightUsd}/noche + USD ${p.cleaningUsd} limpieza)`,
+        );
+      }
       if (p.amenities) lines.push(`- Amenidades: ${p.amenities}`);
       if (p.pool) lines.push(`- Piscina: ${p.pool}`);
       if (p.beach) lines.push(`- Playa/mar: ${p.beach}`);
