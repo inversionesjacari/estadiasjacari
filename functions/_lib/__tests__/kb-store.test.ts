@@ -14,7 +14,10 @@
 //      aunque tengan filas (el hardcode no tiene sección de reglas).
 //   6. Guardia anti-drift: los precios del hardcode PROPERTY_KNOWLEDGE_BASE
 //      (prosa) deben coincidir con PROPERTY_PRICING (lo que se cobra de verdad).
-//      Cazó un drift real: Las Gemelas decía L.5,000 en prosa y cobraba L.4,900.
+//      Cazó un drift real: Las Gemelas decía L.5,000 en prosa y el motor cobraba
+//      L.4,900 (César resolvió 2026-07-11: estándar = 5,000, el 4,900 era error).
+//      Desde entonces la prosa INTERPOLA los precios desde PROPERTY_PRICING;
+//      este guardia queda como red por si alguien vuelve a escribirlos a mano.
 //
 
 import { describe, it, expect } from "vitest";
@@ -228,10 +231,10 @@ function proseSection(slug: string): string {
 }
 
 describe("anti-drift: PROPERTY_KNOWLEDGE_BASE (prosa) vs PROPERTY_PRICING (lo que se cobra)", () => {
-  // Si esto falla: alguien cambió precio/limpieza/USD en UN lado y no en el otro.
-  // La fuente de verdad de lo COBRADO es PROPERTY_PRICING (con D1 encima); la
-  // prosa es el fallback del prompt y debe contar la misma historia — los 4
-  // números. Cazó un drift real: Las Gemelas decía L.5,000 y cobraba L.4,900.
+  // Si esto falla: alguien volvió a escribir un monto A MANO en la prosa (hoy
+  // se interpolan desde PROPERTY_PRICING) o rompió el template de la tarifa.
+  // La fuente de verdad de lo COBRADO es PROPERTY_PRICING (con D1 encima).
+  // Historia: cazó el drift real de Las Gemelas (prosa 5,000 vs motor 4,900).
   for (const [slug, p] of Object.entries(PROPERTY_PRICING)) {
     it(`${slug}: SU sección de la prosa dice la tarifa completa real (noche+limpieza, HNL+USD)`, () => {
       const section = proseSection(slug);

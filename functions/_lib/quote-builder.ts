@@ -64,9 +64,12 @@ export const PROPERTY_PRICING: Record<PropertySlug, PropertyPricing> = {
     name: "Las Gemelas (Casa Brisa + Casa Marea)",
     city: "Tela",
     capacity: 12,
-    pricePerNightHNL: 4900,
+    // Decisión de César 2026-07-11: tarifa estándar = la SUMA de las dos casas
+    // (2×2,500 = 5,000; 2×90 = 180). El 4,900/176 anterior era error histórico,
+    // no un descuento combo.
+    pricePerNightHNL: 5000,
     cleaningFeeHNL: 700,
-    pricePerNightUSD: 176,
+    pricePerNightUSD: 180,
     cleaningFeeUSD: 28,
   },
   "centro-morazan": {

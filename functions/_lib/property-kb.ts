@@ -10,6 +10,30 @@
 //
 // Fuente: estadiasjacari.com + info confirmada por propietario (César Jauregui)
 //
+// ⚠️ PRECIOS: las líneas de tarifa se INTERPOLAN desde PROPERTY_PRICING
+// (quote-builder.ts) — la fuente única de lo que se cobra. NO escribas montos
+// a mano acá: la versión manuscrita divergió (Gemelas decía L.5,000 mientras
+// el motor cobraba 4,900) y el guardia anti-drift de kb-store.test.ts lo cazó.
+//
+
+import { PROPERTY_PRICING } from "./quote-builder";
+
+/** 4900 → "4,900" — separador de miles manual (no depende del locale). */
+function fmt(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Línea de tarifa uniforme, siempre desde PROPERTY_PRICING. */
+function tarifa(slug: keyof typeof PROPERTY_PRICING): string {
+  const p = PROPERTY_PRICING[slug];
+  return `L.${fmt(p.pricePerNightHNL)} por noche + L.${fmt(p.cleaningFeeHNL)} de limpieza (≈ USD ${p.pricePerNightUSD}/noche + USD ${p.cleaningFeeUSD} limpieza)`;
+}
+
+/** Precio corto para el summary: "L.2,500+350/noche". */
+function tarifaCorta(slug: keyof typeof PROPERTY_PRICING): string {
+  const p = PROPERTY_PRICING[slug];
+  return `L.${fmt(p.pricePerNightHNL)}+${fmt(p.cleaningFeeHNL)}/noche`;
+}
 
 export const PROPERTY_KNOWLEDGE_BASE = `
 # Estadías Jacarí — Base de conocimiento para atención a huéspedes
@@ -28,7 +52,7 @@ Somos una empresa de alquileres turísticos en Honduras con 6 propiedades en La 
   → Principal: 1 cama King
   → Secundaria: 2 camas matrimoniales
 - **Baños:** 1
-- **Tarifa:** L.2,500 por noche + L.350 de limpieza (≈ USD 90/noche + USD 14 limpieza)
+- **Tarifa:** ${tarifa("villa-b11-palma-real")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming (Netflix, HBO, etc.)
 - **Estacionamiento:** Incluido
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -58,7 +82,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
   → Principal: 1 cama Queen + 1 cama individual
   → Secundaria: 1 cama matrimonial + 1 cama individual
 - **Baños:** 2
-- **Tarifa:** L.2,500 por noche + L.350 de limpieza (≈ USD 90/noche + USD 14 limpieza)
+- **Tarifa:** ${tarifa("casa-brisa")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming (Netflix, HBO, etc.)
 - **Estacionamiento:** Incluido (amplio, varios vehículos)
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -87,7 +111,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
   → Principal: 1 cama Queen
   → Secundaria: 1 litera + 1 cama individual
 - **Baños:** 2
-- **Tarifa:** L.2,500 por noche + L.350 de limpieza (≈ USD 90/noche + USD 14 limpieza)
+- **Tarifa:** ${tarifa("casa-marea")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming
 - **Estacionamiento:** Incluido (amplio)
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -107,7 +131,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 
 ### Las Gemelas (Casa Brisa + Casa Marea juntas)
 - **Capacidad total:** hasta 12 huéspedes
-- **Tarifa combinada:** L.4,900 por noche + L.700 de limpieza (≈ USD 176/noche + USD 28 limpieza)
+- **Tarifa combinada:** ${tarifa("las-gemelas-tela")}
 - **Cómo funciona:** Dos casas contiguas con jardín compartido. Ideal para una familia grande o dos grupos que se conocen.
 - **Ideal para:** familias grandes, grupos de amigos, retiros corporativos
 
@@ -121,7 +145,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 - **Capacidad:** hasta 6 huéspedes
 - **Habitaciones:** 2 — Principal: 1 cama Queen · Secundaria: 1 cama Queen + 1 cama adicional (3 camas en total, hasta 6 personas). A/C independiente en cada habitación
 - **Baños:** 2
-- **Tarifa:** L.2,100 por noche + L.400 de limpieza (≈ USD 80/noche + USD 16 limpieza)
+- **Tarifa:** ${tarifa("centro-morazan")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming
 - **Estacionamiento:** 1 vehículo incluido (vehículo adicional tiene costo extra)
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -142,7 +166,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 - **Capacidad:** hasta 4 huéspedes
 - **Habitaciones:** 2 (cada una con cama Queen y **baño privado propio**)
 - **Baños:** 3 en total (2 privados + 1 adicional)
-- **Tarifa:** L.1,590 por noche + L.400 de limpieza (≈ USD 60/noche + USD 16 limpieza)
+- **Tarifa:** ${tarifa("casa-lara-townhouse")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming
 - **Estacionamiento:** Incluido (1 vehículo)
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -163,7 +187,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 - **Capacidad:** hasta 3 huéspedes
 - **Habitaciones:** 2 (Principal: cama doble | Sala: sofá cama)
 - **Baños:** 1
-- **Tarifa:** L.650 por noche + L.350 de limpieza (≈ USD 26/noche + USD 14 limpieza)
+- **Tarifa:** ${tarifa("la-florida")}
 - **Smart TV:** Sí — conectá tu cuenta de streaming
 - **Estacionamiento:** No incluido (zona residencial privada con acceso controlado)
 - **Mascotas:** Sí se permiten (ver política de mascotas abajo)
@@ -275,11 +299,11 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 /** Versión corta para contextos con límite de tokens. */
 export const PROPERTY_KB_SUMMARY = `
 Estadías Jacarí — 6 propiedades en Honduras:
-1. Villa B11 (La Ceiba, 6 pers, L.2,500+350/noche) — piscina + playa incluidas (brazaletes del hotel), Smart TV, estacionamiento
-2. Casa Brisa (Tela, 6 pers, L.2,500+350/noche) — cerca del mar, piscina opcional (L.250-350/pers), playa pública gratis, generador, WiFi dual, Smart TV
-3. Casa Marea (Tela, 6 pers, L.2,500+350/noche) — igual que Casa Brisa, juntas forman Las Gemelas (hasta 12 personas)
-4. Centro Morazán (Tegucigalpa, 6 pers, L.2,100+400/noche) — piso 20, vistas panorámicas, Smart TV, 1 estacionamiento incluido
-5. Casa Lara Townhouse (Tegucigalpa, 4 pers, L.1,590+400/noche) — cada hab. con baño privado, zona exclusiva, Smart TV
-6. La Florida (Tegucigalpa, 3 pers, L.650+350/noche) — económica, lavadora, Smart TV, seguridad 24/7
+1. Villa B11 (La Ceiba, 6 pers, ${tarifaCorta("villa-b11-palma-real")}) — piscina + playa incluidas (brazaletes del hotel), Smart TV, estacionamiento
+2. Casa Brisa (Tela, 6 pers, ${tarifaCorta("casa-brisa")}) — cerca del mar, piscina opcional (L.250-350/pers), playa pública gratis, generador, WiFi dual, Smart TV
+3. Casa Marea (Tela, 6 pers, ${tarifaCorta("casa-marea")}) — igual que Casa Brisa, juntas forman Las Gemelas (hasta 12 personas)
+4. Centro Morazán (Tegucigalpa, 6 pers, ${tarifaCorta("centro-morazan")}) — piso 20, vistas panorámicas, Smart TV, 1 estacionamiento incluido
+5. Casa Lara Townhouse (Tegucigalpa, 4 pers, ${tarifaCorta("casa-lara-townhouse")}) — cada hab. con baño privado, zona exclusiva, Smart TV
+6. La Florida (Tegucigalpa, 3 pers, ${tarifaCorta("la-florida")}) — económica, lavadora, Smart TV, seguridad 24/7
 Check-in 3 PM · Check-out 11 AM · Mascotas OK (con responsabilidad) · Fiestas PROHIBIDAS · Cancelación gratis con 1 semana de anticipación
 `.trim();
