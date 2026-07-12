@@ -21,6 +21,8 @@
  *                  se queda callado o falla seguido — ver functions/api/cron/watchdog.ts)
  *   cada hora    → paypal-income      (ingreso Airbnb vía PayPal)
  *   00:00 UTC    → checkin-reminders  (6 PM HN — Correo #2 + WA T-1 día)
+ *   00:30/12:00 UTC → conversation-autotag (6:30 PM / 6 AM HN — 2×/día; etiqueta el
+ *                  DESENLACE de los chats sin pisar tags manuales; ver B10 doc 11)
  *   11:30 UTC    → bot-qa-run         (5:30 AM HN — QA diario del bot)
  *   13:00/15:00/17:30 UTC → whatsapp-operations (avisos operativos — DESACTIVADO
  *                  hasta cargar property_contacts; descomentar abajo cuando esté)
@@ -33,7 +35,7 @@
  *
  * PRUEBA MANUAL: abrir la URL del Worker con ?secret=TU_SECRET&hito=<hito>
  *   (hitos válidos: checkin, staff, guests, cleaning, followups, income,
- *    income-debug, qa, retry).
+ *    income-debug, qa, retry, watchdog, autotag).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -54,6 +56,7 @@ function dueEndpoints(date) {
   if (m === 0)      urls.push(BASE + '/api/cron/paypal-income');    // cada hora
 
   if (h === 0  && m === 0)  urls.push(BASE + '/api/cron/checkin-reminders'); // 6 PM HN
+  if ((h === 0 && m === 30) || (h === 12 && m === 0)) urls.push(BASE + '/api/inbox/conversation-autotag'); // 6:30 PM / 6 AM HN — autotag desenlaces 2×/día (B10)
   if (h === 11 && m === 30) urls.push(BASE + '/api/inbox/bot-qa-run');       // 5:30 AM HN
 
   // Avisos operativos — DESCOMENTAR cuando property_contacts esté cargado:
@@ -75,7 +78,8 @@ const MANUAL_DISPATCH = {
   'income-debug': BASE + '/api/cron/paypal-income?debug=1',  // muestra txns Airbnb SIN escribir
   qa:             BASE + '/api/inbox/bot-qa-run',            // QA del bot
   retry:          BASE + '/api/cron/bot-retry',              // auto-recuperación del bot
-  watchdog:       BASE + '/api/cron/watchdog',                // vigila que los otros crons sigan corriendo
+  watchdog:       BASE + '/api/cron/watchdog',               // vigila que los otros crons sigan corriendo
+  autotag:        BASE + '/api/inbox/conversation-autotag',  // etiqueta el desenlace de los chats (B10)
 };
 
 export default {
