@@ -286,24 +286,27 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
       /* best-effort */
     }
 
-    // Registrar el mensaje saliente en el historial (para que aparezca en el inbox)
-    if (sendResult.ok) {
-      try {
-        await env.DB.prepare(
-          `INSERT INTO whatsapp_messages
-             (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
-           VALUES (?, 'out', ?, ?, ?, 'auto_followup', 0, 'sent')`,
+    // Registrar el mensaje saliente en el historial (para que aparezca en el
+    // inbox). Los FALLIDOS también dejan fila (status='failed', body [FAILED])
+    // — antes eran invisibles y la card "📬 Salud de entrega" no los veía.
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_messages
+           (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+         VALUES (?, 'out', ?, ?, ?, 'auto_followup', 0, ?)`,
+      )
+        .bind(
+          sendResult.ok ? (sendResult.messageId ?? null) : null,
+          env.WHATSAPP_PHONE_NUMBER_ID,
+          row.phone,
+          sendResult.ok
+            ? message
+            : `[FAILED] ${message}\n\nERROR: ${sendResult.error ?? "desconocido"}`,
+          sendResult.ok ? "sent" : "failed",
         )
-          .bind(
-            sendResult.messageId ?? null,
-            env.WHATSAPP_PHONE_NUMBER_ID,
-            row.phone,
-            message,
-          )
-          .run();
-      } catch {
-        /* best-effort */
-      }
+        .run();
+    } catch {
+      /* best-effort */
     }
 
     results.push({
@@ -411,14 +414,21 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
 
       const sr = await sendTextMessage(row.phone, message, env);
       await markDone();
-      if (sr.ok) {
-        try {
-          await env.DB.prepare(
-            `INSERT INTO whatsapp_messages (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
-             VALUES (?, 'out', ?, ?, ?, ?, 0, 'sent')`,
-          ).bind(sr.messageId ?? null, env.WHATSAPP_PHONE_NUMBER_ID, row.phone, message, stillOk ? "last_call" : "last_call_redirect").run();
-        } catch { /* best-effort */ }
-      }
+      // Los FALLIDOS también dejan fila (status='failed') — visibles en la
+      // card "📬 Salud de entrega"; antes solo se insertaba si sr.ok.
+      try {
+        await env.DB.prepare(
+          `INSERT INTO whatsapp_messages (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+           VALUES (?, 'out', ?, ?, ?, ?, 0, ?)`,
+        ).bind(
+          sr.ok ? (sr.messageId ?? null) : null,
+          env.WHATSAPP_PHONE_NUMBER_ID,
+          row.phone,
+          sr.ok ? message : `[FAILED] ${message}\n\nERROR: ${sr.error ?? "desconocido"}`,
+          stillOk ? "last_call" : "last_call_redirect",
+          sr.ok ? "sent" : "failed",
+        ).run();
+      } catch { /* best-effort */ }
       lastCall.push({ phone: row.phone, sent: sr.ok, kind: stillOk ? "alive" : "unavailable", error: sr.ok ? undefined : sr.error });
     }
   } catch (err) {

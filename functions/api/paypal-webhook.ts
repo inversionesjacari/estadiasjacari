@@ -10,6 +10,7 @@ import { todayHn } from "../_lib/dates";
 import { fetchWithTimeout, TIMEOUT } from "../_lib/fetch";
 // Fase 5 — WhatsApp Cloud API
 import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../_lib/whatsapp";
+import { logOutboundTemplate } from "../_lib/wa-log";
 import { normalizePhone, isValidE164 } from "../_lib/phone";
 // Sprint 1 — Templates operativos WhatsApp (limpieza + seguridad + huésped día)
 import {
@@ -779,6 +780,19 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                             orderId,
                           )
                           .run();
+                        // Fila rastreable en whatsapp_messages (card "📬 Salud
+                        // de entrega" + checks del callback). INSERT OR IGNORE:
+                        // un reintento del webhook con el mismo wamid no duplica.
+                        await logOutboundTemplate(env.DB, {
+                          fromPhone: env.WHATSAPP_PHONE_NUMBER_ID,
+                          toPhone: e164,
+                          rule: "checkin_reminder",
+                          summary: `📋 Instrucciones de check-in + PDF — ${waPropertyName} (mismo día)`,
+                          reservationId: null,
+                          ok: waResult.ok,
+                          messageId: waResult.messageId ?? null,
+                          error: waResult.error ?? null,
+                        });
                         checkinMsg += waResult.ok
                           ? ` · WhatsApp enviado (${waResult.messageId ?? "sin id"})`
                           : ` · WhatsApp FALLÓ: ${waResult.error?.slice(0, 150)}`;

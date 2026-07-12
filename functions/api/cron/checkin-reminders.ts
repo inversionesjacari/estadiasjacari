@@ -29,6 +29,7 @@ import { sendViaResend } from "../../_lib/resend";
 import { getCheckinPdf } from "../../_lib/checkin-pdf";
 import { hnDatePlusDays, todayHn } from "../../_lib/dates";
 import { sendCheckinReminderWhatsApp, formatCheckinDateForTemplate } from "../../_lib/whatsapp";
+import { logOutboundTemplate } from "../../_lib/wa-log";
 import { normalizePhone, isValidE164 } from "../../_lib/phone";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
@@ -310,6 +311,20 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
                   r.id,
                 )
                 .run();
+
+              // Fila rastreable en whatsapp_messages: con el wamid, el callback
+              // de Meta le actualiza los checks (sent→delivered→read→failed) y
+              // la card "📬 Salud de entrega" del inbox la ve. Fail-soft.
+              await logOutboundTemplate(env.DB, {
+                fromPhone: env.WHATSAPP_PHONE_NUMBER_ID,
+                toPhone: e164,
+                rule: "checkin_reminder",
+                summary: `📋 Instrucciones de check-in + PDF — ${propertyName} (${checkInDateEs})`,
+                reservationId: r.id,
+                ok: waResult.ok,
+                messageId: waResult.messageId ?? null,
+                error: waResult.error ?? null,
+              });
             }
           }
         } catch (waErr) {

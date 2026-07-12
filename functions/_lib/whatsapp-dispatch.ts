@@ -18,6 +18,7 @@
 import { normalizePhone, isValidE164 } from "./phone";
 import { todayHn } from "./dates";
 import { getCleaningContacts, getSecurityContacts } from "./property-contacts";
+import { logOutboundTemplate } from "./wa-log";
 import {
   sendCheckinDiaHuesped,
   sendCheckinDiaLimpieza,
@@ -28,6 +29,9 @@ import {
   formatDateShortEs,
   type SendTemplateResult,
 } from "./whatsapp-templates";
+
+/** Resultado de envío anotado con el destinatario (para la fila en whatsapp_messages). */
+type DispatchSendResult = SendTemplateResult & { to?: string };
 
 export interface DispatchEnv {
   DB: D1Database;
@@ -157,7 +161,7 @@ export async function dispatchTemplateToReservation(
     {
       sentAtColumn: keyof ReservationRow;
       errorColumn: string;
-      run: () => Promise<{ results: SendTemplateResult[]; detail: string }>;
+      run: () => Promise<{ results: DispatchSendResult[]; detail: string }>;
     }
   > = {
     checkin_dia_huesped: {
@@ -243,6 +247,32 @@ export async function dispatchTemplateToReservation(
     } catch (dbErr) {
       console.error("[whatsapp-dispatch] Error actualizando D1:", (dbErr as Error).message);
     }
+
+    // Una fila rastreable por resultado en whatsapp_messages: con el wamid, el
+    // callback de Meta actualiza los checks y la card "📬 Salud de entrega" del
+    // inbox lo ve. Fail-soft (logOutboundTemplate nunca lanza) y nunca en dryRun
+    // (este bloque ya está gateado por !dryRun; el helper además ignora DRY_RUN).
+    const tplSummary: Record<DispatchTemplateName, string> = {
+      checkin_dia_huesped: "🏠 Aviso día de check-in al huésped",
+      checkout_dia_huesped: "🧳 Aviso día de check-out al huésped",
+      checkin_dia_limpieza: "🧹 Aviso de check-in a limpieza",
+      checkout_dia_limpieza: "🧹 Aviso de check-out a limpieza",
+      checkin_dia_seguridad: "🛡️ Aviso de check-in a seguridad",
+      confirmacion_whatsapp_capturado: "✅ Confirmación de reserva por WhatsApp",
+    };
+    for (const res of results) {
+      if (!res.to) continue; // sin destinatario no hubo intento real de envío
+      await logOutboundTemplate(env.DB, {
+        fromPhone: env.WHATSAPP_PHONE_NUMBER_ID,
+        toPhone: res.to,
+        rule: `tpl_${template}`,
+        summary: `${tplSummary[template]} — ${propertyName}`,
+        reservationId,
+        ok: res.ok,
+        messageId: res.messageId ?? null,
+        error: res.error ?? null,
+      });
+    }
   }
 
   return {
@@ -271,19 +301,22 @@ async function runGuestTemplate(
   phase: "arrival" | "departure",
   propertyName: string,
   city: string,
-): Promise<{ results: SendTemplateResult[]; detail: string }> {
+): Promise<{ results: DispatchSendResult[]; detail: string }> {
   if (!r.guest_phone) {
     return { results: [{ ok: false, error: "Reserva sin guest_phone" }], detail: "skip" };
   }
   const { e164 } = normalizePhone(r.guest_phone);
   if (!isValidE164(e164)) {
-    return { results: [{ ok: false, error: `Teléfono inválido: ${r.guest_phone}` }], detail: "skip" };
+    return {
+      results: [{ ok: false, error: `Teléfono inválido: ${r.guest_phone}`, to: r.guest_phone }],
+      detail: "skip",
+    };
   }
   const firstName = (r.guest_name || "huésped").split(" ")[0];
 
   if (dryRun) {
     return {
-      results: [{ ok: true, messageId: "DRY_RUN" }],
+      results: [{ ok: true, messageId: "DRY_RUN", to: e164 }],
       detail: `(dryRun) ${phase === "arrival" ? "checkin" : "checkout"} a ${firstName} (${e164})`,
     };
   }
@@ -294,7 +327,7 @@ async function runGuestTemplate(
   } else {
     res = await sendCheckoutDiaHuesped({ toPhone: e164, guestName: firstName, propertyName }, waEnv);
   }
-  return { results: [res], detail: `1 envío a ${firstName} (${e164})` };
+  return { results: [{ ...res, to: e164 }], detail: `1 envío a ${firstName} (${e164})` };
 }
 
 async function runStaffTemplate(
@@ -305,7 +338,7 @@ async function runStaffTemplate(
   role: "cleaning" | "security",
   phase: "arrival" | "departure",
   propertyName: string,
-): Promise<{ results: SendTemplateResult[]; detail: string }> {
+): Promise<{ results: DispatchSendResult[]; detail: string }> {
   const contacts =
     role === "cleaning"
       ? await getCleaningContacts(r.property_slug, env.DB)
@@ -318,19 +351,19 @@ async function runStaffTemplate(
     };
   }
 
-  const results: SendTemplateResult[] = [];
+  const results: DispatchSendResult[] = [];
   for (const c of contacts) {
     if (!isValidE164(c.phoneE164)) {
-      results.push({ ok: false, error: `Teléfono inválido: ${c.phoneE164}` });
+      results.push({ ok: false, error: `Teléfono inválido: ${c.phoneE164}`, to: c.phoneE164 });
       continue;
     }
     if (dryRun) {
-      results.push({ ok: true, messageId: "DRY_RUN" });
+      results.push({ ok: true, messageId: "DRY_RUN", to: c.phoneE164 });
       continue;
     }
     if (role === "cleaning" && phase === "arrival") {
-      results.push(
-        await sendCheckinDiaLimpieza(
+      results.push({
+        ...(await sendCheckinDiaLimpieza(
           {
             toPhone: c.phoneE164,
             cleanerName: c.name,
@@ -338,27 +371,30 @@ async function runStaffTemplate(
             checkOutDateEs: formatDateShortEs(r.check_out),
           },
           waEnv,
-        ),
-      );
+        )),
+        to: c.phoneE164,
+      });
     } else if (role === "cleaning" && phase === "departure") {
       const nextLabel = await getNextCheckInLabel(env.DB, r.property_slug, todayHn());
-      results.push(
-        await sendCheckoutDiaLimpieza(
+      results.push({
+        ...(await sendCheckoutDiaLimpieza(
           { toPhone: c.phoneE164, cleanerName: c.name, propertyName, nextCheckInLabel: nextLabel },
           waEnv,
-        ),
-      );
+        )),
+        to: c.phoneE164,
+      });
     } else if (role === "security" && phase === "arrival") {
-      results.push(
-        await sendCheckinDiaSeguridad(
+      results.push({
+        ...(await sendCheckinDiaSeguridad(
           {
             toPhone: c.phoneE164,
             guestFullName: r.guest_name || "Huésped sin nombre",
             checkOutDateEs: formatDateShortEs(r.check_out),
           },
           waEnv,
-        ),
-      );
+        )),
+        to: c.phoneE164,
+      });
     } else {
       // No existe "checkout_dia_seguridad" — combinación no soportada.
       results.push({ ok: false, error: `Combinación role=${role} phase=${phase} no implementada` });
@@ -372,18 +408,24 @@ async function runConfirmationTemplate(
   dryRun: boolean,
   waEnv: { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
   propertyName: string,
-): Promise<{ results: SendTemplateResult[]; detail: string }> {
+): Promise<{ results: DispatchSendResult[]; detail: string }> {
   if (!r.guest_phone) {
     return { results: [{ ok: false, error: "Reserva sin guest_phone" }], detail: "skip" };
   }
   const { e164 } = normalizePhone(r.guest_phone);
   if (!isValidE164(e164)) {
-    return { results: [{ ok: false, error: `Teléfono inválido: ${r.guest_phone}` }], detail: "skip" };
+    return {
+      results: [{ ok: false, error: `Teléfono inválido: ${r.guest_phone}`, to: r.guest_phone }],
+      detail: "skip",
+    };
   }
   const firstName = (r.guest_name || "huésped").split(" ")[0];
 
   if (dryRun) {
-    return { results: [{ ok: true, messageId: "DRY_RUN" }], detail: `(dryRun) confirmación a ${firstName} (${e164})` };
+    return {
+      results: [{ ok: true, messageId: "DRY_RUN", to: e164 }],
+      detail: `(dryRun) confirmación a ${firstName} (${e164})`,
+    };
   }
 
   const res = await sendConfirmacionWhatsappCapturado(
@@ -396,7 +438,7 @@ async function runConfirmationTemplate(
     },
     waEnv,
   );
-  return { results: [res], detail: `confirmación a ${firstName} (${e164})` };
+  return { results: [{ ...res, to: e164 }], detail: `confirmación a ${firstName} (${e164})` };
 }
 
 async function getNextCheckInLabel(db: D1Database, slug: string, afterDate: string): Promise<string> {
