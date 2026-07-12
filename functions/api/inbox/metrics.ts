@@ -17,6 +17,7 @@
 import { requireInboxAuth } from "../../_lib/inbox-auth";
 import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
 import { isNotInterested } from "../../_lib/detectors";
+import { metaCodeLabel, parseWaFailTrace } from "../../_lib/delivery-policy";
 
 interface Env extends IcalEnv {
   DB: D1Database;
@@ -338,6 +339,77 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     .first<{ t: string }>()
     .catch(() => ({ t: null }));
 
+  // ── 📬 SALUD DE ENTREGA WHATSAPP (qué mandó el bot, qué llegó, qué falló) ────
+  // Fuentes: whatsapp_messages.status (checks del callback de Meta) + bot_trace
+  // WA_DELIVERY_FAILED (motivo exacto, incluso para envíos sin fila propia) +
+  // heartbeats owner_alert_ok/fail. Todo fail-soft. Índices en schema/0040.
+  const [dlv7, dlv30, dlvFailedRows, dlvTraces, dlvStuck, dlvPendingCheckins, ownerAlertOk, ownerAlertFail] =
+    await Promise.all([
+      db.prepare(`SELECT COALESCE(status,'(sin)') AS status, COUNT(*) AS c FROM whatsapp_messages WHERE direction='out' AND created_at >= datetime('now','-7 days') GROUP BY status`).all<{ status: string; c: number }>().catch(() => ({ results: [] })),
+      db.prepare(`SELECT COALESCE(status,'(sin)') AS status, COUNT(*) AS c FROM whatsapp_messages WHERE direction='out' AND created_at >= datetime('now','-30 days') GROUP BY status`).all<{ status: string; c: number }>().catch(() => ({ results: [] })),
+      // Fallos con contexto (30d): quién, qué regla, cuándo. El motivo viene del merge con bot_trace.
+      db.prepare(`SELECT meta_message_id, to_phone, matched_rule, body, created_at FROM whatsapp_messages WHERE direction='out' AND status='failed' AND created_at >= datetime('now','-30 days') ORDER BY created_at DESC LIMIT 20`).all<{ meta_message_id: string | null; to_phone: string; matched_rule: string | null; body: string | null; created_at: string }>().catch(() => ({ results: [] })),
+      db.prepare(`SELECT at, phone, detail FROM bot_trace WHERE stage='WA_DELIVERY_FAILED' AND at >= datetime('now','-30 days') ORDER BY at DESC LIMIT 40`).all<{ at: string; phone: string; detail: string }>().catch(() => ({ results: [] })),
+      // Atascados: Meta aceptó (sent) pero nunca reportó delivered en >24h — típico número muerto.
+      db.prepare(`SELECT to_phone, matched_rule, created_at FROM whatsapp_messages WHERE direction='out' AND status='sent' AND created_at < datetime('now','-1 day') AND created_at >= datetime('now','-7 days') ORDER BY created_at DESC LIMIT 10`).all<{ to_phone: string; matched_rule: string | null; created_at: string }>().catch(() => ({ results: [] })),
+      // "Qué está haciendo falta": check-ins de ayer→+2 días sin instrucciones enviadas o con error.
+      db.prepare(`SELECT id, property_slug, guest_name, check_in, whatsapp_sent_at, whatsapp_error FROM reservations WHERE status = 'confirmed' AND check_in BETWEEN date('now','-1 day') AND date('now','+2 days') AND (whatsapp_sent_at IS NULL OR whatsapp_error IS NOT NULL) ORDER BY check_in ASC LIMIT 12`).all<{ id: number; property_slug: string; guest_name: string | null; check_in: string; whatsapp_sent_at: string | null; whatsapp_error: string | null }>().catch(() => ({ results: [] })),
+      db.prepare(`SELECT last_at AS t FROM system_heartbeat WHERE key='owner_alert_ok'`).first<{ t: string }>().catch(() => ({ t: null })),
+      db.prepare(`SELECT last_at AS t FROM system_heartbeat WHERE key='owner_alert_fail'`).first<{ t: string }>().catch(() => ({ t: null })),
+    ]);
+
+  // Merge fila↔trace por wamid: la fila da la regla/destino, el trace da el
+  // código+motivo de Meta. Traces sin fila (ej. alertas a dueños) entran igual.
+  const dlvAgg = (rows: { status: string; c: number }[]) => {
+    const by: Record<string, number> = {};
+    for (const r of rows) by[r.status] = r.c;
+    const sent = Object.values(by).reduce((a, b) => a + b, 0);
+    const known = (by["delivered"] ?? 0) + (by["read"] ?? 0) + (by["failed"] ?? 0) + (by["sent"] ?? 0);
+    const arrived = (by["delivered"] ?? 0) + (by["read"] ?? 0);
+    return {
+      total: sent,
+      deliveredPct: known > 0 ? Math.round((arrived / known) * 100) : null,
+      readPct: known > 0 ? Math.round(((by["read"] ?? 0) / known) * 100) : null,
+      failed: by["failed"] ?? 0,
+      pending: (by["sent"] ?? 0) + (by["(sin)"] ?? 0),
+    };
+  };
+  const traceByWamid = new Map<string, { at: string; phone: string; code: number | null; title: string }>();
+  const tracesNoRow: { at: string; phone: string; code: number | null; title: string }[] = [];
+  for (const t of rowsOf<{ at: string; phone: string; detail: string }>(dlvTraces)) {
+    const p = parseWaFailTrace(t.detail);
+    if (p.wamid) traceByWamid.set(p.wamid, { at: t.at, phone: t.phone, code: p.code, title: p.title });
+    else tracesNoRow.push({ at: t.at, phone: t.phone, code: p.code, title: p.title });
+  }
+  const failedRowWamids = new Set<string>();
+  const deliveryFailures = rowsOf<{ meta_message_id: string | null; to_phone: string; matched_rule: string | null; body: string | null; created_at: string }>(dlvFailedRows).map((f) => {
+    if (f.meta_message_id) failedRowWamids.add(f.meta_message_id);
+    const trace = f.meta_message_id ? traceByWamid.get(f.meta_message_id) : undefined;
+    // Fallos síncronos (Meta rechazó el POST) llevan el error en el body [FAILED].
+    const bodyErr = f.body?.includes("ERROR:") ? f.body.split("ERROR:").pop()?.trim().slice(0, 160) : null;
+    return {
+      at: f.created_at,
+      to: f.to_phone,
+      rule: f.matched_rule ?? "(sin regla)",
+      code: trace?.code ?? null,
+      reason: trace ? metaCodeLabel(trace.code) : (bodyErr || "Fallo de envío (ver chat)"),
+    };
+  });
+  // Traces con wamid pero SIN fila failed en whatsapp_messages: envíos por fetch
+  // directo sin fila propia (alertas a dueños, o templates de antes de wa-log).
+  // También son fallos reales de entrega — que se vean.
+  for (const [wamid, t] of traceByWamid) {
+    if (!failedRowWamids.has(wamid)) tracesNoRow.push({ at: t.at, phone: t.phone, code: t.code, title: t.title });
+  }
+  tracesNoRow.sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const deliveryOrphanFailures = tracesNoRow.slice(0, 10).map((t) => ({
+    at: t.at,
+    to: t.phone,
+    rule: "template_directo",
+    code: t.code,
+    reason: metaCodeLabel(t.code),
+  }));
+
   // Airbnb health (cacheado 15 min por el fetch; no golpea Airbnb en cada poll)
   let airbnbStatus: "full" | "partial" | "unavailable" | "unknown" = "unknown";
   try {
@@ -604,6 +676,33 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       airbnbStatus,
       botLlmErrorAt: strOf(llmError, "t"),
       botMudoAt: strOf(botMudo, "t"),
+      // Semáforos de entrega (📬): fallos 24h + estado del canal de avisos a dueños.
+      waFailed24h:
+        deliveryFailures.filter((f) => f.at >= new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ")).length +
+        deliveryOrphanFailures.filter((f) => f.at && f.at >= new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ")).length,
+      ownerAlertOkAt: strOf(ownerAlertOk, "t"),
+      ownerAlertFailAt: strOf(ownerAlertFail, "t"),
+    },
+    // 📬 Salud de entrega WhatsApp: qué mandó el bot, qué llegó y qué falta.
+    delivery: {
+      d7: dlvAgg(rowsOf<{ status: string; c: number }>(dlv7)),
+      d30: dlvAgg(rowsOf<{ status: string; c: number }>(dlv30)),
+      failures: [...deliveryFailures, ...deliveryOrphanFailures]
+        .sort((a, b) => (b.at || "").localeCompare(a.at || ""))
+        .slice(0, 20),
+      stuck: rowsOf<{ to_phone: string; matched_rule: string | null; created_at: string }>(dlvStuck).map((s) => ({
+        at: s.created_at,
+        to: s.to_phone,
+        rule: s.matched_rule ?? "(sin regla)",
+      })),
+      pendingCheckins: rowsOf<{ id: number; property_slug: string; guest_name: string | null; check_in: string; whatsapp_sent_at: string | null; whatsapp_error: string | null }>(dlvPendingCheckins).map((r) => ({
+        id: r.id,
+        property: r.property_slug,
+        guest: r.guest_name ?? "Huésped",
+        checkIn: r.check_in,
+        state: r.whatsapp_error ? ("fallo" as const) : ("sin_enviar" as const),
+        error: r.whatsapp_error ? r.whatsapp_error.slice(0, 160) : null,
+      })),
     },
     botHealth: {
       inbound: bc.inbound,

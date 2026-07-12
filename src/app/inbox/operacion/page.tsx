@@ -181,7 +181,15 @@ interface Metrics {
   };
   porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
-  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null; botMudoAt: string | null };
+  health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null; botMudoAt: string | null; waFailed24h?: number; ownerAlertOkAt?: string | null; ownerAlertFailAt?: string | null };
+  // 📬 Salud de entrega WhatsApp (qué mandó el bot, qué llegó y qué falta).
+  delivery?: {
+    d7: { total: number; deliveredPct: number | null; readPct: number | null; failed: number; pending: number };
+    d30: { total: number; deliveredPct: number | null; readPct: number | null; failed: number; pending: number };
+    failures: { at: string; to: string; rule: string; code: number | null; reason: string }[];
+    stuck: { at: string; to: string; rule: string }[];
+    pendingCheckins: { id: number; property: string; guest: string; checkIn: string; state: "sin_enviar" | "fallo"; error: string | null }[];
+  };
   botHealth: { inbound: number; botReplies: number; manualReplies: number; escalations: number; fails: number; escalationPct: number };
   trend: { day: string; c: number }[];
   feed: { type: "message" | "reservation"; at: string; text: string; tag?: string }[];
@@ -212,6 +220,27 @@ const STAGE_META: Record<string, { label: string; hex: string }> = {
   PRE_LLM: { label: "Pre-IA", hex: "#94a3b8" },
   DATE_PARSER_FIX: { label: "Fechas corregidas por el parser", hex: "#34d399" },
 };
+
+// Etiquetas legibles para las reglas de mensajes salientes (📬 Salud de entrega).
+const RULE_LABELS: Record<string, string> = {
+  checkin_reminder: "Instrucciones de check-in (PDF)",
+  tpl_checkin_dia_huesped: "Aviso día de check-in (huésped)",
+  tpl_checkout_dia_huesped: "Aviso día de check-out (huésped)",
+  tpl_confirmacion_whatsapp_capturado: "Confirmación de reserva",
+  tpl_checkin_dia_limpieza: "Aviso a limpieza (check-in)",
+  tpl_checkout_dia_limpieza: "Aviso a limpieza (check-out)",
+  tpl_checkin_dia_seguridad: "Aviso a seguridad",
+  auto_followup: "Seguimiento automático",
+  last_call: "Último aviso",
+  last_call_redirect: "Último aviso (otras fechas)",
+  manual_inbox: "Respuesta manual del inbox",
+  template_directo: "Template directo (alerta/aviso)",
+  quote_provided: "Cotización",
+  bot_gathering_data: "Bot pidiendo datos",
+  property_card_proactive: "Tarjeta de propiedad",
+  photos_sent: "Fotos de la propiedad",
+};
+const ruleLabel = (rule: string): string => RULE_LABELS[rule] ?? rule;
 
 // ── Helpers de tiempo / salud ────────────────────────────────────────────────
 function parseUtc(iso: string | null): number {
@@ -270,6 +299,23 @@ function botDetail(llmErrorAt: string | null, mudoAt: string | null, lastOutAt: 
 function isLive(iso: string | null, minutes = 10): boolean {
   const t = parseUtc(iso);
   return !Number.isNaN(t) && (Date.now() - t) / 60000 <= minutes;
+}
+// 📬 Entrega WhatsApp: verde sin fallos 24h, ámbar 1-2 (fallos sueltos, típico
+// re-engagement fuera de ventana), rojo ≥3 (huele a problema sistémico).
+function deliveryHex(failed24h: number | undefined): string {
+  const n = failed24h ?? 0;
+  if (n === 0) return HEX.green;
+  return n <= 2 ? HEX.amber : HEX.red;
+}
+// Canal de avisos a dueños: rojo si el último fallo es MÁS reciente que el último
+// ok (canal caído); gris si nunca hubo actividad; verde si el último intento salió.
+function ownerAlertHex(okAt: string | null | undefined, failAt: string | null | undefined): string {
+  const ok = parseUtc(okAt ?? null);
+  const fail = parseUtc(failAt ?? null);
+  if (Number.isNaN(ok) && Number.isNaN(fail)) return HEX.gray;
+  if (Number.isNaN(ok)) return HEX.red;
+  if (Number.isNaN(fail)) return HEX.green;
+  return fail > ok ? HEX.red : HEX.green;
 }
 const AIRBNB_LABEL: Record<string, string> = {
   full: "Sincronizado", partial: "Sincronizado", unavailable: "No responde", unknown: "Sincronizado",
@@ -460,6 +506,22 @@ export default function OperacionPage() {
               <HealthItem hex={cronHex(m.health.cronLastAt)} label="Seguimientos" detail={`últ. ${timeAgo(m.health.cronLastAt)}`} />
               <HealthItem hex={recencyHex(m.health.lastReservationAt, 24 * 30)} label="Reservas / PayPal" detail={`últ. ${timeAgo(m.health.lastReservationAt)}`} />
               <HealthItem hex={HEX.green} label="Base de datos" detail="operativa" />
+              <HealthItem
+                hex={deliveryHex(m.health.waFailed24h)}
+                label="Entrega WhatsApp"
+                detail={(m.health.waFailed24h ?? 0) === 0 ? "sin fallos 24h" : `${m.health.waFailed24h} fallo${(m.health.waFailed24h ?? 0) === 1 ? "" : "s"} 24h`}
+              />
+              <HealthItem
+                hex={ownerAlertHex(m.health.ownerAlertOkAt, m.health.ownerAlertFailAt)}
+                label="Avisos a dueños"
+                detail={
+                  ownerAlertHex(m.health.ownerAlertOkAt, m.health.ownerAlertFailAt) === HEX.red
+                    ? `⚠ fallando · ${timeAgo(m.health.ownerAlertFailAt ?? null)}`
+                    : m.health.ownerAlertOkAt
+                      ? `últ. ok ${timeAgo(m.health.ownerAlertOkAt)}`
+                      : "sin actividad"
+                }
+              />
             </div>
           </Panel>
 
@@ -496,6 +558,79 @@ export default function OperacionPage() {
               />
             )}
             {m.conversionFunnel.leadsNew === 0 && <p className="text-center text-slate-500 text-sm py-3">Sin leads nuevos en los últimos 30 días. 🌴</p>}
+          </Panel>
+        )}
+
+        {/* 📬 Salud de entrega WhatsApp — qué mandó el bot, qué llegó y qué falta.
+            Fuentes: whatsapp_messages.status (checks del callback de Meta) +
+            bot_trace WA_DELIVERY_FAILED (motivo exacto) + reservations (check-ins
+            próximos sin instrucciones). Ver functions/api/inbox/metrics.ts. */}
+        {m.delivery && (
+          <Panel title="📬 Salud de entrega WhatsApp" subtitle="qué mandó el bot, qué llegó y qué falta">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+              <WebStat label="Enviados · 7 días" value={m.delivery.d7.total} foot={<span className="text-slate-500">{m.delivery.d30.total} en 30 días</span>} />
+              <WebStat label="% Entregado" value={m.delivery.d7.deliveredPct ?? 0} foot={<span className="text-slate-500">{m.delivery.d7.deliveredPct === null ? "sin datos" : "llegó al teléfono · 7d"}</span>} />
+              <WebStat label="% Leído" value={m.delivery.d7.readPct ?? 0} foot={<span className="text-slate-500">{m.delivery.d7.readPct === null ? "sin datos" : "checks azules · 7d"}</span>} />
+              <WebStat label="Fallidos · 7 días" value={m.delivery.d7.failed} foot={<span className="text-slate-500">{m.delivery.d30.failed} en 30 días</span>} />
+              <WebStat label="En tránsito" value={m.delivery.d7.pending} foot={<span className="text-slate-500">aceptados, sin confirmar</span>} />
+            </div>
+
+            {/* Qué está haciendo falta — accionable: check-ins próximos sin instrucciones */}
+            <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3 mb-3">
+              <p className="text-[11px] text-slate-500 font-medium uppercase tracking-wider mb-2">⚠️ Qué está haciendo falta</p>
+              {m.delivery.pendingCheckins.length === 0 ? (
+                <p className="text-center text-slate-500 text-sm py-2">Todos los check-ins próximos tienen sus instrucciones enviadas. 🌴</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {m.delivery.pendingCheckins.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="text-slate-300 truncate">
+                        {p.guest} · <span className="text-slate-400">{p.property}</span> · check-in {p.checkIn}
+                      </span>
+                      {p.state === "fallo" ? (
+                        <span className="shrink-0 text-red-300 text-[12px]" title={p.error ?? undefined}>⚠ falló el envío</span>
+                      ) : (
+                        <span className="shrink-0 text-amber-300 text-[12px]">sin enviar aún</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Fallos recientes con motivo legible */}
+            <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3">
+              <p className="text-[11px] text-slate-500 font-medium uppercase tracking-wider mb-2">Fallos recientes · 30 días</p>
+              {m.delivery.failures.length === 0 ? (
+                <p className="text-center text-slate-500 text-sm py-2">Ningún mensaje falló en los últimos 30 días. ✅</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {m.delivery.failures.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="text-slate-300 truncate">
+                        <span className="text-slate-500">{timeAgo(f.at)} ·</span> {f.to || "—"} · {ruleLabel(f.rule)}
+                      </span>
+                      <span className="shrink-0 text-red-300/90 text-[12px]" title={f.code ? `código Meta ${f.code}` : undefined}>{f.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Atascados: Meta los aceptó pero nunca los entregó (>24h) */}
+            {m.delivery.stuck.length > 0 && (
+              <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3 mt-3">
+                <p className="text-[11px] text-slate-500 font-medium uppercase tracking-wider mb-2">Atascados (aceptados hace &gt;24h, nunca entregados)</p>
+                <div className="space-y-1.5">
+                  {m.delivery.stuck.map((s, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="text-slate-300 truncate"><span className="text-slate-500">{timeAgo(s.at)} ·</span> {s.to} · {ruleLabel(s.rule)}</span>
+                      <span className="shrink-0 text-amber-300 text-[12px]">probable número sin WhatsApp</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </Panel>
         )}
 
