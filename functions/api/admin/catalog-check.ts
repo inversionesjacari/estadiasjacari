@@ -83,9 +83,20 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   });
 
   if (!result.ok) {
+    // Status 200 A PROPÓSITO: Cloudflare intercepta 502/503/504 de un Pages
+    // Function y los reemplaza con su página genérica `error code: 502`,
+    // TRAGÁNDOSE el body. En un endpoint de diagnóstico eso esconde justo lo
+    // que venimos a ver (el error EXACTO de Meta). El status HTTP no es el canal
+    // del veredicto acá — el campo `ok` sí. (Aprendido: 401/429 pasan; 5xx no.)
     return json(
-      { ok: false, catalogId: env.WHATSAPP_CATALOG_ID ?? null, error: result.error },
-      502,
+      {
+        ok: false,
+        catalogId: env.WHATSAPP_CATALOG_ID ?? null,
+        error: result.error,
+        pista:
+          "La consulta a la Graph API de Meta falló. Si el error menciona token/OAuth, el WHATSAPP_ACCESS_TOKEN de Cloudflare Pages venció (los de usuario duran ~60 días). Si menciona el catalog_id o permisos, el token no tiene alcance sobre ese catálogo.",
+      },
+      200,
     );
   }
 
