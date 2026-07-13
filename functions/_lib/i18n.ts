@@ -116,8 +116,34 @@ export const T = {
     balanceHnl: string,
   ): string =>
     l === "en"
-      ? `Done! The 50% deposit is HNL ${depositHnl} (≈ USD ${depositUsd}). Pay here:\n\n👉 ${approvalUrl}\n\nOnce the payment goes through you'll automatically get:\n✅ Booking confirmation by email\n📋 Check-in instructions\n\nThe balance (HNL ${balanceHnl}) is paid on arrival. 🌴`
-      : `¡Listo! El 50% de depósito es HNL ${depositHnl} (≈ USD ${depositUsd}). Pagás acá:\n\n👉 ${approvalUrl}\n\nAl confirmar el pago recibís automáticamente:\n✅ Confirmación de reserva por correo\n📋 Instrucciones de check-in\n\nEl saldo (HNL ${balanceHnl}) se paga el día de llegada. 🌴`,
+      ? `Done! The 50% deposit is HNL ${depositHnl} (≈ USD ${depositUsd}). Pay here:\n\n👉 ${approvalUrl}\n\nOnce the payment goes through you'll automatically get your booking confirmation by email ✅\n\nThe balance (HNL ${balanceHnl}) is paid on arrival — that day, once the full payment has been received, we'll send you the check-in instructions. 🌴`
+      : `¡Listo! El 50% de depósito es HNL ${depositHnl} (≈ USD ${depositUsd}). Pagás acá:\n\n👉 ${approvalUrl}\n\nAl confirmar el pago recibís automáticamente tu confirmación de reserva por correo ✅\n\nEl saldo (HNL ${balanceHnl}) se paga el día de llegada — ese día, al completar el pago, te compartimos las instrucciones de check-in. 🌴`,
+
+  // Depósito (50%) por PayPal capturado (bot WhatsApp) → fechas RESERVADAS.
+  // Espejo de transferDatesConfirmed: la info de ingreso se comparte el día del
+  // check-in una vez recibido el pago TOTAL (política de la casa — receipt.ts).
+  // Antes esta rama prometía instrucciones T-1 con solo la mitad pagada.
+  paypalDepositReceived: (
+    l: Lang,
+    o: { propertyName: string; checkIn: string; checkOut: string; guests: number },
+  ): string =>
+    l === "en"
+      ? `Payment received! ✅ Your dates at ${o.propertyName} are *reserved*.\n\n📅 From ${o.checkIn} to ${o.checkOut}\n👥 ${o.guests} guest${o.guests > 1 ? "s" : ""}\n\nThe remaining 50% is paid on your check-in day — that day, once the full payment has been received, we'll share everything you need to get in (WiFi, address, access).\n📧 Your official confirmation is on its way by email. Thanks for booking with us! 🙏`
+      : `¡Pago recibido! ✅ Tus fechas en ${o.propertyName} quedaron *reservadas*.\n\n📅 Del ${o.checkIn} al ${o.checkOut}\n👥 ${o.guests} huésped${o.guests > 1 ? "es" : ""}\n\nEl saldo del 50% se paga el día de tu check-in — ese día, una vez recibida la totalidad del pago, te compartimos toda la información para tu ingreso (WiFi, dirección, accesos).\n📧 Tu confirmación oficial va en camino por correo. ¡Gracias por reservar con nosotros! 🙏`,
+
+  // El pago entró pero OTRA reserva tomó esas fechas primero (carrera) → refund
+  // automático + invitación a buscar otras fechas.
+  paypalOverlapRefunded: (l: Lang, propertyName: string): string =>
+    l === "en"
+      ? `We're so sorry 😔 — right while your payment was processing, someone else took those exact dates at ${propertyName}. Your payment was refunded automatically (it can take 3–5 business days to show up).\n\nIf you'd like, tell me other dates and I'll check availability right away 🙏`
+      : `Lo sentimos muchísimo 😔 — justo mientras se procesaba tu pago, otra persona tomó esas mismas fechas en ${propertyName}. Tu pago fue reembolsado automáticamente (puede tardar 3–5 días hábiles en reflejarse).\n\nSi querés, decime otras fechas y te reviso la disponibilidad al momento 🙏`,
+
+  // El pago entró pero el registro de la reserva falló (error D1) → NO afirmar
+  // "reservado" en falso; el equipo lo termina a mano (sale alerta a dueños).
+  paypalReceivedRegisterPending: (l: Lang): string =>
+    l === "en"
+      ? "Payment received! ✅ We're finishing the registration of your booking — our team will confirm it with you shortly. 🙏"
+      : "¡Pago recibido! ✅ Estamos terminando de registrar tu reserva — nuestro equipo te la confirma en un momentito. 🙏",
 
   paypalFallbackToTransfer: (l: Lang): string =>
     l === "en"

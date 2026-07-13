@@ -34,6 +34,8 @@ import { normalizePhone, isValidE164 } from "../../_lib/phone";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { withCronMonitor } from "../../_lib/cron-monitor";
+// Auditoría 2026-07-12 (A2): llegadas de mañana que siguen 'pending' → alerta WhatsApp
+import { notifyOwners } from "../../_lib/owner-alerts";
 
 interface Env {
   DB: D1Database;
@@ -342,6 +344,94 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
+  // ── Llegadas de MAÑANA que siguen 'pending' (saldo/verificación pendiente) ──
+  // El recordatorio automático con WiFi/dirección/accesos está gateado al pago
+  // TOTAL (status='confirmed'). Pero una reserva que llega mañana y sigue
+  // 'pending' es una llegada REAL sin instrucciones: si nadie actúa, el huésped
+  // viaja sin saber a dónde entrar. → Avisar a los dueños (email + WhatsApp)
+  // para cobrar el saldo / verificar y confirmarla desde el inbox (la cola
+  // "Por verificar" ya la muestra). Cubre transferencias con depósito Y los
+  // depósitos PayPal del bot (pending desde la auditoría 2026-07-12).
+  const pendingArrivals: Array<{ id: number; slug: string; guestPhone: string | null }> = [];
+  try {
+    // `checkin_reminder_sent_at IS NULL` es siempre cierto en una 'pending' (solo
+    // se marca al enviar, y solo se envía a 'confirmed') — se agrega al WHERE para
+    // habilitar el índice parcial idx_reservations_status_checkin_pending.
+    const pend = await env.DB.prepare(
+      `SELECT id, property_slug, check_in, check_out, guest_name, guest_email, guest_phone
+         FROM reservations
+        WHERE status = 'pending'
+          AND check_in = ?
+          AND checkin_reminder_sent_at IS NULL`,
+    )
+      .bind(targetDate)
+      .all<ReservationRow>();
+
+    for (const r of pend.results ?? []) {
+      pendingArrivals.push({ id: r.id, slug: r.property_slug, guestPhone: r.guest_phone });
+      if (dryRun) continue;
+
+      // Idempotencia (patrón maybeAlert del watchdog): una corrida manual, un
+      // doble disparo del cron o un reintento NO re-spamea a los dueños — a lo
+      // sumo 1 aviso por reserva cada 20h. Si la lectura falla, mejor avisar de
+      // más que de menos (es la red de seguridad de una llegada real).
+      const alertKey = `pending_arrival_alert_${r.id}`;
+      try {
+        const recent = await env.DB.prepare(
+          `SELECT 1 AS x FROM system_heartbeat WHERE key = ? AND last_at > datetime('now', '-20 hours')`,
+        )
+          .bind(alertKey)
+          .first<{ x: number }>();
+        if (recent) continue;
+      } catch {
+        /* fail-open */
+      }
+
+      await notifyOwner(
+        env,
+        r,
+        `Reserva PENDIENTE con llegada MAÑANA (${r.check_in}). El huésped NO recibió las ` +
+          `instrucciones de check-in (solo van con pago total): cobrar el saldo / verificar ` +
+          `el pago y confirmarla en el inbox (cola "Por verificar").`,
+      );
+      try {
+        await notifyOwners(
+          {
+            WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+            WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+            DB: env.DB,
+          },
+          {
+            tipo: "Llega MAÑANA con saldo pendiente",
+            cliente: `${r.guest_name ?? "(sin nombre)"} ${r.guest_phone ?? "(sin tel)"}`,
+            detalle:
+              `${r.property_slug} ${r.check_in}→${r.check_out} · sigue 'pending': ` +
+              `confirmar el pago y mandar las instrucciones`,
+            // normalizePhone antepone el 504 a números locales de 8 dígitos — el
+            // botón "Abrir chat" de la alerta necesita el mismo formato que la
+            // clave de conversación del inbox (dígitos E.164 sin '+').
+            guestPhone: normalizePhone(r.guest_phone ?? "").e164,
+          },
+        );
+      } catch {
+        /* best-effort: el email de arriba ya salió */
+      }
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO system_heartbeat (key, last_at) VALUES (?, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
+        )
+          .bind(alertKey)
+          .run();
+      } catch {
+        /* best-effort */
+      }
+    }
+  } catch (pendErr) {
+    console.error("Error consultando llegadas pending:", (pendErr as Error).message);
+  }
+
   return json({
     ok: true,
     targetDate,
@@ -349,6 +439,7 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
     found: reservations.length,
     sent,
     failed,
+    pendingArrivals,
     details,
   });
 };

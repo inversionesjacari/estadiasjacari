@@ -26,7 +26,11 @@ import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
 // Quote flow (bot WhatsApp con LLM) — para órdenes originadas vía WhatsApp
 import { parseWhatsAppCustomId } from "../_lib/paypal-checkout";
 import { sendTextMessage } from "../_lib/whatsapp";
-import { clearState as clearConversationState } from "../_lib/quote-state";
+import { clearState as clearConversationState, getState as getConversationState } from "../_lib/quote-state";
+// Auditoría 2026-07-12 (A1/A2): overlap+refund+status pending para órdenes del bot
+import { handleWaCapture } from "../_lib/paypal-wa-capture";
+import { asLang, type Lang } from "../_lib/i18n";
+import { notifyOwners } from "../_lib/owner-alerts";
 
 //
 // POST /api/paypal-webhook
@@ -87,6 +91,9 @@ const PROPERTY_NAMES: Record<string, string> = {
   "centro-morazan": "Centro Morazán",
   "casa-lara-townhouse": "Casa Lara Townhouse",
   "la-florida": "La Florida",
+  // El bot cotiza y cobra las gemelas (combo Brisa+Marea) — sin esta entrada el
+  // mensaje de captura mostraría el slug crudo.
+  "las-gemelas-tela": "Las Gemelas (Casa Brisa + Casa Marea)",
 };
 
 /** Diferencia entre dos fechas YYYY-MM-DD (DTEND exclusivo). */
@@ -295,88 +302,119 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         // Estas órdenes las crea el quote flow del bot WhatsApp con formato
         // "wa:<phone>|<slug>|<checkin>|<checkout>|<guests>". Manejo aparte
         // del flujo del website para no contaminar y no romper retrocompat.
+        // La DECISIÓN (overlap+refund / pending / duplicado) vive en el módulo
+        // testeable _lib/paypal-wa-capture.ts — auditoría 2026-07-12 (A1/A2).
         const waOrigin = parseWhatsAppCustomId(customId);
         if (waOrigin) {
-          const amountUsd = parseFloat(resource.amount?.value ?? "0");
+          const amountParsed = parseFloat(resource.amount?.value ?? "0");
+          const amountUsd = Number.isFinite(amountParsed) ? amountParsed : 0;
           const givenName = resource.payer?.name?.given_name ?? "";
           const surname = resource.payer?.name?.surname ?? "";
           const guestName = `${givenName} ${surname}`.trim() || null;
           const guestEmailPayer = resource.payer?.email_address ?? null;
 
+          // Idioma del lead ANTES de tocar/limpiar el estado (para los mensajes).
+          let lang: Lang = "es";
           try {
-            // INSERT reserva como confirmed (al igual que el flow del website)
-            await env.DB.prepare(
-              `INSERT OR IGNORE INTO reservations
-                 (property_slug, check_in, check_out, guest_name, guest_email,
-                  guest_phone, guest_phone_normalized, paypal_order_id,
-                  amount_usd, source, status, raw_payload, guest_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'whatsapp_bot', 'confirmed', ?, ?)`,
-            )
-              .bind(
-                waOrigin.propertySlug,
-                waOrigin.checkIn,
-                waOrigin.checkOut,
-                guestName,
-                guestEmailPayer,
-                waOrigin.phone,
-                waOrigin.phone,
-                orderId,
-                amountUsd || null,
-                rawBody,
-                waOrigin.guests,
-              )
-              .run();
-          } catch (dbErr) {
-            console.error(
-              "WA-origin: error insertando reserva:",
-              (dbErr as Error).message,
-            );
-          }
-
-          // Cerrar conversation_state del huésped (ya está pagado)
-          try {
-            await clearConversationState(waOrigin.phone, env.DB);
+            const st = await getConversationState(waOrigin.phone, env.DB);
+            lang = asLang(st?.data.language);
           } catch {
-            /* best-effort */
+            /* default es */
           }
 
-          // Enviar confirmación por WhatsApp
-          try {
-            if (env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
-              await sendTextMessage(
-                waOrigin.phone,
-                `✅ ¡Pago confirmado! Tu reserva está lista.
+          const wa = await handleWaCapture(
+            {
+              db: env.DB,
+              refund: (args) =>
+                refundPayPalCapture(
+                  {
+                    PAYPAL_CLIENT_ID: env.PAYPAL_CLIENT_ID,
+                    PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
+                    PAYPAL_API_BASE: env.PAYPAL_API_BASE,
+                  },
+                  args,
+                ),
+            },
+            {
+              phone: waOrigin.phone,
+              propertySlug: waOrigin.propertySlug,
+              propertyName: PROPERTY_NAMES[waOrigin.propertySlug] || waOrigin.propertySlug,
+              checkIn: waOrigin.checkIn,
+              checkOut: waOrigin.checkOut,
+              guests: waOrigin.guests,
+              orderId,
+              captureId,
+              amountUsd,
+              guestName,
+              guestEmail: guestEmailPayer,
+              rawBody,
+              accessToken,
+              todayIso: todayHn(),
+              lang,
+            },
+          );
 
-📅 Del ${waOrigin.checkIn} al ${waOrigin.checkOut}
-👥 ${waOrigin.guests} huésped${waOrigin.guests > 1 ? "es" : ""}
+          // Post-proceso: todo best-effort e independiente entre sí → en paralelo
+          // (cada uno con su .catch), para no sumar round-trips en serie antes de
+          // responderle el 200 a PayPal (evita acercarse a su timeout/reintento).
+          const sideEffects: Promise<unknown>[] = [];
 
-📧 Te llegará la confirmación oficial por correo en un momento.
-📋 Un día antes de tu llegada recibirás por este mismo chat las instrucciones de check-in (WiFi, dirección, accesos).
-
-El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
-                env as { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
-              );
-            }
-          } catch (waErr) {
-            console.error(
-              "WA-origin: error enviando confirmación WhatsApp:",
-              (waErr as Error).message,
+          // Cerrar conversation_state salvo en reintento duplicado. Crítico tras
+          // un overlap_refunded o insert_failed: si el estado quedara en
+          // 'awaiting_paypal_capture', el CASO 2.6 de quote-flow respondería
+          // "¿pudiste completar el pago con el link?" a alguien recién
+          // reembolsado, y el followup del cron lo re-engancharía igual —
+          // contradiciendo el mensaje que acabamos de mandarle.
+          if (wa.outcome !== "duplicate") {
+            sideEffects.push(
+              clearConversationState(waOrigin.phone, env.DB).catch(() => {
+                /* best-effort */
+              }),
             );
           }
 
-          // Best-effort: si tenemos el email del payer, mandar correo de
-          // confirmación reusando el helper existente
-          if (guestEmailPayer && env.RESEND_API_KEY && env.EMAIL_FROM) {
-            try {
-              const nights = Math.max(
-                0,
-                Math.round(
-                  (new Date(waOrigin.checkOut + "T00:00:00Z").getTime() -
-                    new Date(waOrigin.checkIn + "T00:00:00Z").getTime()) /
-                    (1000 * 60 * 60 * 24),
-                ),
-              );
-              await sendReservationConfirmationEmail(
+          // Mensaje al huésped por WhatsApp (best-effort, nunca falla el webhook)
+          if (wa.guestMessage && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+            sideEffects.push(
+              sendTextMessage(
+                waOrigin.phone,
+                wa.guestMessage,
+                env as { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
+              ).catch((waErr) => {
+                console.error(
+                  "WA-origin: error enviando confirmación WhatsApp:",
+                  (waErr as Error).message,
+                );
+              }),
+            );
+          }
+
+          // Alerta a dueños: overlap/refund fallido, registro fallido o same-day.
+          if (wa.ownerAlert) {
+            sideEffects.push(
+              notifyOwners(
+                {
+                  WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+                  WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+                  DB: env.DB,
+                },
+                wa.ownerAlert,
+              ).catch(() => {
+                /* best-effort: notifyOwners ya registra sus fallos en heartbeat/trace */
+              }),
+            );
+          }
+
+          // Email de confirmación SOLO si la reserva quedó creada (antes salía
+          // incluso cuando el INSERT había fallado — confirmación en falso).
+          if (
+            wa.outcome === "reserved" &&
+            guestEmailPayer &&
+            env.RESEND_API_KEY &&
+            env.EMAIL_FROM
+          ) {
+            sideEffects.push(
+              sendReservationConfirmationEmail(
                 {
                   guestName: guestName || "huésped",
                   guestEmail: guestEmailPayer,
@@ -384,7 +422,7 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                   propertyName: waOrigin.propertySlug,
                   checkInISO: waOrigin.checkIn,
                   checkOutISO: waOrigin.checkOut,
-                  nights,
+                  nights: nightsBetween(waOrigin.checkIn, waOrigin.checkOut),
                   amountUsd: amountUsd || 0,
                   paypalOrderId: orderId,
                 },
@@ -393,14 +431,16 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
                   EMAIL_FROM: env.EMAIL_FROM,
                   EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
                 },
-              );
-            } catch (emailErr) {
-              console.error(
-                "WA-origin: error enviando email confirmación:",
-                (emailErr as Error).message,
-              );
-            }
+              ).catch((emailErr) => {
+                console.error(
+                  "WA-origin: error enviando email confirmación:",
+                  (emailErr as Error).message,
+                );
+              }),
+            );
           }
+
+          await Promise.all(sideEffects);
 
           return logAndReturn(200, {
             paypalEventId: webhookEvent.id,
@@ -408,6 +448,7 @@ El saldo del 50% se paga el día del check-in. ¡Gracias por elegirnos! 🌴`,
             orderId,
             verificationStatus: "SUCCESS",
             processed: 1,
+            errorMessage: wa.logMessage,
           });
         }
         // ── Fin branch WhatsApp — sigue flow del website ──────────────────
