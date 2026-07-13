@@ -163,6 +163,54 @@ export function isCapacityQuestion(text: string): boolean {
 }
 
 /**
+ * ¿El cliente pregunta qué tan CERCA está la propiedad del mar / la playa?
+ * ("¿está cerca del mar?", "¿a cuánto queda la playa?", "¿se puede ir caminando?",
+ * "how far is the beach?", "¿es frente al mar?"). Es una pregunta de PROXIMIDAD /
+ * DISTANCIA — NO la de amenidad "¿tiene playa?" (esa la responde la KB con las dos
+ * formas de acceso a la playa + su costo). Para las propiedades de Tela (Honduras
+ * Shores Plantation) la mejor respuesta es el CROQUIS del complejo (con la propiedad
+ * circulada en rojo) + el dato exacto (mar a 5-7 min caminando, circuito cerrado con
+ * seguridad 24/7), así que se responde por CÓDIGO mandando la imagen, sin LLM (pedido
+ * de César, 13-jul-2026 → intercepción beach_proximity_map en quote-flow).
+ *
+ * Requiere un sustantivo de mar/playa Y una señal de proximidad/distancia (o un claim
+ * de "frente al mar / a pasos / beachfront", que ya ES proximidad). Sin ambas no dispara:
+ * "¿tiene playa?" (solo amenidad) → false; "¿está cerca del centro?" (sin mar) → false.
+ * "\bmar\b" NO matchea "Casa Marea" (no hay boundary dentro de "marea").
+ */
+export function isBeachProximityQuestion(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[¿¡]/g, "")
+    .trim();
+
+  const beachNoun =
+    /\b(playas?|mar|oceano|costa|orilla|beach|sea|ocean|shore|seaside|coast)\b/.test(t);
+
+  // "frente al mar / a pasos del mar / beachfront / oceanfront" ya ES una pregunta de
+  // proximidad, aunque no traiga "cerca"/"lejos" → self-contained (menciona el mar).
+  const frontage =
+    /\bfrente\s+(al|a\s+la)\s+(mar|playa)\b/.test(t) ||
+    /\ba\s+pasos\s+del?\s+(mar|playa)\b/.test(t) ||
+    /\b(beach|ocean|sea|water)\s?front\b/.test(t);
+  if (frontage) return true;
+
+  const proximityCue =
+    /\b(cerca|cerquita|cercan[oa]s?|cercania|lejos|lejan[oa]s?|distancia|caminando|caminar|camina|pegad[oa]s?|minutos?|mins?|minute|cuadras?|metros?|kilometros?|km)\b/.test(t) ||
+    /\b(a\s+cuant[oa]s?|que\s+tan\s+(cerca|lejos)|a\s+pie)\b/.test(t) ||
+    /\bhow\s+(far|close|near)\b/.test(t) ||
+    /\bwalking\s+distance\b/.test(t) ||
+    /\bwalk\s+to\b/.test(t) ||
+    /\bsteps\s+(from|to)\b/.test(t) ||
+    /\b(near|nearby)\b/.test(t) ||
+    /\bclose\s+to\b/.test(t);
+
+  return beachNoun && proximityCue;
+}
+
+/**
  * Confirmación CLARA de la cotización. Conservador: una NEGACIÓN, una PREGUNTA, o un
  * CAMBIO DE FECHA/disponibilidad lo descartan. Acá "si" suele ser "if", no "sí" — bug
  * real (caso Zedileth): "Pero si estaría disponible para el 17 de junio?" hizo que el

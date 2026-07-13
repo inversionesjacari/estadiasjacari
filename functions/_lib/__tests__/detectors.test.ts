@@ -3,6 +3,7 @@ import {
   isConfirmation,
   isAvailabilityDatesRequest,
   isCapacityQuestion,
+  isBeachProximityQuestion,
   isBankAccountRequest,
   isBedroomPhotoRequest,
   isPhotoRequest,
@@ -327,5 +328,32 @@ describe("isCapacityQuestion — pregunta por el CUPO, no headcount propio (bug 
     // cupo (personas/cuántos/caber) — un "¿entran?"/"¿aceptan?" pelado NO alcanza, para
     // no pisar horario de entrada ni política de mascotas.
     expect(isCapacityQuestion("somos 5 personas, ¿caben?")).toBe(true);
+  });
+});
+
+describe("isBeachProximityQuestion — proximidad al mar/playa (croquis de Tela, 13-jul-2026)", () => {
+  it("detecta la pregunta de PROXIMIDAD/DISTANCIA al mar/playa (es/en)", () => {
+    expect(isBeachProximityQuestion("¿está cerca del mar?")).toBe(true);
+    expect(isBeachProximityQuestion("la playa queda cerca?")).toBe(true);
+    expect(isBeachProximityQuestion("¿a cuánto queda la playa?")).toBe(true);
+    expect(isBeachProximityQuestion("se puede ir caminando a la playa?")).toBe(true);
+    expect(isBeachProximityQuestion("¿a cuántos minutos está el mar?")).toBe(true);
+    expect(isBeachProximityQuestion("qué tan lejos está la playa")).toBe(true);
+    expect(isBeachProximityQuestion("¿es frente al mar?")).toBe(true);
+    expect(isBeachProximityQuestion("how far is the beach?")).toBe(true);
+    expect(isBeachProximityQuestion("is it close to the sea?")).toBe(true);
+    expect(isBeachProximityQuestion("is it walking distance to the beach?")).toBe(true);
+    expect(isBeachProximityQuestion("is it beachfront?")).toBe(true);
+  });
+  it("NO dispara con la amenidad '¿tiene playa?' (sin proximidad) — esa la responde la KB", () => {
+    expect(isBeachProximityQuestion("¿tiene playa?")).toBe(false);
+    expect(isBeachProximityQuestion("hay playa?")).toBe(false);
+    expect(isBeachProximityQuestion("tiene acceso a la playa?")).toBe(false);
+  });
+  it("NO se confunde con proximidad a OTRA cosa (sin mar/playa) ni con 'Casa Marea'", () => {
+    expect(isBeachProximityQuestion("¿está cerca del centro?")).toBe(false);
+    expect(isBeachProximityQuestion("queda lejos del aeropuerto?")).toBe(false);
+    expect(isBeachProximityQuestion("Casa Marea está disponible?")).toBe(false);
+    expect(isBeachProximityQuestion("¿cuántas cuadras al supermercado?")).toBe(false);
   });
 });

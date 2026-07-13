@@ -67,6 +67,15 @@ export const T = {
       ? `${propertyName} sleeps up to *${capacity} guests* 👍 Want me to go ahead and lock in your dates?`
       : `${propertyName} admite hasta *${capacity} huéspedes* 👍 ¿Seguimos con la reserva?`,
 
+  // "¿Está cerca del mar / a cuánto queda la playa?" para las propiedades de Tela: va
+  // JUNTO con el croquis de Honduras Shores Plantation (la imagen la manda la intercepción
+  // beach_proximity_map con images:[TELA_CROQUIS_URL]). Dato exacto de César: mar a 5-7 min
+  // caminando + circuito cerrado con seguridad 24/7. 🌊/🌴 permitidos: es zona de playa.
+  beachProximityTela: (l: Lang): string =>
+    l === "en"
+      ? "The sea is about a 5-7 minute walk, depending on your pace 🌊 The property is the one circled in red on the map: it's inside the villa complex of Hotel Honduras Shores Plantation, a private home in a gated community with 24/7 security. 🌴"
+      : "El mar está a unos 5 a 7 minutos caminando, dependiendo del ritmo 🌊 La propiedad es la que está circulada en rojo en el mapa: está dentro del complejo de villas del Hotel Honduras Shores Plantation, una propiedad privada en un circuito cerrado con seguridad 24/7. 🌴",
+
   // Propiedad NO disponible en las fechas pedidas, pero el bot BUSCÓ en el calendario
   // y PROPONE (en vez de solo "no disponible, ¿otras fechas?" y esperar → lead frío):
   // (1) la ventana libre MÁS CERCANA a lo pedido y (2) otros FINES DE SEMANA libres.

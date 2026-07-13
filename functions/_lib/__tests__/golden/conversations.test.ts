@@ -6,6 +6,7 @@ import {
   isCheckinTimeRequest,
   isAvailabilityDatesRequest,
   isCapacityQuestion,
+  isBeachProximityQuestion,
   isDateChangeOrAvailabilityQuestion,
   isBankAccountRequest,
   isLegitimacyQuestion,
@@ -36,7 +37,7 @@ import {
 import { normalizePhone } from "../../phone";
 import { T } from "../../i18n";
 import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
-import { getBedroomPhotos } from "../../property-photos";
+import { getBedroomPhotos, TELA_CROQUIS_URL } from "../../property-photos";
 import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
 import { fechaEnPalabras } from "../../conversational-bot";
 import { extractPartySize, partyHeadcount, mergeFriendsTripParty } from "../../party-size";
@@ -839,5 +840,31 @@ describe("CHAT: DVALL — la oferta citada solo por PRECIO no se niega (cableado
   it("guard anti-eco: con propiedad ya cotizada, el mismo monto NO re-dispara paquete", () => {
     // Centro Morazán 3 noches = 2100×3+400 = 6,700 exactos; "¿el total era 6,700?" es eco.
     expect(detectPackageByAdPrice("¿el total era 6,700?", "centro-morazan")).toBeNull();
+  });
+});
+
+describe("CHAT: lead de Tela — '¿está cerca del mar?' → croquis + guion (13-jul-2026)", () => {
+  // Objeción clásica de Tela: qué tan cerca está la casa del mar. Con una propiedad de Tela
+  // en el estado, el bot manda el CROQUIS de Honduras Shores Plantation + el dato exacto (mar
+  // a 5-7 min caminando, circuito cerrado con seguridad 24/7) por CÓDIGO (beach_proximity_map),
+  // sin LLM. La amenidad "¿tiene playa?" sigue yendo a la KB (2 formas de acceso + costo).
+  it("la pregunta de PROXIMIDAD al mar se detecta; '¿tiene playa?' (amenidad) NO", () => {
+    expect(isBeachProximityQuestion("¿está cerca del mar?")).toBe(true);
+    expect(isBeachProximityQuestion("a cuánto queda la playa caminando?")).toBe(true);
+    expect(isBeachProximityQuestion("¿tiene playa?")).toBe(false);
+  });
+  it("el guion trae el dato exacto de César (5-7 min + Honduras Shores Plantation + 24/7)", () => {
+    const es = T.beachProximityTela("es");
+    expect(es).toMatch(/5\s*a?\s*7/);
+    expect(es).toContain("Honduras Shores Plantation");
+    expect(es).toContain("24/7");
+    const en = T.beachProximityTela("en");
+    expect(en).toContain("Honduras Shores Plantation");
+    expect(en).toContain("24/7");
+  });
+  it("el croquis apunta al JPG público del sitio (URL HTTPS que Meta puede descargar)", () => {
+    expect(TELA_CROQUIS_URL).toBe(
+      "https://estadiasjacari.com/images/las-gemelas-tela/croquis.jpg",
+    );
   });
 });

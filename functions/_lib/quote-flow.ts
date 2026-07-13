@@ -48,7 +48,7 @@ import {
   buildTransferMessageUSD,
   isUsdRequest,
 } from "./bank-transfer";
-import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl } from "./property-photos";
+import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl, TELA_CROQUIS_URL } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
 import { T, asLang, type Lang } from "./i18n";
 import { paymentButtons, confirmButtons, type ButtonReply } from "./button-map";
@@ -58,6 +58,7 @@ import {
   isAvailabilityDatesRequest,
   isBankAccountRequest,
   isBareAck,
+  isBeachProximityQuestion,
   isBedroomPhotoRequest,
   isCallRequested,
   isCapacityQuestion,
@@ -118,6 +119,10 @@ import { resolveDates } from "./date-parser";
 // Detectores puros → ahora viven en ./detectors (importados/re-exportados arriba).
 // Acá quedan solo los helpers que tocan estado/D1 o constantes locales.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Propiedades de Tela (complejo Honduras Shores Plantation, "Las Gemelas"). El croquis
+// de proximidad al mar (beach_proximity_map) solo aplica a estas: marca un punto concreto.
+const TELA_SLUGS: PropertySlug[] = ["casa-brisa", "casa-marea", "las-gemelas-tela"];
 
 
 
@@ -720,6 +725,29 @@ export async function handleQuoteIncoming(
         tokensUsed:      0,
       };
     }
+  }
+
+  // ── "¿Está cerca del mar? / ¿a cuánto queda la playa?" (PROXIMIDAD, propiedades de Tela) ──
+  // Objeción clásica de los leads de Tela: qué tan cerca está la casa del mar. La mejor
+  // respuesta es que lo VEAN: el bot manda el CROQUIS de Honduras Shores Plantation (con la
+  // propiedad circulada en rojo) + el dato exacto (mar a 5-7 min caminando, circuito cerrado
+  // con seguridad 24/7). Solo dispara si YA hay una propiedad de Tela en el estado (el croquis
+  // marca un punto concreto) y la pregunta es de PROXIMIDAD — la amenidad "¿tiene playa?" la
+  // sigue respondiendo la KB (con las 2 formas de acceso + su costo). Determinístico y ANTES de
+  // la máquina de estados, igual que capacity_answer. Pedido de César, 13-jul-2026.
+  if (
+    isBeachProximityQuestion(text) &&
+    existing &&
+    existing.data.property &&
+    TELA_SLUGS.includes(existing.data.property)
+  ) {
+    return {
+      reply:           T.beachProximityTela(lang),
+      images:          [TELA_CROQUIS_URL],
+      escalateToOwner: false,
+      ruleName:        "beach_proximity_map",
+      tokensUsed:      0,
+    };
   }
 
   // ── CASO 1: Sin estado activo ──────────────────────────────────────────────

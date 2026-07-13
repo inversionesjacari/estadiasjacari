@@ -76,6 +76,15 @@ export function getGalleryUrl(slug: string): string {
   return `${SITE_BASE}/propiedades/${slug}`;
 }
 
+/**
+ * Croquis del complejo Honduras Shores Plantation (Tela) con la propiedad circulada en
+ * rojo y el Mar Caribe al sur. Se manda cuando un lead pregunta qué tan cerca del mar
+ * están Las Gemelas (intercepción beach_proximity_map en quote-flow). La versión servida
+ * tiene el panel de contacto del hotel difuminado a propósito (que el lead no reserve
+ * directo con el hotel). Archivo: public/images/las-gemelas-tela/croquis.jpg.
+ */
+export const TELA_CROQUIS_URL = `${SITE_BASE}/images/las-gemelas-tela/croquis.jpg`;
+
 /** ¿Tenemos fotos configuradas para este slug? */
 export function hasPhotos(slug: string): boolean {
   return slug in PHOTO_CONFIG;
