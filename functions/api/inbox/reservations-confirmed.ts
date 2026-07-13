@@ -43,6 +43,7 @@ export const SELECT_FULL = `SELECT r.id, r.property_slug, r.check_in, r.check_ou
         r.wa_departure_cleaning_sent_at, r.wa_departure_cleaning_error,
         r.wa_phone_capture_sent_at,
         r.wa_eve_cleaning_sent_at, r.wa_eve_cleaning_error,
+        r.security_id_key, r.security_id_captured_at,
         tr.amount AS tr_amount, tr.expected_hnl AS tr_expected_hnl,
         tr.currency AS tr_currency, tr.decision AS tr_decision
    FROM reservations r
@@ -57,28 +58,35 @@ export const SELECT_FULL = `SELECT r.id, r.property_slug, r.check_in, r.check_ou
   ORDER BY r.check_in ASC, r.created_at DESC
   LIMIT 200`;
 
-// Fallback SIN las columnas de 0041: si el código se despliega antes de que la
-// migración corra en la D1 remota, el dashboard sigue vivo (sin víspera) en vez
-// de morir con "no such column".
-export const SELECT_LEGACY = SELECT_FULL.replace(
-  `
-        r.wa_eve_cleaning_sent_at, r.wa_eve_cleaning_error,`,
-  "",
-);
+// Fallbacks progresivos por si el código se despliega ANTES de que corran las
+// migraciones en la D1 remota: cada nivel quita un bloque de columnas nuevas y
+// el dashboard sigue vivo en vez de morir con "no such column".
+//   FULL       → con 0041 (víspera) + 0043 (foto ID)
+//   NO_SEC     → sin 0043 (foto ID)         [si 0043 no aplicó]
+//   LEGACY     → sin 0041 ni 0043           [si tampoco aplicó 0041]
+const SEC_ID_BLOCK = `
+        r.security_id_key, r.security_id_captured_at,`;
+const EVE_BLOCK = `
+        r.wa_eve_cleaning_sent_at, r.wa_eve_cleaning_error,`;
+export const SELECT_NO_SEC = SELECT_FULL.replace(SEC_ID_BLOCK, "");
+export const SELECT_LEGACY = SELECT_NO_SEC.replace(EVE_BLOCK, "");
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const auth = await requireInboxAuth(request, env);
   if (!auth.ok) return auth.response!;
 
+  const variants = [SELECT_FULL, SELECT_NO_SEC, SELECT_LEGACY];
   try {
-    let rows;
-    try {
-      rows = await env.DB.prepare(SELECT_FULL).bind(todayHn()).all();
-    } catch (err) {
-      if (!/no such column/i.test((err as Error).message)) throw err;
-      rows = await env.DB.prepare(SELECT_LEGACY).bind(todayHn()).all();
+    for (let i = 0; i < variants.length; i++) {
+      try {
+        const rows = await env.DB.prepare(variants[i]).bind(todayHn()).all();
+        return json({ ok: true, reservations: rows.results ?? [] });
+      } catch (err) {
+        // Solo bajamos de nivel si es columna faltante y queda otro fallback.
+        if (i === variants.length - 1 || !/no such column/i.test((err as Error).message)) throw err;
+      }
     }
-    return json({ ok: true, reservations: rows.results ?? [] });
+    return json({ ok: true, reservations: [] });
   } catch (err) {
     return json({ ok: false, error: `D1: ${(err as Error).message}` }, 500);
   }

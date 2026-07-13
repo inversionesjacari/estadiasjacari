@@ -55,6 +55,9 @@ interface Reservation {
   // De schema/0041 — pueden faltar si la migración aún no corrió (fallback API).
   wa_eve_cleaning_sent_at?: string | null;
   wa_eve_cleaning_error?: string | null;
+  // De schema/0043 — foto de identidad del huésped (garita Villa B11).
+  security_id_key?: string | null;
+  security_id_captured_at?: string | null;
   tr_amount: number | null;
   tr_expected_hnl: number | null;
   tr_currency: string | null;
@@ -251,7 +254,12 @@ interface Analysis {
   bucket: "accion" | "hoymanana" | "proximas";
   stayText: string;
   stayCls: string;
+  requiresId: boolean;
 }
+
+// Propiedades cuya garita pide la foto de identidad del huésped (Fase 2).
+// Espejo del SECURITY_ENRICHED_SLUGS del backend.
+const REQUIRES_ID = new Set<string>(["villa-b11-palma-real"]);
 
 function analyze(r: Reservation): Analysis {
   const pay = paymentInfo(r);
@@ -267,6 +275,7 @@ function analyze(r: Reservation): Analysis {
   const arrivingWindow = inDays >= 0 && inDays <= SOON_DAYS;
   const departingWindow = outDays >= 0 && outDays <= SOON_DAYS;
 
+  const requiresId = REQUIRES_ID.has(r.property_slug);
   const attention: string[] = [];
   const anyFailed = ALL_TOUCHPOINTS.some((tp) => states[tp.key].level === "failed");
   if (anyFailed) attention.push("un aviso falló");
@@ -274,6 +283,7 @@ function analyze(r: Reservation): Analysis {
   if (arrivingSoon && pay.needsMoney) {
     attention.push(pay.state === "verify" ? "pago por verificar" : "saldo por cobrar");
   }
+  if (requiresId && arrivingSoon && !r.security_id_key) attention.push("falta la ID del huésped");
 
   // Estado de estadía (para el badge)
   let stayText: string, stayCls: string;
@@ -297,7 +307,7 @@ function analyze(r: Reservation): Analysis {
   const bucket: Analysis["bucket"] =
     attention.length > 0 ? "accion" : arrivingWindow || departingWindow ? "hoymanana" : "proximas";
 
-  return { pay, states, attention, bucket, stayText, stayCls };
+  return { pay, states, attention, bucket, stayText, stayCls, requiresId };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +396,62 @@ export default function ReservasPage() {
     [sending, fetchReservations],
   );
 
+  // ── Foto de identidad del huésped (garita Villa B11) ───────────────────────
+  const [idBusy, setIdBusy] = useState<Record<number, boolean>>({});
+  const [idMsg, setIdMsg] = useState<Record<number, string>>({});
+
+  const uploadId = useCallback(
+    async (id: number, file: File): Promise<void> => {
+      if (idBusy[id]) return;
+      setIdBusy((s) => ({ ...s, [id]: true }));
+      setIdMsg((m) => ({ ...m, [id]: "" }));
+      try {
+        const form = new FormData();
+        form.append("reservationId", String(id));
+        form.append("file", file);
+        const resp = await fetch("/api/inbox/reservation-id", { method: "POST", credentials: "include", body: form });
+        if (resp.status === 401) {
+          setAuthed(false);
+          return;
+        }
+        const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (data.ok) {
+          setIdMsg((m) => ({ ...m, [id]: "✓ ID cargada" }));
+          fetchReservations();
+        } else {
+          setIdMsg((m) => ({ ...m, [id]: (data.error || "falló").slice(0, 140) }));
+        }
+      } catch {
+        setIdMsg((m) => ({ ...m, [id]: "error de red" }));
+      } finally {
+        setIdBusy((s) => ({ ...s, [id]: false }));
+      }
+    },
+    [idBusy, fetchReservations],
+  );
+
+  const removeId = useCallback(
+    async (id: number): Promise<void> => {
+      if (idBusy[id]) return;
+      if (!window.confirm("¿Quitar la foto de identidad de esta reserva?")) return;
+      setIdBusy((s) => ({ ...s, [id]: true }));
+      try {
+        const resp = await fetch(`/api/inbox/reservation-id?id=${id}`, { method: "DELETE", credentials: "include" });
+        if (resp.status === 401) {
+          setAuthed(false);
+          return;
+        }
+        setIdMsg((m) => ({ ...m, [id]: "" }));
+        fetchReservations();
+      } catch {
+        setIdMsg((m) => ({ ...m, [id]: "error de red" }));
+      } finally {
+        setIdBusy((s) => ({ ...s, [id]: false }));
+      }
+    },
+    [idBusy, fetchReservations],
+  );
+
   // ── Filtros ──────────────────────────────────────────────────────────────
   const slugsPresent = Array.from(new Set(reservations.map((r) => r.property_slug)));
   const filtered = reservations.filter((r) => {
@@ -408,7 +474,7 @@ export default function ReservasPage() {
 
   const arrivingToday = reservations.filter((r) => daysUntil(r.check_in) === 0).length;
 
-  const shared = { sending, actionMsg, onSend: sendMessage };
+  const shared = { sending, actionMsg, onSend: sendMessage, idBusy, idMsg, onUploadId: uploadId, onRemoveId: removeId };
 
   if (!authed) {
     return (
@@ -683,6 +749,10 @@ interface CardShared {
   sending: Record<string, boolean>;
   actionMsg: Record<string, string>;
   onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string) => void;
+  idBusy: Record<number, boolean>;
+  idMsg: Record<number, string>;
+  onUploadId: (id: number, file: File) => void;
+  onRemoveId: (id: number) => void;
 }
 
 function CardHeader({ r, a }: { r: Reservation; a: Analysis }) {
@@ -736,6 +806,10 @@ function FullCard({
   sending,
   actionMsg,
   onSend,
+  idBusy,
+  idMsg,
+  onUploadId,
+  onRemoveId,
 }: { r: Reservation; a: Analysis; highlight?: boolean; onCollapse?: () => void } & CardShared) {
   const renderPills = (defs: Touchpoint[]) =>
     defs.map((tp) => {
@@ -773,6 +847,19 @@ function FullCard({
         <PaymentPanel pay={a.pay} />
       </div>
 
+      {/* Identidad para la garita (solo propiedades que la piden, ej. Villa B11) */}
+      {a.requiresId && (
+        <div className="mt-3">
+          <IdBlock
+            r={r}
+            busy={Boolean(idBusy[r.id])}
+            msg={idMsg[r.id]}
+            onUpload={onUploadId}
+            onRemove={onRemoveId}
+          />
+        </div>
+      )}
+
       {/* Avisos */}
       <div className="mt-3 pt-3 border-t border-white/5 space-y-2.5">
         <div>
@@ -789,6 +876,75 @@ function FullCard({
         <button type="button" onClick={onCollapse} className="mt-3 text-[11px] text-slate-500 hover:text-slate-300">
           ▴ Ocultar detalle
         </button>
+      )}
+    </div>
+  );
+}
+
+// ── Foto de identidad del huésped (garita) ───────────────────────────────────
+
+function IdBlock({
+  r,
+  busy,
+  msg,
+  onUpload,
+  onRemove,
+}: {
+  r: Reservation;
+  busy: boolean;
+  msg?: string;
+  onUpload: (id: number, file: File) => void;
+  onRemove: (id: number) => void;
+}) {
+  const has = Boolean(r.security_id_key);
+  return (
+    <div className="flex items-center gap-2 flex-wrap text-[11px]">
+      <span className="text-slate-500">🪪 Identidad para la garita:</span>
+      {has ? (
+        <>
+          <a
+            href={`/api/inbox/reservation-id?id=${r.id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="px-2 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+          >
+            ✓ cargada — ver
+          </a>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onRemove(r.id)}
+            className="px-2 py-0.5 rounded border border-white/15 text-slate-400 hover:bg-white/5 disabled:opacity-50"
+          >
+            quitar
+          </button>
+        </>
+      ) : (
+        <label
+          className={`px-2 py-0.5 rounded border ${
+            busy
+              ? "border-white/10 text-slate-500 cursor-default"
+              : "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20 cursor-pointer"
+          }`}
+        >
+          {busy ? "subiendo…" : "📎 Subir ID (JPG/PNG)"}
+          <input
+            type="file"
+            accept="image/jpeg,image/png"
+            className="hidden"
+            disabled={busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onUpload(r.id, f);
+              e.currentTarget.value = "";
+            }}
+          />
+        </label>
+      )}
+      {msg && (
+        <span className="text-[10px] text-slate-400 max-w-[220px] truncate" title={msg}>
+          {msg}
+        </span>
       )}
     </div>
   );

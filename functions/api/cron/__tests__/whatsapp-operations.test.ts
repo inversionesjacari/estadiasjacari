@@ -6,7 +6,7 @@ import {
   runMorningStaff,
   VALID_HITOS,
 } from "../whatsapp-operations";
-import { SELECT_FULL, SELECT_LEGACY } from "../../inbox/reservations-confirmed";
+import { SELECT_FULL, SELECT_NO_SEC, SELECT_LEGACY } from "../../inbox/reservations-confirmed";
 
 //
 // RECORDATORIOS-0712 (César): mensajes programados por huésped.
@@ -196,14 +196,21 @@ describe("runMorningStaff — desde RECORDATORIOS-0712 avisa SOLO a seguridad", 
   });
 });
 
-describe("reservations-confirmed — contrato del fallback pre-migración 0041", () => {
-  it("el SELECT completo incluye las columnas de la víspera", () => {
+describe("reservations-confirmed — contrato de los fallbacks progresivos (0041 víspera + 0043 foto ID)", () => {
+  it("FULL incluye víspera (0041) y foto de ID (0043)", () => {
     expect(SELECT_FULL).toContain("wa_eve_cleaning_sent_at");
-    expect(SELECT_FULL).toContain("wa_eve_cleaning_error");
+    expect(SELECT_FULL).toContain("security_id_key");
+    expect(SELECT_FULL).toContain("security_id_captured_at");
   });
-  it("el SELECT legacy las excluye pero sigue bien formado (el dashboard no muere)", () => {
+  it("NO_SEC quita la foto de ID pero MANTIENE la víspera (si 0043 no aplicó pero 0041 sí)", () => {
+    expect(SELECT_NO_SEC).not.toContain("security_id");
+    expect(SELECT_NO_SEC).toContain("wa_eve_cleaning_sent_at");
+    expect(SELECT_NO_SEC).not.toMatch(/,\s*FROM/i);
+  });
+  it("LEGACY quita AMBOS bloques pero sigue bien cosido (el dashboard no muere)", () => {
     expect(SELECT_LEGACY).not.toContain("wa_eve_cleaning");
-    // La línea anterior y la siguiente quedaron bien cosidas (sin coma colgante).
+    expect(SELECT_LEGACY).not.toContain("security_id");
+    // wa_phone_capture_sent_at queda pegado directo a tr.amount, sin coma colgante.
     expect(SELECT_LEGACY).toMatch(/wa_phone_capture_sent_at,\s*tr\.amount/);
     expect(SELECT_LEGACY).toContain("tr_decision");
     expect(SELECT_LEGACY).not.toMatch(/,\s*FROM/i);
