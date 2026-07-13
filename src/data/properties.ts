@@ -17,6 +17,8 @@ export interface Property {
   description: string[];
   images: string[];
   mapEmbed: string;
+  /** Croquis del complejo (ruta pública) con la propiedad marcada y el mar. Solo Tela. */
+  croquis?: string;
   gemelas?: boolean;
   pricePerNightUSD: number;
   cleaningFeeUSD: number;
@@ -131,6 +133,7 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
+    croquis: "/images/las-gemelas-tela/croquis.jpg",
     gemelas: true,
     pricePerNightUSD: 90,
     cleaningFeeUSD: 14,
@@ -186,6 +189,7 @@ export const properties: Property[] = [
     ],
     mapEmbed:
       "https://www.google.com/maps?q=Honduras+Shores+Plantation+San+Juan+Tela+Atl%C3%A1ntida+Honduras&output=embed",
+    croquis: "/images/las-gemelas-tela/croquis.jpg",
     gemelas: true,
     pricePerNightUSD: 90,
     cleaningFeeUSD: 14,

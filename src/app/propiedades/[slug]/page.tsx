@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import type { Metadata } from "next";
 import {
   properties,
@@ -263,6 +264,36 @@ export default function PropertyDetailPage({
                 Ubicación aproximada. La dirección exacta se comparte al
                 confirmar la reserva.
               </p>
+
+              {/* Croquis del complejo — solo Tela: mata la objeción "¿está cerca
+                  del mar?" con el mismo dato que da el bot en WhatsApp. */}
+              {property.croquis && (
+                <div className="mt-8">
+                  <h3 className="font-display text-xl text-primary mb-3">
+                    A pasos del mar 🌊
+                  </h3>
+                  <p className="text-gray-700 leading-relaxed mb-4">
+                    El mar está a unos{" "}
+                    <strong>5 a 7 minutos caminando</strong>. La propiedad (marcada
+                    en rojo) está dentro del complejo de villas del Hotel Honduras
+                    Shores Plantation: una comunidad privada en circuito cerrado con
+                    seguridad 24/7.
+                  </p>
+                  <div className="rounded-2xl overflow-hidden border border-gray-100 bg-white max-w-md">
+                    <Image
+                      src={property.croquis}
+                      alt={`Croquis de ${property.name} dentro de Honduras Shores Plantation, Tela — a minutos del mar Caribe`}
+                      width={564}
+                      height={852}
+                      className="w-full h-auto"
+                    />
+                  </div>
+                  <p className="text-xs text-muted mt-2">
+                    Croquis del complejo Honduras Shores Plantation. Ubicación
+                    aproximada.
+                  </p>
+                </div>
+              )}
             </section>
           </div>
 
