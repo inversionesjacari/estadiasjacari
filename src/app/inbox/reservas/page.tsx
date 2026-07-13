@@ -2,18 +2,21 @@
 //
 // /inbox/reservas — Dashboard de Reservas activas.
 //
-// Da visibilidad de cada reserva confirmada/pendiente que aún no terminó:
-// quién es, cuándo entra/sale, su WhatsApp, el estado del pago y —lo importante—
-// el checklist puntual de mensajes: QUÉ salió, a QUÉ hora exacta y qué FALLÓ
-// (con el motivo). Resuelve el dolor de "no sé si al huésped le llegó su aviso".
+// Objetivo (César, 2026-07-13): que de un vistazo se vea QUÉ necesita acción
+// HOY o MAÑANA, con el resto visible pero atenuado. Cada aviso comunica su
+// ESTADO (enviado + hora / falló / programado / retenido por pago), no solo un
+// label, y cada reserva muestra cuánto se pagó y cuánto falta.
+//
+// Estructura: 3 secciones por urgencia —
+//   ⚠ Necesitan tu atención  (algo falló, o llega pronto sin pago/sin número)
+//   Hoy y mañana             (cards completas)
+//   Próximas                 (condensadas, expandibles)
 //
 // TODA reserva confirmada recibe los avisos en automático (cron
-// whatsapp-operations, sin filtro de source desde RECORDATORIOS-0712):
-// limpieza 6 PM víspera, seguridad 7 AM, huésped 10 AM, limpieza salida 11:30 AM,
-// más las instrucciones T-1 (checkin-reminders, 6 PM). Los botones de acá son
-// para adelantar o reenviar a mano (y para las 'pending' que el cron no toca).
-//
-// Lee /api/inbox/reservations-confirmed cada 30s. Protegido con la cookie del inbox.
+// whatsapp-operations, sin filtro de source): limpieza 6 pm víspera, seguridad
+// 7 am, huésped 10 am, limpieza salida 11:30 am, instrucciones T-1 6 pm. Los
+// botones son para adelantar/reenviar a mano y para las 'pending' que el cron
+// no toca. Lee /api/inbox/reservations-confirmed cada 30s. Cookie del inbox.
 //
 
 import { useEffect, useState, useCallback } from "react";
@@ -28,6 +31,8 @@ interface Reservation {
   guest_phone: string | null;
   guest_count: number | null;
   amount_usd: number | null;
+  total_hnl?: number | null;
+  paid_hnl?: number | null;
   source: string;
   status: string;
   created_at: string;
@@ -64,61 +69,41 @@ type TemplateName =
   | "checkout_dia_limpieza"
   | "limpieza_aviso_entrada";
 
-interface ActionDef {
-  template: TemplateName;
+// Un "touchpoint" = un mensaje del ciclo de vida de la reserva, con cuándo se
+// dispara y con qué columna de idempotencia se marca. `template` null = solo
+// lectura (las instrucciones T-1 las manda checkin-reminders, no hay reenvío
+// manual acá). `auto` false = el cron NO lo manda (respaldo manual).
+interface Touchpoint {
+  key: string;
+  icon: string;
   label: string;
   sentKey: keyof Reservation;
   errorKey: keyof Reservation;
-  title?: string;
+  template: TemplateName | null;
+  side: "arrival" | "departure";
+  offsetDays: number; // relativo a check_in (arrival) o check_out (departure)
+  time: string; // etiqueta de hora HN
+  when: string; // "víspera" | "día" | "salida" | "respaldo"
+  auto: boolean;
+  needsPhone?: boolean; // va al huésped → sin # no se puede
+  heldByPayment?: boolean; // solo sale con pago TOTAL (instrucciones)
 }
 
-const ARRIVAL_ACTIONS: ActionDef[] = [
-  {
-    template: "limpieza_aviso_entrada",
-    label: "Limp. víspera",
-    sentKey: "wa_eve_cleaning_sent_at",
-    errorKey: "wa_eve_cleaning_error",
-    title: "Aviso a limpieza la víspera 6 PM (automático)",
-  },
-  {
-    template: "checkin_dia_seguridad",
-    label: "Seguridad",
-    sentKey: "wa_arrival_security_sent_at",
-    errorKey: "wa_arrival_security_error",
-    title: "Aviso a seguridad 7 AM del día de entrada (automático)",
-  },
-  {
-    template: "checkin_dia_huesped",
-    label: "Huésped",
-    sentKey: "wa_arrival_guest_sent_at",
-    errorKey: "wa_arrival_guest_error",
-    title: "Bienvenida al huésped 10 AM del día de entrada (automático)",
-  },
-  {
-    template: "checkin_dia_limpieza",
-    label: "Limp. día",
-    sentKey: "wa_arrival_cleaning_sent_at",
-    errorKey: "wa_arrival_cleaning_error",
-    title: "Aviso a limpieza el MISMO día — solo manual (respaldo si la víspera falló)",
-  },
+const ARRIVAL_TOUCHPOINTS: Touchpoint[] = [
+  { key: "instr_email", icon: "📧", label: "Instrucciones", sentKey: "checkin_reminder_sent_at", errorKey: "checkin_reminder_error", template: null, side: "arrival", offsetDays: -1, time: "6:00 pm", when: "víspera", auto: true, heldByPayment: true },
+  { key: "instr_pdf", icon: "📱", label: "PDF instrucciones", sentKey: "whatsapp_sent_at", errorKey: "whatsapp_error", template: null, side: "arrival", offsetDays: -1, time: "6:00 pm", when: "víspera", auto: true, needsPhone: true, heldByPayment: true },
+  { key: "eve_clean", icon: "🧹", label: "Limpieza · víspera", sentKey: "wa_eve_cleaning_sent_at", errorKey: "wa_eve_cleaning_error", template: "limpieza_aviso_entrada", side: "arrival", offsetDays: -1, time: "6:05 pm", when: "víspera", auto: true },
+  { key: "security", icon: "🛡️", label: "Seguridad", sentKey: "wa_arrival_security_sent_at", errorKey: "wa_arrival_security_error", template: "checkin_dia_seguridad", side: "arrival", offsetDays: 0, time: "7:00 am", when: "día", auto: true },
+  { key: "guest_arr", icon: "👋", label: "Bienvenida huésped", sentKey: "wa_arrival_guest_sent_at", errorKey: "wa_arrival_guest_error", template: "checkin_dia_huesped", side: "arrival", offsetDays: 0, time: "10:00 am", when: "día", auto: true, needsPhone: true },
+  { key: "day_clean", icon: "🧹", label: "Limpieza · día", sentKey: "wa_arrival_cleaning_sent_at", errorKey: "wa_arrival_cleaning_error", template: "checkin_dia_limpieza", side: "arrival", offsetDays: 0, time: "", when: "respaldo", auto: false },
 ];
 
-const DEPARTURE_ACTIONS: ActionDef[] = [
-  {
-    template: "checkout_dia_huesped",
-    label: "Huésped",
-    sentKey: "wa_departure_guest_sent_at",
-    errorKey: "wa_departure_guest_error",
-    title: "Despedida al huésped 10 AM del día de salida (automático)",
-  },
-  {
-    template: "checkout_dia_limpieza",
-    label: "Limpieza",
-    sentKey: "wa_departure_cleaning_sent_at",
-    errorKey: "wa_departure_cleaning_error",
-    title: "Aviso a limpieza 11:30 AM del día de salida (automático)",
-  },
+const DEPARTURE_TOUCHPOINTS: Touchpoint[] = [
+  { key: "guest_dep", icon: "👋", label: "Despedida huésped", sentKey: "wa_departure_guest_sent_at", errorKey: "wa_departure_guest_error", template: "checkout_dia_huesped", side: "departure", offsetDays: 0, time: "10:00 am", when: "salida", auto: true, needsPhone: true },
+  { key: "dep_clean", icon: "🧹", label: "Limpieza · salida", sentKey: "wa_departure_cleaning_sent_at", errorKey: "wa_departure_cleaning_error", template: "checkout_dia_limpieza", side: "departure", offsetDays: 0, time: "11:30 am", when: "salida", auto: true },
 ];
+
+const ALL_TOUCHPOINTS = [...ARRIVAL_TOUCHPOINTS, ...DEPARTURE_TOUCHPOINTS];
 
 const SOURCE_META: Record<string, { label: string; emoji: string; cls: string }> = {
   airbnb: { label: "Airbnb", emoji: "🅰️", cls: "text-rose-300 border-rose-500/40 bg-rose-500/10" },
@@ -131,7 +116,6 @@ function sourceMeta(source: string) {
   return SOURCE_META[source] ?? { label: source, emoji: "•", cls: "text-slate-300 border-white/15 bg-white/5" };
 }
 
-/** Destinatario real del template, para el diálogo de confirmación. */
 function recipientOf(template: TemplateName, guestName: string): string {
   switch (template) {
     case "checkin_dia_limpieza":
@@ -145,9 +129,7 @@ function recipientOf(template: TemplateName, guestName: string): string {
   }
 }
 
-const MONTHS_ES = [
-  "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
-];
+const MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
 function fmtDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -155,11 +137,31 @@ function fmtDate(iso: string): string {
   return `${d} ${MONTHS_ES[m - 1]}`;
 }
 
-/**
- * Timestamp de envío → hora HONDURAS legible ("12 jul, 6:02 p. m.").
- * D1 guarda datetime('now') = UTC "YYYY-MM-DD HH:MM:SS" (sin zona); también
- * entra un ISO con T/Z (los crons que escriben toISOString).
- */
+/** Lempiras sin decimales: 2500 → "L 2,500". */
+function fmtL(n: number): string {
+  return `L ${Math.round(n).toLocaleString("es-HN")}`;
+}
+
+/** Suma n días a una fecha YYYY-MM-DD (calendario puro, sin zona). */
+function addDays(iso: string, n: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** Días desde hoy hasta `iso` (0 = hoy, 1 = mañana, negativo = pasó). */
+function daysUntil(iso: string): number {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return 0;
+  const target = Date.UTC(y, m - 1, d);
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((target - today) / 86400000);
+}
+
+/** Timestamp de envío → hora HONDURAS legible ("12 jul, 6:02 p. m."). */
 function fmtSentAtHn(ts: string): string {
   const iso = ts.includes("T") ? ts : ts.replace(" ", "T");
   const d = new Date(/[Z+]/.test(iso.slice(10)) ? iso : `${iso}Z`);
@@ -174,42 +176,131 @@ function fmtSentAtHn(ts: string): string {
   }).format(d);
 }
 
-/** Días desde hoy hasta `iso` (0 = hoy, 1 = mañana, negativo = pasó). */
-function daysUntil(iso: string): number {
-  const [y, m, d] = iso.split("-").map(Number);
-  if (!y || !m || !d) return 0;
-  const target = Date.UTC(y, m - 1, d);
-  const now = new Date();
-  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((target - today) / 86400000);
+// ── Pago ─────────────────────────────────────────────────────────────────────
+
+type PayState = "paid" | "deposit" | "unpaid" | "verify";
+
+interface PayInfo {
+  state: PayState;
+  total: number | null;
+  paid: number | null;
+  saldo: number | null;
+  needsMoney: boolean; // ¿falta plata por cobrar/verificar?
+  hint?: string;
 }
 
-function stayLabel(r: Reservation): { text: string; cls: string } {
+/**
+ * Estado del pago. Prioriza el libro real en Lempiras (total_hnl/paid_hnl que
+ * César edita en /inbox/registro). Sin ese libro: PayPal confirmado = pagado de
+ * verdad; transferencia/manual sin total = "definí el total"; resto = verificar.
+ * (Mismo criterio que /inbox/registro para no contradecirse.)
+ */
+function paymentInfo(r: Reservation): PayInfo {
+  if (r.total_hnl != null) {
+    const total = r.total_hnl;
+    const paid = r.paid_hnl ?? 0;
+    const saldo = Math.max(0, total - paid);
+    if (paid >= total) return { state: "paid", total, paid, saldo: 0, needsMoney: false };
+    if (paid > 0) return { state: "deposit", total, paid, saldo, needsMoney: true };
+    return { state: "unpaid", total, paid: 0, saldo: total, needsMoney: true };
+  }
+  // PayPal (web/airbnb/bot) confirmado → cobrado de verdad por la plataforma.
+  if (r.status === "confirmed" && r.source !== "whatsapp_transfer" && r.source !== "manual") {
+    return { state: "paid", total: null, paid: null, saldo: null, needsMoney: false };
+  }
+  // Transferencia/manual con depósito pero SIN total cargado → no afirmar "pagado".
+  if (r.tr_amount != null) {
+    return { state: "deposit", total: null, paid: null, saldo: null, needsMoney: true, hint: "Definí el total en Registro para ver el saldo" };
+  }
+  return { state: "verify", total: null, paid: null, saldo: null, needsMoney: true, hint: "Cargá el pago en Registro" };
+}
+
+// ── Estado por touchpoint ────────────────────────────────────────────────────
+
+type TpLevel = "done" | "failed" | "held" | "nophone" | "imminent" | "scheduled" | "pending";
+
+interface TpState {
+  level: TpLevel;
+  sentAt?: string;
+  error?: string;
+  when?: string; // texto de cuándo sale
+}
+
+function touchpointState(r: Reservation, tp: Touchpoint, pay: PayInfo): TpState {
+  const sentAt = (r[tp.sentKey] as string | null | undefined) ?? null;
+  if (sentAt) return { level: "done", sentAt };
+  const error = (r[tp.errorKey] as string | null | undefined) ?? null;
+  if (error) return { level: "failed", error };
+  if (tp.heldByPayment && pay.state !== "paid") return { level: "held" };
+  if (tp.needsPhone && !r.guest_phone) return { level: "nophone" };
+  if (!tp.auto) return { level: "pending" }; // respaldo manual, sin agenda
+  const base = tp.side === "departure" ? r.check_out : r.check_in;
+  const fireDate = addDays(base, tp.offsetDays);
+  const d = daysUntil(fireDate);
+  if (d < 0) return { level: "pending" }; // pasó su hora y no salió (worker aún inerte, etc.)
+  const whenTxt = d === 0 ? `hoy ${tp.time}` : d === 1 ? `mañana ${tp.time}` : `${tp.when} · ${tp.time}`;
+  return { level: d <= 1 ? "imminent" : "scheduled", when: whenTxt.trim() };
+}
+
+// ── Clasificación / urgencia ─────────────────────────────────────────────────
+
+interface Analysis {
+  pay: PayInfo;
+  states: Record<string, TpState>;
+  attention: string[]; // razones por las que necesita acción hoy
+  bucket: "accion" | "hoymanana" | "proximas";
+  stayText: string;
+  stayCls: string;
+}
+
+function analyze(r: Reservation): Analysis {
+  const pay = paymentInfo(r);
+  const states: Record<string, TpState> = {};
+  for (const tp of ALL_TOUCHPOINTS) states[tp.key] = touchpointState(r, tp, pay);
+
   const inDays = daysUntil(r.check_in);
   const outDays = daysUntil(r.check_out);
-  if (inDays <= 0 && outDays >= 0) {
-    return { text: outDays === 0 ? "Sale hoy" : "Hospedado", cls: "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" };
+  const arrivingSoon = inDays >= 0 && inDays <= 1; // hoy/mañana → dispara atención
+  // Ventana de "cards completas": lo que entra o sale en los próximos días (no
+  // solo hoy/mañana — César 2026-07-13). El resto va condensado a "Próximas".
+  const SOON_DAYS = 3;
+  const arrivingWindow = inDays >= 0 && inDays <= SOON_DAYS;
+  const departingWindow = outDays >= 0 && outDays <= SOON_DAYS;
+
+  const attention: string[] = [];
+  const anyFailed = ALL_TOUCHPOINTS.some((tp) => states[tp.key].level === "failed");
+  if (anyFailed) attention.push("un aviso falló");
+  if (arrivingSoon && !r.guest_phone) attention.push("sin número del huésped");
+  if (arrivingSoon && pay.needsMoney) {
+    attention.push(pay.state === "verify" ? "pago por verificar" : "saldo por cobrar");
   }
-  if (inDays === 0) return { text: "Llega HOY", cls: "text-amber-200 border-amber-400/50 bg-amber-400/15 font-bold" };
-  if (inDays === 1) return { text: "Llega mañana", cls: "text-amber-200 border-amber-400/40 bg-amber-400/10" };
-  if (inDays > 1) return { text: `Llega en ${inDays} días`, cls: "text-slate-300 border-white/15 bg-white/5" };
-  return { text: "Finalizada", cls: "text-slate-500 border-white/10 bg-white/5" };
+
+  // Estado de estadía (para el badge)
+  let stayText: string, stayCls: string;
+  if (inDays <= 0 && outDays >= 0) {
+    stayText = outDays === 0 ? "Sale hoy" : "Hospedado";
+    stayCls = "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
+  } else if (inDays === 0) {
+    stayText = "Llega HOY";
+    stayCls = "text-amber-200 border-amber-400/50 bg-amber-400/15 font-bold";
+  } else if (inDays === 1) {
+    stayText = "Llega mañana";
+    stayCls = "text-amber-200 border-amber-400/40 bg-amber-400/10";
+  } else if (inDays > 1) {
+    stayText = `Llega en ${inDays} días`;
+    stayCls = "text-slate-300 border-white/15 bg-white/5";
+  } else {
+    stayText = "Finalizada";
+    stayCls = "text-slate-500 border-white/10 bg-white/5";
+  }
+
+  const bucket: Analysis["bucket"] =
+    attention.length > 0 ? "accion" : arrivingWindow || departingWindow ? "hoymanana" : "proximas";
+
+  return { pay, states, attention, bucket, stayText, stayCls };
 }
 
-function paymentBadge(r: Reservation): { text: string; cls: string; sub?: string } {
-  if (r.status === "confirmed") {
-    return { text: "Pagado", cls: "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" };
-  }
-  // pending
-  if (r.tr_decision === "auto_confirmed") {
-    const sub =
-      r.tr_amount != null && r.tr_expected_hnl != null
-        ? `L ${Math.round(r.tr_amount).toLocaleString("es-HN")} de L ${Math.round(r.tr_expected_hnl).toLocaleString("es-HN")}`
-        : undefined;
-    return { text: "Depósito 50%", cls: "text-amber-300 border-amber-500/40 bg-amber-500/10", sub };
-  }
-  return { text: "Por verificar", cls: "text-rose-300 border-rose-500/40 bg-rose-500/10" };
-}
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function ReservasPage() {
   const [authed, setAuthed] = useState(true);
@@ -217,9 +308,9 @@ export default function ReservasPage() {
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [propFilter, setPropFilter] = useState<string>("");
   const [search, setSearch] = useState("");
-  const [soonOnly, setSoonOnly] = useState(false);
   const [sending, setSending] = useState<Record<string, boolean>>({});
   const [actionMsg, setActionMsg] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
   const fetchReservations = useCallback(async (): Promise<void> => {
     try {
@@ -299,7 +390,6 @@ export default function ReservasPage() {
   const slugsPresent = Array.from(new Set(reservations.map((r) => r.property_slug)));
   const filtered = reservations.filter((r) => {
     if (propFilter && r.property_slug !== propFilter) return false;
-    if (soonOnly && daysUntil(r.check_in) > 7) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       const hay = `${r.guest_name ?? ""} ${r.guest_phone ?? ""}`.toLowerCase();
@@ -308,10 +398,17 @@ export default function ReservasPage() {
     return true;
   });
 
-  // ── Resumen ──────────────────────────────────────────────────────────────
+  // ── Clasificar en secciones ────────────────────────────────────────────────
+  const rows = filtered
+    .map((r) => ({ r, a: analyze(r) }))
+    .sort((x, y) => x.r.check_in.localeCompare(y.r.check_in));
+  const accion = rows.filter((x) => x.a.bucket === "accion");
+  const hoyManana = rows.filter((x) => x.a.bucket === "hoymanana");
+  const proximas = rows.filter((x) => x.a.bucket === "proximas");
+
   const arrivingToday = reservations.filter((r) => daysUntil(r.check_in) === 0).length;
-  const noPhone = reservations.filter((r) => !r.guest_phone).length;
-  const toVerify = reservations.filter((r) => r.status === "pending" && r.tr_decision !== "auto_confirmed").length;
+
+  const shared = { sending, actionMsg, onSend: sendMessage };
 
   if (!authed) {
     return (
@@ -334,16 +431,17 @@ export default function ReservasPage() {
           <h1 className="text-xl font-bold text-white tracking-tight">📅 Reservas</h1>
           <p className="text-[12px] text-slate-400">
             {reservations.length} activas · {arrivingToday} llegan hoy
-            {noPhone > 0 ? ` · ${noPhone} sin número` : ""}
-            {toVerify > 0 ? ` · ${toVerify} por verificar` : ""}
+            {accion.length > 0 ? (
+              <span className="text-rose-300"> · {accion.length} necesitan atención</span>
+            ) : null}
           </p>
         </div>
         <a href="/inbox" className="px-3 py-1.5 border border-white/15 rounded-lg hover:bg-white/5 text-slate-300 text-sm">← Inbox</a>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-5">
+      <main className="max-w-3xl mx-auto px-4 py-5">
         {/* Filtros */}
-        <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-2 mb-5">
           <input
             type="text"
             value={search}
@@ -363,13 +461,6 @@ export default function ReservasPage() {
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => setSoonOnly((v) => !v)}
-            className={`px-3 py-2 rounded-lg text-sm border ${soonOnly ? "border-amber-400/50 bg-amber-400/15 text-amber-200" : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.07]"}`}
-          >
-            Próximas 7 días
-          </button>
         </div>
 
         {loading && reservations.length === 0 ? (
@@ -379,23 +470,53 @@ export default function ReservasPage() {
             {reservations.length === 0 ? "No hay reservas activas. 🌴" : "Ninguna reserva coincide con el filtro."}
           </p>
         ) : (
-          <div className="space-y-3">
-            {filtered.map((r) => (
-              <ReservationCard
-                key={r.id}
-                r={r}
-                sending={sending}
-                actionMsg={actionMsg}
-                onSend={sendMessage}
-              />
-            ))}
+          <div className="space-y-7">
+            {/* ⚠ Necesitan atención */}
+            {accion.length > 0 && (
+              <section>
+                <SectionTitle emoji="⚠️" text="Necesitan tu atención" count={accion.length} tone="rose" />
+                <div className="space-y-3">
+                  {accion.map(({ r, a }) => (
+                    <FullCard key={r.id} r={r} a={a} highlight {...shared} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Hoy y mañana */}
+            {hoyManana.length > 0 && (
+              <section>
+                <SectionTitle emoji="📆" text="Próximos días" count={hoyManana.length} tone="amber" />
+                <div className="space-y-3">
+                  {hoyManana.map(({ r, a }) => (
+                    <FullCard key={r.id} r={r} a={a} {...shared} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Próximas (condensadas) */}
+            {proximas.length > 0 && (
+              <section>
+                <SectionTitle emoji="🗓️" text="Próximas" count={proximas.length} tone="slate" />
+                <div className="space-y-2">
+                  {proximas.map(({ r, a }) =>
+                    expanded[r.id] ? (
+                      <FullCard key={r.id} r={r} a={a} onCollapse={() => setExpanded((e) => ({ ...e, [r.id]: false }))} {...shared} />
+                    ) : (
+                      <CompactCard key={r.id} r={r} a={a} onExpand={() => setExpanded((e) => ({ ...e, [r.id]: true }))} />
+                    ),
+                  )}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
-        <p className="text-[11px] text-slate-600 text-center mt-6 leading-relaxed">
-          TODA reserva confirmada recibe los avisos en automático: instrucciones + limpieza a las
-          6 pm de la víspera, seguridad 7 am, huésped 10 am, y limpieza de salida 11:30 am.
-          Los botones son para adelantar o reenviar a mano (las pendientes de pago no se automatizan).
+        <p className="text-[11px] text-slate-600 text-center mt-8 leading-relaxed">
+          Toda reserva confirmada recibe los avisos en automático: limpieza 6 pm de la víspera, seguridad 7 am,
+          huésped 10 am, limpieza de salida 11:30 am. Los botones son para adelantar o reenviar a mano
+          (las pendientes de pago no se automatizan).
         </p>
       </main>
     </div>
@@ -403,72 +524,173 @@ export default function ReservasPage() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tarjeta de una reserva
-// ─────────────────────────────────────────────────────────────────────────────
 
-function ReservationCard({
+function SectionTitle({ emoji, text, count, tone }: { emoji: string; text: string; count: number; tone: "rose" | "amber" | "slate" }) {
+  const dot = tone === "rose" ? "text-rose-300" : tone === "amber" ? "text-amber-200" : "text-slate-400";
+  return (
+    <h2 className={`text-[13px] font-semibold ${dot} mb-2 flex items-center gap-2 uppercase tracking-wide`}>
+      <span>{emoji}</span>
+      <span>{text}</span>
+      <span className="text-slate-500 font-normal normal-case">· {count}</span>
+    </h2>
+  );
+}
+
+// ── Panel de pago ────────────────────────────────────────────────────────────
+
+function PaymentPanel({ pay }: { pay: PayInfo }) {
+  if (pay.state === "paid") {
+    return (
+      <div className="flex items-center gap-2 text-[12px]">
+        <span className="text-emerald-300">💰 Pagado</span>
+        {pay.total != null && <span className="text-slate-500">· {fmtL(pay.total)}</span>}
+      </div>
+    );
+  }
+  const hasNumbers = pay.total != null && pay.paid != null;
+  const pct = hasNumbers && pay.total! > 0 ? Math.min(100, Math.round((pay.paid! / pay.total!) * 100)) : 0;
+  const barCls = pay.state === "deposit" ? "bg-amber-400" : "bg-rose-400";
+  const labelCls = pay.state === "verify" || pay.state === "unpaid" ? "text-rose-300" : "text-amber-300";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2 text-[12px]">
+        <span className={labelCls}>
+          💰{" "}
+          {hasNumbers
+            ? `Pagó ${fmtL(pay.paid!)} de ${fmtL(pay.total!)}`
+            : pay.state === "deposit"
+              ? "Depósito recibido"
+              : "Por verificar"}
+        </span>
+        {hasNumbers && pay.saldo! > 0 && <span className="text-rose-300 font-semibold">falta {fmtL(pay.saldo!)}</span>}
+      </div>
+      {hasNumbers && (
+        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+          <div className={`h-full ${barCls}`} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {pay.hint && <p className="text-[10px] text-slate-500">{pay.hint}</p>}
+    </div>
+  );
+}
+
+// ── Pill de estado de un touchpoint ──────────────────────────────────────────
+
+function TouchpointPill({
+  tp,
+  st,
   r,
-  sending,
-  actionMsg,
+  busy,
+  msg,
   onSend,
 }: {
+  tp: Touchpoint;
+  st: TpState;
   r: Reservation;
+  busy: boolean;
+  msg?: string;
+  onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string) => void;
+}) {
+  const canSend = tp.template != null;
+  const to = tp.template ? recipientOf(tp.template, r.guest_name || "el huésped") : "";
+  const clickable = canSend && st.level !== "held";
+  const handle = clickable ? () => onSend(r.id, tp.template!, st.level === "done", to) : undefined;
+
+  // (borde/fondo/texto, contenido principal, subtexto)
+  let cls = "border-white/12 bg-white/[0.03] text-slate-400";
+  let head = `${tp.icon} ${tp.label}`;
+  let sub: string | null = null;
+  let subCls = "text-slate-500";
+
+  switch (st.level) {
+    case "done":
+      cls = "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
+      head = `✓ ${tp.icon} ${tp.label}`;
+      sub = st.sentAt ? fmtSentAtHn(st.sentAt) : "enviado";
+      subCls = "text-emerald-400/70";
+      break;
+    case "failed":
+      cls = "border-rose-500/50 bg-rose-500/10 text-rose-300";
+      head = `⚠ ${tp.icon} ${tp.label}`;
+      sub = "falló — reintentar";
+      subCls = "text-rose-400/80";
+      break;
+    case "held":
+      cls = "border-amber-500/30 bg-amber-500/[0.07] text-amber-300/90";
+      head = `⏸ ${tp.icon} ${tp.label}`;
+      sub = "retenido: falta pago";
+      subCls = "text-amber-400/70";
+      break;
+    case "nophone":
+      cls = "border-white/12 bg-white/[0.03] text-slate-500";
+      head = `${tp.icon} ${tp.label}`;
+      sub = "sin # del huésped";
+      break;
+    case "imminent":
+      cls = "border-amber-400/40 bg-amber-400/[0.08] text-amber-200/90";
+      head = `● ${tp.icon} ${tp.label}`;
+      sub = st.when ?? null;
+      subCls = "text-amber-300/70";
+      break;
+    case "scheduled":
+      cls = "border-white/12 bg-white/[0.02] text-slate-400";
+      head = `○ ${tp.icon} ${tp.label}`;
+      sub = st.when ?? null;
+      break;
+    case "pending":
+      cls = "border-white/12 bg-white/[0.02] text-slate-400";
+      head = `${tp.icon} ${tp.label}`;
+      sub = tp.auto ? "pendiente" : "manual";
+      break;
+  }
+
+  const title =
+    st.level === "done"
+      ? `Enviado ${st.sentAt ? fmtSentAtHn(st.sentAt) : ""}${clickable ? " — clic para reenviar" : ""}`
+      : st.level === "failed"
+        ? `Último intento falló: ${st.error} — clic para reintentar`
+        : st.level === "held"
+          ? "Las instrucciones solo salen con el pago TOTAL (política de la casa)"
+          : clickable
+            ? `${tp.auto ? "Sale solo" : "Envío manual"} — clic para enviar ahora`
+            : tp.icon + " " + tp.label;
+
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        disabled={busy || !clickable}
+        onClick={handle}
+        title={title}
+        className={`text-left px-2.5 py-1 rounded-md text-[11px] font-medium border transition ${cls} ${
+          clickable ? "hover:brightness-125 cursor-pointer" : "cursor-default"
+        } disabled:opacity-60`}
+      >
+        {busy ? "…" : head}
+      </button>
+      {msg ? (
+        <span className="text-[9px] text-slate-400 mt-0.5 max-w-[130px] truncate" title={msg}>{msg}</span>
+      ) : sub ? (
+        <span className={`text-[9px] mt-0.5 max-w-[130px] truncate ${subCls}`} title={st.error ?? sub}>{sub}</span>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Card completa ────────────────────────────────────────────────────────────
+
+interface CardShared {
   sending: Record<string, boolean>;
   actionMsg: Record<string, string>;
   onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string) => void;
-}) {
+}
+
+function CardHeader({ r, a }: { r: Reservation; a: Analysis }) {
   const prop = getProperty(r.property_slug);
   const sm = sourceMeta(r.source);
-  const stay = stayLabel(r);
-  const pay = paymentBadge(r);
   const phoneDigits = r.guest_phone ? r.guest_phone.replace(/\D/g, "") : "";
-
-  const renderActions = (defs: ActionDef[]) =>
-    defs.map((a) => {
-      const key = `${r.id}:${a.template}`;
-      const sentAt = (r[a.sentKey] as string | null | undefined) ?? null;
-      const sent = Boolean(sentAt);
-      const sendError = !sent ? ((r[a.errorKey] as string | null | undefined) ?? null) : null;
-      const busy = Boolean(sending[key]);
-      const msg = actionMsg[key];
-      const to = recipientOf(a.template, r.guest_name || "el huésped");
-      return (
-        <div key={a.template} className="flex flex-col">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onSend(r.id, a.template, sent, to)}
-            title={
-              sent
-                ? `Enviado ${fmtSentAtHn(sentAt!)} — clic para reenviar${a.title ? ` · ${a.title}` : ""}`
-                : sendError
-                  ? `⚠ Último intento FALLÓ: ${sendError} — clic para reintentar`
-                  : `Enviar ahora${a.title ? ` · ${a.title}` : ""}`
-            }
-            className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition disabled:opacity-50 ${
-              sent
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                : sendError
-                  ? "border-rose-500/50 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                  : "border-white/15 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
-            }`}
-          >
-            {busy ? "…" : sent ? `✓ ${a.label}` : sendError ? `⚠ ${a.label}` : a.label}
-          </button>
-          {msg ? (
-            <span className="text-[9px] text-slate-400 mt-0.5 max-w-[120px] truncate" title={msg}>{msg}</span>
-          ) : sent ? (
-            <span className="text-[9px] text-slate-500 mt-0.5">{fmtSentAtHn(sentAt!)}</span>
-          ) : sendError ? (
-            <span className="text-[9px] text-rose-400/80 mt-0.5 max-w-[120px] truncate" title={sendError}>falló — ver detalle</span>
-          ) : null}
-        </div>
-      );
-    });
-
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      {/* Fila 1: nombre + propiedad + badges */}
+    <>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -481,15 +703,10 @@ function ReservationCard({
             {r.guest_count ? ` · ${r.guest_count} huésp.` : ""}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${stay.cls}`}>{stay.text}</span>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${pay.cls}`}>{pay.text}</span>
-          {pay.sub && <span className="text-[9px] text-slate-500">{pay.sub}</span>}
-        </div>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${a.stayCls}`}>{a.stayText}</span>
       </div>
 
-      {/* Fila 2: fechas + teléfono */}
-      <div className="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
+      <div className="flex items-center gap-4 mt-2.5 text-[12px] flex-wrap">
         <span className="text-slate-300">
           <span className="text-slate-500">Entra</span> {fmtDate(r.check_in)} <span className="text-slate-600">→</span>{" "}
           <span className="text-slate-500">sale</span> {fmtDate(r.check_out)}
@@ -497,10 +714,7 @@ function ReservationCard({
         {r.guest_phone ? (
           <span className="flex items-center gap-2">
             <span className="font-mono text-slate-300">{r.guest_phone}</span>
-            <a
-              href={`/inbox?c=${phoneDigits}`}
-              className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10"
-            >
+            <a href={`/inbox?c=${phoneDigits}`} className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10">
               Abrir chat
             </a>
           </span>
@@ -510,71 +724,124 @@ function ReservationCard({
           </span>
         )}
       </div>
+    </>
+  );
+}
 
-      {/* Fila 3: checklist puntual de mensajes + acciones */}
-      <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
-        {/* Instrucciones T-1 (automático, solo lectura) — correo y WhatsApp por separado */}
-        <div className="flex items-start gap-2 text-[11px]">
-          <span className="text-slate-500 w-16 shrink-0 pt-1">Llegada</span>
-          <div className="flex gap-1.5 flex-wrap items-start">
-            <StatusChip
-              label="📧 Instr."
-              sentAt={r.checkin_reminder_sent_at}
-              error={r.checkin_reminder_error ?? null}
-              what="Correo #2 con instrucciones de check-in (automático, 6 PM de la víspera)"
-            />
-            <StatusChip
-              label="📱 PDF"
-              sentAt={r.whatsapp_sent_at}
-              error={r.whatsapp_error ?? null}
-              what="WhatsApp con PDF de instrucciones (automático, 6 PM de la víspera)"
-            />
-            {renderActions(ARRIVAL_ACTIONS)}
-          </div>
+function FullCard({
+  r,
+  a,
+  highlight,
+  onCollapse,
+  sending,
+  actionMsg,
+  onSend,
+}: { r: Reservation; a: Analysis; highlight?: boolean; onCollapse?: () => void } & CardShared) {
+  const renderPills = (defs: Touchpoint[]) =>
+    defs.map((tp) => {
+      const key = `${r.id}:${tp.template}`;
+      return (
+        <TouchpointPill
+          key={tp.key}
+          tp={tp}
+          st={a.states[tp.key]}
+          r={r}
+          busy={tp.template ? Boolean(sending[key]) : false}
+          msg={tp.template ? actionMsg[key] : undefined}
+          onSend={onSend}
+        />
+      );
+    });
+
+  return (
+    <div className={`rounded-2xl border p-4 ${highlight ? "border-rose-500/40 bg-rose-500/[0.04]" : "border-white/10 bg-white/[0.03]"}`}>
+      <CardHeader r={r} a={a} />
+
+      {/* Por qué necesita atención */}
+      {a.attention.length > 0 && (
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {a.attention.map((why) => (
+            <span key={why} className="text-[10px] px-2 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-200">
+              {why}
+            </span>
+          ))}
         </div>
-        {/* Salida */}
-        <div className="flex items-start gap-2 text-[11px]">
-          <span className="text-slate-500 w-16 shrink-0 pt-1">Salida</span>
-          <div className="flex gap-1.5 flex-wrap items-start">{renderActions(DEPARTURE_ACTIONS)}</div>
+      )}
+
+      {/* Pago */}
+      <div className="mt-3">
+        <PaymentPanel pay={a.pay} />
+      </div>
+
+      {/* Avisos */}
+      <div className="mt-3 pt-3 border-t border-white/5 space-y-2.5">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1.5">Llegada</div>
+          <div className="flex gap-1.5 flex-wrap items-start">{renderPills(ARRIVAL_TOUCHPOINTS)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1.5">Salida</div>
+          <div className="flex gap-1.5 flex-wrap items-start">{renderPills(DEPARTURE_TOUCHPOINTS)}</div>
         </div>
       </div>
+
+      {onCollapse && (
+        <button type="button" onClick={onCollapse} className="mt-3 text-[11px] text-slate-500 hover:text-slate-300">
+          ▴ Ocultar detalle
+        </button>
+      )}
     </div>
   );
 }
 
-/** Chip de solo-lectura con hora exacta de envío o el error del último intento. */
-function StatusChip({
-  label,
-  sentAt,
-  error,
-  what,
-}: {
-  label: string;
-  sentAt: string | null | undefined;
-  error: string | null;
-  what: string;
-}) {
-  const sent = Boolean(sentAt);
-  const failed = !sent && Boolean(error);
+// ── Card condensada (Próximas) ───────────────────────────────────────────────
+
+function CompactCard({ r, a, onExpand }: { r: Reservation; a: Analysis; onExpand: () => void }) {
+  const prop = getProperty(r.property_slug);
+  const sm = sourceMeta(r.source);
+
+  // Resumen de avisos: prioriza problemas; si no, cuántos programados/enviados.
+  const failed = ALL_TOUCHPOINTS.filter((tp) => a.states[tp.key].level === "failed").length;
+  const done = ALL_TOUCHPOINTS.filter((tp) => a.states[tp.key].level === "done").length;
+  let avisos: { text: string; cls: string };
+  if (failed > 0) avisos = { text: `⚠ ${failed} falló`, cls: "text-rose-300" };
+  else if (done > 0) avisos = { text: `✓ ${done} enviados`, cls: "text-emerald-300/80" };
+  else avisos = { text: "avisos programados", cls: "text-slate-500" };
+
+  // El saldo pendiente manda: si algo se debe, se ve SIEMPRE (César 2026-07-13).
+  const payChip =
+    a.pay.saldo != null && a.pay.saldo > 0
+      ? { text: `falta ${fmtL(a.pay.saldo)}`, cls: "text-amber-300 font-semibold" }
+      : a.pay.state === "paid"
+        ? { text: a.pay.total != null ? `Pagado ${fmtL(a.pay.total)}` : "Pagado", cls: "text-emerald-300/80" }
+        : a.pay.state === "verify"
+          ? { text: "por verificar", cls: "text-rose-300/80" }
+          : { text: "depósito · falta definir total", cls: "text-amber-300/80" };
+
   return (
-    <div className="flex flex-col">
-      <span
-        className={`px-2 py-0.5 rounded border ${
-          sent
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-            : failed
-              ? "border-rose-500/50 bg-rose-500/10 text-rose-300"
-              : "border-white/10 bg-white/[0.03] text-slate-500"
-        }`}
-        title={sent ? `${what} — enviado ${fmtSentAtHn(sentAt!)}` : failed ? `${what} — ⚠ FALLÓ: ${error}` : `${what} — aún no enviado`}
-      >
-        {sent ? `✓ ${label}` : failed ? `⚠ ${label}` : label}
-      </span>
-      {sent ? (
-        <span className="text-[9px] text-slate-500 mt-0.5">{fmtSentAtHn(sentAt!)}</span>
-      ) : failed ? (
-        <span className="text-[9px] text-rose-400/80 mt-0.5 max-w-[120px] truncate" title={error ?? undefined}>falló — ver detalle</span>
-      ) : null}
-    </div>
+    <button
+      type="button"
+      onClick={onExpand}
+      className="w-full text-left rounded-xl border border-white/8 bg-white/[0.015] px-3.5 py-2.5 hover:bg-white/[0.04] transition"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex items-center gap-2">
+          <span className="text-sm font-medium text-slate-200 truncate">{r.guest_name || "Huésped sin nombre"}</span>
+          <span className={`text-[9px] px-1 py-0.5 rounded border shrink-0 ${sm.cls}`}>{sm.emoji}</span>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded-full border shrink-0 text-slate-400 border-white/10 bg-white/5">{a.stayText}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
+        <span className="truncate">{prop?.name ?? r.property_slug}</span>
+        <span className="text-slate-700">·</span>
+        <span>{fmtDate(r.check_in)}→{fmtDate(r.check_out)}</span>
+        <span className="text-slate-700">·</span>
+        <span className={payChip.cls}>{payChip.text}</span>
+        <span className="text-slate-700">·</span>
+        <span className={avisos.cls}>{avisos.text}</span>
+        {!r.guest_phone && <span className="text-rose-300/80">· sin #</span>}
+        <span className="ml-auto text-slate-600">ver ▾</span>
+      </div>
+    </button>
   );
 }

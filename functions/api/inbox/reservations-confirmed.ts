@@ -33,7 +33,7 @@ function json(data: unknown, status = 200): Response {
 // los errores por mensaje, para que el checklist muestre ⚠ con el motivo.
 // Exportadas solo para el test que fija el contrato del fallback.
 export const SELECT_FULL = `SELECT r.id, r.property_slug, r.check_in, r.check_out, r.guest_name,
-        r.guest_phone, r.guest_count, r.amount_usd, r.source, r.status, r.created_at,
+        r.guest_phone, r.guest_count, r.amount_usd, r.total_hnl, r.paid_hnl, r.source, r.status, r.created_at,
         r.notified_at, r.checkin_reminder_sent_at, r.checkin_reminder_error,
         r.whatsapp_sent_at, r.whatsapp_error,
         r.wa_arrival_guest_sent_at, r.wa_arrival_guest_error,
