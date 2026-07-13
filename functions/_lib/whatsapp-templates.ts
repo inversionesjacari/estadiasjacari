@@ -287,6 +287,58 @@ export function sendCheckinDiaSeguridad(
 }
 
 /**
+ * Propiedades cuya SEGURIDAD recibe el aviso ENRIQUECIDO (template
+ * `seguridad_llegada`, más datos) en vez del `checkin_dia_seguridad` genérico.
+ * Villa B11 (garita propia del Hotel Palma Real) pide identificar al huésped;
+ * su garita necesita entrada, salida y cantidad de personas (César 2026-07-13).
+ * Ampliar este set para sumar más propiedades a futuro.
+ */
+export const SECURITY_ENRICHED_SLUGS = new Set<string>(["villa-b11-palma-real"]);
+
+/**
+ * Template 5b — seguridad_llegada (aviso a seguridad ENRIQUECIDO, FASE 1)
+ *
+ * Trigger: cron 7 AM HN del día del check-in, SOLO para propiedades en
+ * SECURITY_ENRICHED_SLUGS. Se envía a cada contacto activo con role='security'.
+ * A diferencia de checkin_dia_seguridad, lleva propiedad + fechas + cantidad de
+ * personas (lo que la garita necesita para autorizar el ingreso). La FOTO de la
+ * identidad es FASE 2 (requiere un template con header de imagen aparte).
+ *
+ * Variables:
+ *   {{1}} = nombre de la propiedad (ej. "Villa B11 — Palma Real")
+ *   {{2}} = nombre completo del titular
+ *   {{3}} = fecha de ENTRADA en español (ej. "14 de julio")
+ *   {{4}} = fecha de SALIDA en español (ej. "16 de julio")
+ *   {{5}} = cantidad de huéspedes (ej. "6")
+ */
+export interface SeguridadLlegadaData {
+  toPhone: string;
+  propertyName: string;
+  guestFullName: string;
+  checkInDateEs: string;
+  checkOutDateEs: string;
+  guestCount: number;
+}
+
+export function sendSeguridadLlegada(
+  data: SeguridadLlegadaData,
+  env: WhatsAppTemplatesEnv,
+): Promise<SendTemplateResult> {
+  return sendTextTemplate(
+    "seguridad_llegada",
+    data.toPhone,
+    [
+      data.propertyName,
+      data.guestFullName,
+      data.checkInDateEs,
+      data.checkOutDateEs,
+      String(data.guestCount),
+    ],
+    env,
+  );
+}
+
+/**
  * Template 6 — checkout_dia_huesped
  *
  * Trigger: cron 9 AM HN del día del checkout.

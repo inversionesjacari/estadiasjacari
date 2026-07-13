@@ -23,6 +23,8 @@ import {
   sendCheckinDiaHuesped,
   sendCheckinDiaLimpieza,
   sendCheckinDiaSeguridad,
+  sendSeguridadLlegada,
+  SECURITY_ENRICHED_SLUGS,
   sendCheckoutDiaHuesped,
   sendCheckoutDiaLimpieza,
   sendConfirmacionWhatsappCapturado,
@@ -420,17 +422,28 @@ async function runStaffTemplate(
         to: c.phoneE164,
       });
     } else if (role === "security" && phase === "arrival") {
-      results.push({
-        ...(await sendCheckinDiaSeguridad(
-          {
-            toPhone: c.phoneE164,
-            guestFullName: r.guest_name || "Huésped sin nombre",
-            checkOutDateEs: formatDateShortEs(r.check_out),
-          },
-          waEnv,
-        )),
-        to: c.phoneE164,
-      });
+      // Villa B11 (garita propia) → aviso ENRIQUECIDO; resto → genérico.
+      const secRes = SECURITY_ENRICHED_SLUGS.has(r.property_slug)
+        ? await sendSeguridadLlegada(
+            {
+              toPhone: c.phoneE164,
+              propertyName,
+              guestFullName: r.guest_name || "Huésped sin nombre",
+              checkInDateEs: formatDateShortEs(r.check_in),
+              checkOutDateEs: formatDateShortEs(r.check_out),
+              guestCount: r.guest_count ?? 1,
+            },
+            waEnv,
+          )
+        : await sendCheckinDiaSeguridad(
+            {
+              toPhone: c.phoneE164,
+              guestFullName: r.guest_name || "Huésped sin nombre",
+              checkOutDateEs: formatDateShortEs(r.check_out),
+            },
+            waEnv,
+          );
+      results.push({ ...secRes, to: c.phoneE164 });
     } else {
       // No existe "checkout_dia_seguridad" — combinación no soportada.
       results.push({ ok: false, error: `Combinación role=${role} phase=${phase} no implementada` });

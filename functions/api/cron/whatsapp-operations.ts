@@ -61,6 +61,8 @@ import { logOutboundTemplate } from "../../_lib/wa-log";
 import {
   sendCheckinDiaHuesped,
   sendCheckinDiaSeguridad,
+  sendSeguridadLlegada,
+  SECURITY_ENRICHED_SLUGS,
   sendCheckoutDiaHuesped,
   sendCheckoutDiaLimpieza,
   sendLimpiezaAvisoEntrada,
@@ -406,14 +408,28 @@ export async function runMorningStaff(
             });
             continue;
           }
-          const res = await sendCheckinDiaSeguridad(
-            {
-              toPhone: g.phoneE164,
-              guestFullName,
-              checkOutDateEs: checkOutEs,
-            },
-            waEnv,
-          );
+          // Villa B11 (garita propia) recibe el aviso ENRIQUECIDO; el resto de
+          // propiedades sigue con el aviso genérico de 2 datos.
+          const res = SECURITY_ENRICHED_SLUGS.has(r.property_slug)
+            ? await sendSeguridadLlegada(
+                {
+                  toPhone: g.phoneE164,
+                  propertyName,
+                  guestFullName,
+                  checkInDateEs: formatDateShortEs(r.check_in),
+                  checkOutDateEs: checkOutEs,
+                  guestCount: r.guest_count ?? 1,
+                },
+                waEnv,
+              )
+            : await sendCheckinDiaSeguridad(
+                {
+                  toPhone: g.phoneE164,
+                  guestFullName,
+                  checkOutDateEs: checkOutEs,
+                },
+                waEnv,
+              );
           results.push(res);
           actions.push({
             reservationId: r.id,
