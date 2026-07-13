@@ -256,6 +256,23 @@ export function isConfirmation(text: string): boolean {
   if (/\b(quiero|quisiera|deseo|necesito)\b[^.!]*\breservar\b|\bpara reservar\b|\bhacer la reserva\b/.test(norm)) {
     return true;
   }
+  // Objeción / lamento con un "si" incidental (conjunción "if", no "sí" — el acento se
+  // normaliza, así que no se distinguen). El cliente expresa una TRABA ("lástima que…",
+  // "es mucho alquilar dos casas", "nos gusta pero el límite…"), no un asentimiento a la
+  // reserva. Caso real 13-jul-2026 (+504 9583-9796): "Nos gusta más la villa… sentimos
+  // que SI nos ubicamos bien pero lastima que ud tiene ese límite… es mucho alquilar dos
+  // casa realmente 🥺" → el bot lo tomó como "sí" y saltó a cobrar (y de ahí se trabó en
+  // el clarify de pago). Un "sí" FUERTE (dale/confirmo/de acuerdo/perfecto/claro/por
+  // supuesto) desactiva el guard; un "si"/"ya"/"ok" pelado no pesa contra una objeción
+  // explícita. Misma familia que Zedileth (si=if), variante OBJECIÓN (sin "?" ni fecha).
+  const strongYesForObjection = /\b(dale|confirmo|de acuerdo|perfecto|claro|por supuesto)\b/.test(norm);
+  const objection =
+    /\blastima\b/.test(norm) ||
+    /\bpero\b[^.!?]{0,40}\b(limite|caro|mucho|lejos|pequen\w*|problema|dificil|complicad\w*|no\s+(tiene|hay|cabe|entran?))\b/.test(norm) ||
+    /\bes\s+(mucho|demasiado)\b[^.!?]{0,25}\b(alquilar|dos\s+casas?|caro|dinero|para\s+nosotros|el\s+espacio)\b/.test(norm);
+  if (objection && !strongYesForObjection) {
+    return false;
+  }
   return /\b(si|claro|por supuesto|ok|dale|confirmo|de acuerdo|perfecto|ya|listo)\b/.test(norm);
 }
 

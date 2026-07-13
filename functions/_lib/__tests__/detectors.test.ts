@@ -55,6 +55,19 @@ describe("isConfirmation — 'si' suele ser 'if', no 'sí'", () => {
     expect(isConfirmation("Quiero reservar")).toBe(true);
     expect(isConfirmation("Sii quisiera saber que debo hacer para reservar")).toBe(true);
   });
+  it("OBJECIÓN/lamento con 'si' incidental NO confirma (caso +504 9583-9796, 13-jul-2026)", () => {
+    // El "si" es conjunción ("sentimos que SI nos ubicamos"), no "sí". El cliente objeta
+    // la capacidad; el bot lo tomó como confirmación y saltó a cobrar → bucle de pago.
+    expect(isConfirmation("Nos gusta más la villa y sentimos que si nos ubicamos bien pero lastima que ud tiene ese límite, porque los niños que llevamos son pequeños, es mucho alquilar dos casa realmente")).toBe(false);
+    expect(isConfirmation("es mucho alquilar dos casas realmente")).toBe(false);
+    expect(isConfirmation("nos gusta pero es mucho el espacio para nosotros")).toBe(false);
+    expect(isConfirmation("lástima que tiene ese límite de personas")).toBe(false);
+  });
+  it("una objeción con un 'sí' FUERTE sí confirma (el guard no se pasa de listo)", () => {
+    // Si el cliente objeta PERO igual dice un sí fuerte, es una confirmación real.
+    expect(isConfirmation("sí, aunque es un poco caro, dale")).toBe(true);
+    expect(isConfirmation("perfecto, me gusta pero quiero reservar")).toBe(true);
+  });
 });
 
 describe("isBankAccountRequest — blinda contra inventar cuenta", () => {
