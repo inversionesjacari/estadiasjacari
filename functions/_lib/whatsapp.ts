@@ -581,6 +581,89 @@ export async function sendProductMessage(
   );
 }
 
+export interface CatalogProduct {
+  id: string;
+  retailerId: string;
+  name?: string;
+  /** "in stock" / "out of stock" etc. según lo reporta Meta. */
+  availability?: string;
+}
+
+export interface ListCatalogProductsResult {
+  ok: boolean;
+  products?: CatalogProduct[];
+  error?: string;
+}
+
+/**
+ * Lista los productos que Meta tiene REALMENTE cargados en `env.WHATSAPP_CATALOG_ID`,
+ * consultando la Graph API directo (fuente de verdad, no la UI de Commerce
+ * Manager — un item puede verse "Disponible" ahí y aun así vivir en OTRO
+ * catalog_id que no es el que el bot usa). Usado por el diagnóstico
+ * `/api/admin/catalog-check` para confirmar, retailerId por retailerId, si
+ * `sendProductMessage` debería poder encontrarlo.
+ */
+export async function listCatalogProducts(
+  env: WhatsAppEnv,
+): Promise<ListCatalogProductsResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) {
+    return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
+  }
+  if (!env.WHATSAPP_CATALOG_ID) {
+    return { ok: false, error: "Falta env var WHATSAPP_CATALOG_ID" };
+  }
+
+  const headers = { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` };
+  const products: CatalogProduct[] = [];
+  let url: string | undefined =
+    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability&limit=200`;
+
+  // Tope de 5 páginas (1000 productos) — de sobra para un catálogo de 7 casas;
+  // solo existe para no quedar en loop infinito si Meta devuelve paging raro.
+  for (let page = 0; page < 5 && url; page++) {
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(url, { headers }, TIMEOUT.STANDARD);
+    } catch (err) {
+      return { ok: false, error: `Timeout/red listando catálogo: ${(err as Error).message}` };
+    }
+
+    const bodyText = await resp.text();
+    if (!resp.ok) {
+      return { ok: false, error: `HTTP ${resp.status}: ${bodyText.slice(0, 500)}` };
+    }
+
+    let parsed: {
+      data?: Array<{ id: string; retailer_id?: string; name?: string; availability?: string }>;
+      paging?: { next?: string };
+      error?: { message?: string; code?: number };
+    };
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch {
+      return { ok: false, error: `JSON inválido: ${bodyText.slice(0, 200)}` };
+    }
+    if (parsed.error) {
+      return {
+        ok: false,
+        error: `Meta error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "desconocido"}`,
+      };
+    }
+
+    for (const item of parsed.data ?? []) {
+      products.push({
+        id: item.id,
+        retailerId: item.retailer_id ?? "",
+        name: item.name,
+        availability: item.availability,
+      });
+    }
+    url = parsed.paging?.next;
+  }
+
+  return { ok: true, products };
+}
+
 /**
  * Envía una UBICACIÓN nativa de WhatsApp (pin sobre el mapa, con nombre y
  * dirección). Se ve como cuando uno comparte su ubicación: miniatura del mapa,
