@@ -29,6 +29,7 @@ function baseQuote(overrides: Partial<QuoteOutput> = {}): QuoteOutput {
     city: "Tela",
     capacity: 6,
     exceedsCapacity: false,
+    sharedBeds: false,
     ...overrides,
   };
 }

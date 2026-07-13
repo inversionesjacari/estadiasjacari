@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractPartySize, partyHeadcount, mergeFriendsTripParty } from "../party-size";
+import { extractPartySize, partyHeadcount, mergeFriendsTripParty, capacityFit, CHILD_BED_SHARE_MARGIN, childBedShareMargin } from "../party-size";
 
 describe("extractPartySize — caso real Karen López (Friends Trip, 10-jul-2026)", () => {
   it("'4 adultos 2 niños 1bb' → adultos=4, niños=2, bebés=1 (bebé excluido del total)", () => {
@@ -139,5 +139,47 @@ describe("mergeFriendsTripParty — el desglose ya dado se conserva y cuenta com
   it("repetir el MISMO desglose no marca changed (no fuerza re-cotización)", () => {
     const r = mergeFriendsTripParty({ adults: 2, children: 3 }, "2 adultos y 3 niños");
     expect(r.changed).toBe(false);
+  });
+});
+
+describe("capacityFit — política de niños que comparten cama (Carolina Raudales, 13-jul-2026)", () => {
+  it("el margen es 2 en casas grandes (cupo ≥ 6) y 1 en casas chicas", () => {
+    expect(CHILD_BED_SHARE_MARGIN).toBe(2);
+    expect(childBedShareMargin(12)).toBe(2); // las gemelas
+    expect(childBedShareMargin(6)).toBe(2);  // Villa B11 / Casa Brisa/Marea / Centro Morazán
+    expect(childBedShareMargin(4)).toBe(1);  // Casa Lara
+    expect(childBedShareMargin(3)).toBe(1);  // La Florida
+  });
+  it("casa CHICA: el margen menor la protege — Casa Lara (4) admite +1 niño, no +2", () => {
+    expect(capacityFit(4, 4, 1, 5)).toBe("fits_shared_beds"); // 4 adultos + 1 niño (=5) entra
+    expect(capacityFit(4, 4, 2, 6)).toBe("exceeds");          // 4 adultos + 2 niños (=6) NO
+    expect(capacityFit(3, 3, 1, 4)).toBe("fits_shared_beds"); // La Florida (3) + 1 niño
+    expect(capacityFit(3, 3, 2, 5)).toBe("exceeds");
+  });
+  it("11 adultos + 2 niños en Las Gemelas (cup 12) → entran por cama compartida (NO exceeds)", () => {
+    // El caso exacto de Carolina: el bot rechazó "son 13", ahora entran.
+    expect(capacityFit(12, 11, 2, 13)).toBe("fits_shared_beds");
+  });
+  it("adultos DENTRO del cupo, sin niños de más → fits holgado", () => {
+    expect(capacityFit(12, 10, 0, 10)).toBe("fits");
+    expect(capacityFit(12, 12, 0, 12)).toBe("fits"); // justo en el cupo
+    expect(capacityFit(6, 4, 2, 6)).toBe("fits");    // 6 en una casa de 6
+  });
+  it("los ADULTOS siempre topan: 13 adultos NO entran en 12 aunque no haya niños", () => {
+    expect(capacityFit(12, 13, 0, 13)).toBe("exceeds");
+    expect(capacityFit(12, 13, 2, 15)).toBe("exceeds"); // adultos ya pasan → exceeds
+  });
+  it("más niños que el margen → exceeds: 11 adultos + 4 niños (=15) no entran en 12", () => {
+    expect(capacityFit(12, 11, 4, 15)).toBe("exceeds");
+    expect(capacityFit(12, 11, 3, 14)).toBe("fits_shared_beds"); // 12+2 justo en el margen
+  });
+  it("12 adultos + 2 niños (=14) → entran por margen; +3 niños ya no", () => {
+    expect(capacityFit(12, 12, 2, 14)).toBe("fits_shared_beds");
+    expect(capacityFit(12, 12, 3, 15)).toBe("exceeds");
+  });
+  it("SIN desglose (adults null) → cupo ESTRICTO: guests cuenta como adultos", () => {
+    expect(capacityFit(12, null, null, 13)).toBe("exceeds"); // no sabemos si hay niños → estricto
+    expect(capacityFit(12, null, null, 12)).toBe("fits");
+    expect(capacityFit(6, undefined, undefined, 7)).toBe("exceeds");
   });
 });

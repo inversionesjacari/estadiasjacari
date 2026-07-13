@@ -15,6 +15,7 @@
 
 import type { PropertySlug, City } from "./quote-extractor";
 import type { Lang } from "./i18n";
+import { capacityFit } from "./party-size";
 
 /** Precios + capacidad por propiedad — single source of truth para el bot. */
 export interface PropertyPricing {
@@ -109,6 +110,11 @@ export interface QuoteInput {
   checkIn: string;  // YYYY-MM-DD
   checkOut: string; // YYYY-MM-DD
   guests: number;
+  // Desglose opcional (Friends Trip y cuando el LLM lo extrae). Si viene, la capacidad
+  // aplica la política de "niños que comparten cama no topan" (ver capacityFit); si NO
+  // viene, `guests` se trata como todos adultos → cupo estricto (comportamiento previo).
+  adults?: number | null;
+  children?: number | null;
 }
 
 export interface QuoteOutput {
@@ -129,6 +135,9 @@ export interface QuoteOutput {
   city: City;
   capacity: number;
   exceedsCapacity: boolean;
+  /** El grupo entra SOLO porque hasta 2 niños comparten cama (por encima del cupo publicado).
+   *  El mensaje de cotización lo aclara con calidez para que quede transparente. */
+  sharedBeds: boolean;
   /** Si el paquete "Friends Trip" agregó un day pass, monto YA incluido en totalHNL/USD (para desglosarlo en el mensaje). */
   dayPassHNL?: number;
   dayPassIsWeekend?: boolean;
@@ -182,10 +191,16 @@ export async function buildQuote(
       city: pricing.city,
       capacity: pricing.capacity,
       exceedsCapacity: false,
+      sharedBeds: false,
     };
   }
 
-  const exceedsCapacity = input.guests > pricing.capacity;
+  // Capacidad con la política de César (13-jul-2026): los adultos topan el cupo; unos
+  // pocos niños que comparten cama pueden entrar por encima (ver capacityFit). Sin
+  // desglose adults/children → cupo estricto (guests como adultos), igual que antes.
+  const capVerdict = capacityFit(pricing.capacity, input.adults, input.children, input.guests);
+  const exceedsCapacity = capVerdict === "exceeds";
+  const sharedBeds = capVerdict === "fits_shared_beds";
 
   // Disponibilidad — verificar overlap con reservaciones D1 confirmed/pending
   let hasConflict = false;
@@ -239,6 +254,7 @@ export async function buildQuote(
     city: pricing.city,
     capacity: pricing.capacity,
     exceedsCapacity,
+    sharedBeds,
   };
 }
 
@@ -345,6 +361,20 @@ export function formatQuoteMessage(
 ): string {
   const closingEmoji = q.city === "Tegucigalpa" ? "" : " 🌴";
 
+  // Las Gemelas es el producto MÁS GRANDE (12). Si un grupo la supera, ofrecerle "rentá
+  // las gemelas juntas" sería ofrecerle lo mismo que se pasó de cupo (se contradecía solo,
+  // caso Carolina Raudales) → mensaje honesto de tope en vez del genérico.
+  const isMaxProduct = input.property === "las-gemelas-tela";
+
+  // El grupo entra SOLO porque unos niños comparten cama → aclararlo con calidez para que
+  // quede transparente (no es que "quepan 14 en 12": es que 2 niños duermen con los papás).
+  const kidsSharing = input.children ?? 0;
+  const sharedBedsNote = q.sharedBeds
+    ? lang === "en"
+      ? `\n\n👍 The ${kidsSharing} kid${kidsSharing === 1 ? "" : "s"} sharing a bed with you fit within the ${q.capacity}-guest limit.`
+      : `\n\n👍 Los ${kidsSharing} niño${kidsSharing === 1 ? "" : "s"} comparten cama con ustedes, así entran en el cupo de ${q.capacity}.`
+    : "";
+
   // Día pass (paquete "Friends Trip") — línea extra entre limpieza y total.
   const dayPassLine = q.dayPassHNL
     ? lang === "en"
@@ -360,6 +390,11 @@ export function formatQuoteMessage(
   if (lang === "en") {
     if (!q.available) {
       if (q.exceedsCapacity) {
+        if (isMaxProduct) {
+          return `Unfortunately, ${q.propertyName} holds up to ${q.capacity} guests and you're ${input.guests}. 😔
+
+That's already our largest option (both twin houses together). Any chance the group fits within ${q.capacity}? If so, I'd be glad to check dates for you.`;
+        }
         return `Unfortunately, ${q.propertyName} holds up to ${q.capacity} guests and you're ${input.guests}. 😔
 
 Would you like another property with more capacity? We have options for up to 6 guests, or for larger groups we can rent Casa Brisa + Casa Marea together (up to 12).`;
@@ -368,7 +403,7 @@ Would you like another property with more capacity? We have options for up to 6 
 
 Would you like to try other dates or another property?`;
     }
-    return `Available! ✅ ${q.propertyName} from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")} (${q.nights} night${q.nights > 1 ? "s" : ""}).
+    return `Available! ✅ ${q.propertyName} from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")} (${q.nights} night${q.nights > 1 ? "s" : ""}).${sharedBedsNote}
 
 💰 *Quote:*
 ${q.nights} night${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
@@ -385,6 +420,11 @@ Shall we confirm? You can pay the 50% by *bank transfer* or *card/PayPal*, which
   // ── Español ─────────────────────────────────────────────────────────────────
   if (!q.available) {
     if (q.exceedsCapacity) {
+      if (isMaxProduct) {
+        return `Lamentablemente, ${q.propertyName} tiene capacidad para ${q.capacity} huéspedes y son ${input.guests}. 😔
+
+Esa ya es nuestra opción más grande (las dos casas gemelas juntas). ¿Habría chance de que el grupo entre en ${q.capacity}? Si sí, con gusto te reviso fechas.`;
+      }
       return `Lamentablemente, ${q.propertyName} tiene capacidad para ${q.capacity} huéspedes y son ${input.guests}. 😔
 
 ¿Te interesa otra de nuestras propiedades con mayor capacidad? Tenemos opciones para hasta 6 huéspedes, o si son más, podemos rentarte Casa Brisa + Casa Marea juntas (hasta 12).`;
@@ -394,7 +434,7 @@ Shall we confirm? You can pay the 50% by *bank transfer* or *card/PayPal*, which
 ¿Te interesa cambiar las fechas o probar otra de nuestras propiedades?`;
   }
 
-  return `¡Disponible! ✅ ${q.propertyName} del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).
+  return `¡Disponible! ✅ ${q.propertyName} del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).${sharedBedsNote}
 
 💰 *Cotización:*
 ${q.nights} noche${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}

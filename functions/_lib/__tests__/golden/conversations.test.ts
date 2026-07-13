@@ -40,7 +40,7 @@ import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos, TELA_CROQUIS_URL } from "../../property-photos";
 import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
 import { fechaEnPalabras } from "../../conversational-bot";
-import { extractPartySize, partyHeadcount, mergeFriendsTripParty } from "../../party-size";
+import { extractPartySize, partyHeadcount, mergeFriendsTripParty, capacityFit } from "../../party-size";
 import { findAlternativeDates, formatWindowHuman } from "../../suggest-dates";
 
 //
@@ -306,6 +306,29 @@ describe("CHAT: grupo de 13 en Tela — el bot ofrecía 'las gemelas' pero no po
   it("las casas individuales de Tela siguen con capacidad 6", () => {
     expect(PROPERTY_PRICING["casa-brisa"].capacity).toBe(6);
     expect(PROPERTY_PRICING["casa-marea"].capacity).toBe(6);
+  });
+});
+
+describe("CHAT: Carolina Raudales — 11 adultos + 2 niños: recomendó las gemelas y luego rechazó", () => {
+  // 13-jul-2026: Friends Trip Tela. El LLM fijó property=las-gemelas-tela (cap 12) para
+  // "11 adultos y 2 niños" (=13); el bot mandó la tarjeta proactiva pidiendo fechas y
+  // recién al cotizar dijo "son 13, no caben", después "recuperó" inventando "si los
+  // niños no ocupan cama caben". Decisión de César: los niños que comparten cama NO topan
+  // el cupo (hasta +2). La capacidad es un dato exacto → capacityFit lo resuelve.
+  const cap = PROPERTY_PRICING["las-gemelas-tela"].capacity; // 12
+  it("11 adultos + 2 niños ENTRAN en Las Gemelas por cama compartida (ya no es 'no caben')", () => {
+    expect(capacityFit(cap, 11, 2, 13)).toBe("fits_shared_beds");
+  });
+  it("el gate 'group_too_big' (tope 12) YA NO dispara para 11 adultos + 2 niños", () => {
+    // Es el check exacto del gate en quote-flow: capacityFit(12, adults, children, guests).
+    expect(capacityFit(12, 11, 2, 13)).not.toBe("exceeds");
+  });
+  it("pero un grupo que NO entra ni con el margen sigue topando (honestidad desde el inicio)", () => {
+    expect(capacityFit(12, 13, 0, 13)).toBe("exceeds");     // 13 adultos
+    expect(capacityFit(12, 11, 4, 15)).toBe("exceeds");     // 11 adultos + 4 niños
+  });
+  it("sin desglose (solo 'somos 13') el cupo es estricto → group_too_big", () => {
+    expect(capacityFit(12, null, null, 13)).toBe("exceeds");
   });
 });
 

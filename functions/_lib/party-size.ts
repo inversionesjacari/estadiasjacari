@@ -31,6 +31,23 @@ function strip(text: string): string {
 // etiqueta (bb/bebé), no por edad.
 const CHILD_MAX_AGE = 15;
 
+// Margen de capacidad para NIÑOS que comparten cama (decisión de César, 13-jul-2026).
+// Los ADULTOS siempre topan el cupo; los niños que comparten cama con ellos NO cuentan,
+// hasta este margen POR ENCIMA del cupo publicado. (Los bebés siguen sin contar, ver
+// arriba.) Sale del caso Carolina Raudales: "11 adultos y 2 niños" en Las Gemelas (cup 12)
+// → entran, porque los 2 niños duermen con los papás. Chico a propósito: sin margen
+// sobre-venderíamos; con +2 metemos a lo sumo 2 niños que comparten cama.
+export const CHILD_BED_SHARE_MARGIN = 2;
+
+// El margen es MENOR en casas chicas (decisión de César, 13-jul-2026): meter +2 niños en
+// una casa de 3-4 personas la sobre-estiba. Las casas grandes (cupo ≥ 6: Villa B11, Casa
+// Brisa/Marea, Centro Morazán, las gemelas) toleran +2; las chicas (Casa Lara cup 4, La
+// Florida cup 3) solo +1. Ajustable acá — subilo/bajalo o poné 0 para cupo estricto en
+// las más chicas.
+export function childBedShareMargin(capacity: number): number {
+  return capacity >= 6 ? CHILD_BED_SHARE_MARGIN : 1;
+}
+
 // Cantidades en palabra (1-10): "dos adultos y tres niños" es tan común como
 // "2 adultos". Solo cuentan pegadas a una categoría, igual que los dígitos.
 const WORD_NUM: Record<string, number> = {
@@ -104,6 +121,33 @@ export function extractPartySize(text: string): PartySize {
 export function partyHeadcount(p: PartySize): number | null {
   if (p.adults == null && p.children == null) return null;
   return (p.adults ?? 0) + (p.children ?? 0);
+}
+
+/** Veredicto de capacidad para una propiedad, con la política de "niños que comparten
+ *  cama no topan el cupo" (decisión de César, 13-jul-2026). DETERMINÍSTICO — la
+ *  capacidad es un dato exacto, no algo que se le ruega al LLM ni que el LLM improvise
+ *  ("si los niños no ocupan cama caben" fue una invención del bot que contradecía la KB).
+ *   · "fits"             → entra holgado (adultos + niños ≤ cupo).
+ *   · "fits_shared_beds" → entra SOLO porque hasta CHILD_BED_SHARE_MARGIN niños comparten
+ *                          cama (por encima del cupo publicado; el mensaje debe aclararlo).
+ *   · "exceeds"          → no entra ni con el margen, O los ADULTOS solos ya pasan el cupo.
+ *  Sin desglose (`adults == null`): tratamos `guests` como si fueran TODOS adultos → cupo
+ *  ESTRICTO. Nunca suavizamos sin saber que el excedente son niños (evita sobre-vender a
+ *  ciegas). Los bebés ya vienen excluidos de `guests`/`children`. Función pura, blindada
+ *  en el golden. */
+export function capacityFit(
+  capacity: number,
+  adults: number | null | undefined,
+  children: number | null | undefined,
+  guests: number | null | undefined,
+): "fits" | "fits_shared_beds" | "exceeds" {
+  const a = adults ?? guests ?? 0;              // sin desglose: guests cuenta como adultos
+  const c = adults == null ? 0 : (children ?? 0);
+  if (a > capacity) return "exceeds";           // los adultos SIEMPRE topan el cupo
+  const total = a + c;
+  if (total <= capacity) return "fits";
+  if (total <= capacity + childBedShareMargin(capacity)) return "fits_shared_beds";
+  return "exceeds";
 }
 
 /** Desglose EFECTIVO del turno para el Friends Trip: lo que el cliente dice AHORA

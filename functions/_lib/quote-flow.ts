@@ -37,7 +37,7 @@ import {
   type PropertyPricing,
   type QuoteOutput,
 } from "./quote-builder";
-import { mergeFriendsTripParty } from "./party-size";
+import { mergeFriendsTripParty, capacityFit } from "./party-size";
 import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
 import { checkRangeAvailable, checkGemelasAvailable, getBlockedDates, type AvailabilityEnv } from "./availability";
 import { findAlternativeDates } from "./suggest-dates";
@@ -768,6 +768,8 @@ export async function handleQuoteIncoming(
           checkIn:  existing.data.checkIn!,
           checkOut: existing.data.checkOut!,
           guests:   existing.data.guests!,
+          adults:   existing.data.adults,
+          children: existing.data.children,
         },
         env.DB,
         pricingMap,
@@ -826,6 +828,8 @@ export async function handleQuoteIncoming(
           checkIn:  existing.data.checkIn!,
           checkOut: existing.data.checkOut!,
           guests:   existing.data.guests!,
+          adults:   existing.data.adults,
+          children: existing.data.children,
         },
         env.DB,
         pricingMap,
@@ -932,7 +936,7 @@ async function gatherQuoteData(
   // LLM. El bot estaba alucinando números de cuenta; esto lo blinda.
   if (isBankAccountRequest(text) && isQuoteDataComplete(previousData)) {
     const tq = applyPackagePricing(await buildQuote(
-      { property: previousData.property!, checkIn: previousData.checkIn!, checkOut: previousData.checkOut!, guests: previousData.guests! },
+      { property: previousData.property!, checkIn: previousData.checkIn!, checkOut: previousData.checkOut!, guests: previousData.guests!, adults: previousData.adults, children: previousData.children },
       env.DB,
       pricingMap,
     ), previousData);
@@ -1218,6 +1222,22 @@ async function gatherQuoteData(
     };
   }
 
+  // ── Desglose adultos/niños para la CAPACIDAD en flujos NORMALES ─────────────
+  // La política de "niños que comparten cama no topan el cupo" (Carolina Raudales,
+  // 13-jul-2026) necesita saber cuántos son niños. El LLM solo extrae `guests`; el
+  // Friends Trip parsea el desglose arriba. Para una reserva NORMAL con niños ("11
+  // adultos y 2 niños para Las Gemelas") lo parseamos acá con el mismo helper puro,
+  // restaurando el desglose de turnos previos (la fecha suele llegar en otro turno).
+  // Conservador: `extractPartySize` sin categoría explícita (adultos/niños) → null, así
+  // el cupo queda ESTRICTO (nunca suavizamos sin saber que el excedente son niños).
+  if (mergedData.packageType == null && mergedData.adults == null) {
+    const parsed = mergeFriendsTripParty(previousData, text);
+    if (parsed.adults != null) {
+      mergedData.adults = parsed.adults;
+      mergedData.children = parsed.children;
+    }
+  }
+
   // ── Routing determinístico de GRUPOS (caso Alisson, 7-jul-2026) ─────────────
   // Un grupo de 7-12 pidiendo La Ceiba o Tegucigalpa (donde las casas topan en 6)
   // NO es "no contamos con esa opción": la única que los aloja juntos son las
@@ -1230,12 +1250,16 @@ async function gatherQuoteData(
     botResult.extractedData.city != null ||
     botResult.extractedData.property != null ||
     cityFromText(text) !== undefined;
-  if (
-    !mergedData.property &&
-    typeof mergedData.guests === "number" &&
-    turnBroughtData
-  ) {
-    if (mergedData.guests > 12) {
+  if (typeof mergedData.guests === "number" && turnBroughtData) {
+    // Supera el TOPE absoluto (las gemelas = 12) incluso con la política de niños que
+    // comparten cama → tope honesto DESDE EL INICIO. Antes esto estaba guardado por
+    // `!mergedData.property`: cuando el LLM fijaba property=las-gemelas-tela (contexto
+    // del Friends Trip), el gate se SALTABA → el bot mandaba la tarjeta proactiva y
+    // recién al cotizar rechazaba, y encima "recuperaba" inventando reglas de cama
+    // (caso Carolina Raudales, 13-jul-2026). El gate dispara aunque haya property fijada.
+    // capacityFit aplica la política: los adultos topan 12; hasta 2 niños que comparten
+    // cama pueden entrar por encima → 11 adultos + 2 niños (=13) NO es "demasiado grande".
+    if (capacityFit(12, mergedData.adults, mergedData.children, mergedData.guests) === "exceeds") {
       await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
       return {
         reply:           T.groupTooBig(lang),
@@ -1244,7 +1268,10 @@ async function gatherQuoteData(
         tokensUsed:      botResult.tokensUsed,
       };
     }
+    // 7-12 pidiendo una ciudad donde las casas topan en 6 (La Ceiba / Tegucigalpa) sin
+    // casa elegida → la única opción que los aloja juntos son las gemelas de Tela.
     if (
+      !mergedData.property &&
       mergedData.guests >= 7 &&
       (mergedData.city === "La Ceiba" || mergedData.city === "Tegucigalpa")
     ) {
@@ -1401,6 +1428,8 @@ async function gatherQuoteData(
         checkIn:  mergedData.checkIn!,
         checkOut: mergedData.checkOut!,
         guests:   mergedData.guests!,
+        adults:   mergedData.adults,
+        children: mergedData.children,
       },
       env.DB,
       pricingMap,
@@ -1470,6 +1499,8 @@ async function gatherQuoteData(
         checkIn:  mergedData.checkIn!,
         checkOut: mergedData.checkOut!,
         guests:   mergedData.guests!,
+        adults:   mergedData.adults,
+        children: mergedData.children,
       },
       lang,
     );
@@ -1670,6 +1701,8 @@ async function handlePaymentMethodChoice(
       checkIn:  data.checkIn!,
       checkOut: data.checkOut!,
       guests:   data.guests!,
+      adults:   data.adults,
+      children: data.children,
     },
     env.DB,
     pricingMap,

@@ -284,7 +284,7 @@ Casa Brisa y Casa Marea están ubicadas una al lado de la otra en Honduras Shore
 → Villa B11: 6 personas. Casa Brisa: 6 personas. Casa Marea: 6 personas. Las Gemelas (ambas juntas): 12 personas. Centro Morazán: 6 personas. Casa Lara: 4 personas. La Florida: 3 personas.
 
 **¿Se puede ir más gente de la capacidad máxima?**
-→ No, la capacidad máxima es estricta. Si necesitan más espacio en Tela, podemos rentarles Las Gemelas (Casa Brisa + Casa Marea juntas) para hasta 12 personas.
+→ La capacidad cuenta por camas: los adultos ocupan el cupo completo, pero si un par de niños pequeños comparten cama con ustedes, pueden entrar por encima del número publicado (por ejemplo, 11 adultos + 2 niños entran en Las Gemelas, que aloja 12). Si el grupo es de puros adultos, el cupo es estricto. Para grupos grandes en Tela, Las Gemelas (Casa Brisa + Casa Marea juntas) alojan hasta 12.
 
 **¿Los precios incluyen todo?**
 → Sí. El precio incluye el alojamiento, todas las amenidades listadas y la tarifa de limpieza. No hay cargos ocultos.
