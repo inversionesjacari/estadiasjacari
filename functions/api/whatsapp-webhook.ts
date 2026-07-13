@@ -24,7 +24,8 @@
 //
 
 import { normalizePhone, isValidE164 } from "../_lib/phone";
-import { sendTextMessage, sendImageMessage, sendProductMessage } from "../_lib/whatsapp";
+import { sendTextMessage, sendImageMessage, sendProductMessage, sendButtonsMessage } from "../_lib/whatsapp";
+import { buttonReplyToText } from "../_lib/button-map";
 import { isDuplicateResend, parseSqliteUtcMs } from "../_lib/outbound-dedup";
 import { classifyCatalogSend } from "../_lib/catalog-trace";
 import { transcribeVoiceNote } from "../_lib/voice-transcribe";
@@ -209,6 +210,12 @@ interface MetaMessage {
   document?: MetaMediaObject;
   sticker?: MetaMediaObject;
   reaction?: { message_id?: string; emoji?: string };
+  // Presente cuando el huésped TOCA un botón nativo (interactive reply button).
+  interactive?: {
+    type?: string;
+    button_reply?: { id?: string; title?: string };
+    list_reply?: { id?: string; title?: string };
+  };
   contacts?: Array<{
     name?: { formatted_name?: string; first_name?: string };
     phones?: Array<{ phone?: string; wa_id?: string }>;
@@ -399,13 +406,27 @@ async function processIncomingMessage(
     await handleReaction(msg, env);
     return;
   }
-  if (msg.type !== "text") {
+  // Botón nativo (interactive button_reply): lo convertimos al TEXTO canónico que
+  // los detectors YA reconocen y lo dejamos fluir por el pipeline normal (mismo
+  // camino que quien escribe "tarjeta"/"reservar"). Si el tap no mapea a nada
+  // conocido, se trata como el resto de lo no-texto (escala a humano). DEBE ir antes
+  // del guard `type !== "text"`, si no un botón caería a media→escalación.
+  let bodyText: string | undefined;
+  if (msg.type === "interactive") {
+    const mapped = buttonReplyToText(msg.interactive)?.trim();
+    if (!mapped) {
+      await handleMediaMessage(msg, contacts, env);
+      return;
+    }
+    bodyText = mapped;
+  } else if (msg.type !== "text") {
     // Audio/imagen/video/documento/sticker: guardamos el archivo (para verlo en
     // el inbox) y escalamos a César. El bot no interpreta media.
     await handleMediaMessage(msg, contacts, env);
     return;
+  } else {
+    bodyText = msg.text?.body?.trim();
   }
-  const bodyText = msg.text?.body?.trim();
   if (!bodyText) return;
 
   const fromE164 = normalizePhone(msg.from, { assumeAlreadyE164: true }).e164;
@@ -776,7 +797,12 @@ async function processIncomingMessage(
   if (!productSent) {
     // previewUrl=true solo cuando el quote flow manda una ubicación (link de Google
     // Maps): así WhatsApp dibuja la miniatura del mapa con el pin debajo del texto.
-    const sendResult = await sendTextMessage(fromE164, replyText, env, quoteResult?.previewUrl ?? false);
+    // Botones nativos solo si el texto entra en el cuerpo interactivo (Meta lo capa
+    // a 1024). Si la cotización es larga, mando texto plano (hasta 4096) para NO
+    // truncar el precio — mejor sin botones que con la plata cortada.
+    const sendResult = quoteResult?.buttons && quoteResult.buttons.length > 0 && replyText.length <= 1024
+      ? await sendButtonsMessage(fromE164, replyText, quoteResult.buttons, env)
+      : await sendTextMessage(fromE164, replyText, env, quoteResult?.previewUrl ?? false);
 
     // Loggear el texto del bot PRIMERO, para que en el inbox quede ANTES de las
     // fotos (mismo orden que las recibe el cliente en WhatsApp).

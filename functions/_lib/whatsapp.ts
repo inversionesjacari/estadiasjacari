@@ -581,6 +581,62 @@ export async function sendProductMessage(
   );
 }
 
+/**
+ * Envía un mensaje con BOTONES nativos de respuesta rápida (interactive reply
+ * buttons). Máx 3 botones; título ≤20 chars (Meta los rechaza si se pasan) —
+ * acá se truncan defensivamente. Mismo patrón y mismo retorno (SendTextResult)
+ * que sendProductMessage/sendTextMessage, así el webhook loggea igual. Solo dentro
+ * de la ventana de 24h. Ver button-map.ts para los ids y su mapeo al pipeline.
+ */
+export async function sendButtonsMessage(
+  toPhone: string,
+  bodyText: string,
+  buttons: Array<{ id: string; title: string }>,
+  env: WhatsAppEnv,
+): Promise<SendTextResult> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) {
+    return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
+  }
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) {
+    return { ok: false, error: "Falta env var WHATSAPP_PHONE_NUMBER_ID" };
+  }
+  if (!toPhone || !isValidE164(toPhone)) {
+    return { ok: false, error: `Teléfono inválido: "${toPhone}"` };
+  }
+  if (!bodyText || bodyText.trim().length === 0) {
+    return { ok: false, error: "Texto vacío" };
+  }
+  const clean = (buttons ?? [])
+    .filter((b) => b && b.id && b.title)
+    .slice(0, 3) // Meta: máximo 3 reply buttons
+    .map((b) => ({
+      type: "reply",
+      reply: {
+        id: String(b.id).slice(0, 256),
+        title: [...String(b.title)].slice(0, 20).join(""), // code-point-safe ≤20
+      },
+    }));
+  if (clean.length === 0) {
+    return { ok: false, error: "Sin botones válidos" };
+  }
+
+  return postWhatsAppMessage(
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: toPhone,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText.slice(0, 1024) },
+        action: { buttons: clean },
+      },
+    },
+    env,
+    "Send buttons",
+  );
+}
+
 export interface CatalogProduct {
   id: string;
   retailerId: string;

@@ -51,6 +51,7 @@ import {
 import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
 import { T, asLang, type Lang } from "./i18n";
+import { paymentButtons, confirmButtons, type ButtonReply } from "./button-map";
 import type { QuoteData } from "./quote-extractor";
 import {
   indicatesNotDoneYet,
@@ -347,6 +348,11 @@ export interface QuoteFlowResult {
   /** Si true: el webhook NO responde nada (glitch técnico → dejar que el bot se
    *  recupere solo en el próximo mensaje, sin mensaje raro ni escalación). */
   silent?: boolean;
+  /** Botones nativos de respuesta rápida a enviar JUNTO al `reply` (elegir método
+   *  de pago / confirmar la reserva). Si está seteado, el webhook manda el texto con
+   *  sendButtonsMessage en vez de sendTextMessage. Un tap vuelve como texto canónico
+   *  (ver button-map.ts) → mismo pipeline determinístico; el texto sigue de fallback. */
+  buttons?: ButtonReply[];
 }
 
 export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv, AvailabilityEnv {
@@ -746,6 +752,7 @@ export async function handleQuoteIncoming(
         escalateToOwner: false,
         ruleName:        "quote_confirmed_ask_method",
         tokensUsed:      0,
+        buttons:         paymentButtons(lang), // [💳 Tarjeta] [🏦 Transferencia]
       };
     }
     // No confirmó → volver a recolectar datos (puede haber cambiado fechas)
@@ -1458,6 +1465,9 @@ async function gatherQuoteData(
       escalateToOwner: escalateUnverified,
       ruleName:        quote.available ? "quote_provided" : "quote_unavailable",
       tokensUsed:      botResult.tokensUsed,
+      // Solo cuando la cotización SÍ está disponible (estado quote_provided): ofrecer
+      // [✅ Reservar] [📅 Cambiar fechas]. Si no está disponible, sin botones.
+      buttons:         quote.available ? confirmButtons(lang) : undefined,
     };
   }
 
