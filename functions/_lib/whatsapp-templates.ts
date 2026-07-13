@@ -6,14 +6,16 @@
 // gestionando en `whatsapp.ts` (función `sendCheckinReminderWhatsApp`) porque
 // requiere upload de media a Meta — flujo de 2 pasos distinto a los demás.
 //
-// Los 6 templates de este archivo son texto puro (sin media) con N variables:
+// Los templates de este archivo son texto puro (sin media) con N variables:
 //
 //   1. confirmacion_whatsapp_capturado   — al detectar # del huésped
-//   3. checkin_dia_huesped               — día llegada, huésped, 9 AM HN
-//   4. checkin_dia_limpieza              — día llegada, limpieza, 7 AM HN
+//   3. checkin_dia_huesped               — día llegada, huésped, 10 AM HN
+//   4. checkin_dia_limpieza              — día llegada, limpieza (solo manual;
+//                                          el aviso automático a limpieza es el 8)
 //   5. checkin_dia_seguridad             — día llegada, seguridad, 7 AM HN
-//   6. checkout_dia_huesped              — día salida, huésped, 9 AM HN
+//   6. checkout_dia_huesped              — día salida, huésped, 10 AM HN
 //   7. checkout_dia_limpieza             — día salida, limpieza, 11:30 AM HN
+//   8. limpieza_aviso_entrada            — VÍSPERA de llegada, limpieza, 6 PM HN
 //
 // Los nombres EXACTOS de los templates deben coincidir con los registrados
 // en Meta. El idioma `es` se mantiene consistente con el template existente
@@ -337,6 +339,41 @@ export function sendCheckoutDiaLimpieza(
     "checkout_dia_limpieza",
     data.toPhone,
     [data.cleanerName, data.propertyName, data.nextCheckInLabel],
+    env,
+  );
+}
+
+/**
+ * Template 8 — limpieza_aviso_entrada
+ *
+ * Trigger: cron 6 PM HN de la VÍSPERA del check-in (hito evening-staff de
+ * whatsapp-operations). Se envía a cada contacto activo de la propiedad con
+ * role='cleaning' para que el personal planifique con un día de anticipación.
+ * Decisión César 2026-07-12: este aviso REEMPLAZA al de las 7 AM del día-de
+ * para limpieza (checkin_dia_limpieza queda solo para disparo manual).
+ *
+ * Variables:
+ *   {{1}} = nombre del personal de limpieza
+ *   {{2}} = fecha de entrada en español (ej. "13 de julio")
+ *   {{3}} = nombre de la propiedad
+ *   {{4}} = fecha de salida en español (ej. "15 de julio")
+ */
+export interface LimpiezaAvisoEntradaData {
+  toPhone: string;
+  cleanerName: string;
+  checkInDateEs: string;
+  propertyName: string;
+  checkOutDateEs: string;
+}
+
+export function sendLimpiezaAvisoEntrada(
+  data: LimpiezaAvisoEntradaData,
+  env: WhatsAppTemplatesEnv,
+): Promise<SendTemplateResult> {
+  return sendTextTemplate(
+    "limpieza_aviso_entrada",
+    data.toPhone,
+    [data.cleanerName, data.checkInDateEs, data.propertyName, data.checkOutDateEs],
     env,
   );
 }

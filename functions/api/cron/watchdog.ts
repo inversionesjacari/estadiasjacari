@@ -18,9 +18,10 @@
 //
 // Auth: Authorization: Bearer <CRON_SECRET>. Responde SIEMPRE 200 con detalle.
 //
-// `cron_whatsapp_operations` NO está en el mapa: sigue desactivado (falta
-// cargar property_contacts, ver cron-worker.js) — vigilarlo generaría una
-// alerta falsa de "nunca corrió". Agregarlo acá cuando se active.
+// Los 4 hitos de `cron_whatsapp_operations` están en el mapa con
+// `skipIfNeverRan`: hasta que corran por PRIMERA vez (requiere que César
+// re-pegue el cron-worker en el dashboard) no generan la alerta falsa de
+// "nunca corrió"; una vez que laten, se vigilan como cualquier otro cron.
 
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { notifyOwners, type OwnerAlertEnv } from "../../_lib/owner-alerts";
@@ -43,11 +44,21 @@ function json(body: unknown, status = 200): Response {
 
 // Cada cuántos minutos se espera que corra + holgura extra antes de avisar
 // (generosa a propósito: evita falsos positivos por un deploy o un reintento).
-const EXPECTED_SCHEDULE: Record<string, { everyMin: number; graceMin: number }> = {
+// `skipIfNeverRan`: no alertar si el cron no tiene NI UN latido — cubre a los
+// hitos que viven en el cron-worker (pegado a mano) y aún no se activaron.
+const EXPECTED_SCHEDULE: Record<
+  string,
+  { everyMin: number; graceMin: number; skipIfNeverRan?: boolean }
+> = {
   cron_bot_retry: { everyMin: 2, graceMin: 15 },
   cron_followups: { everyMin: 10, graceMin: 30 },
   cron_paypal_income: { everyMin: 60, graceMin: 180 },
   cron_checkin_reminders: { everyMin: 1440, graceMin: 120 }, // 1x/día + 2h de holgura
+  // Avisos operativos (RECORDATORIOS-0712): 1x/día cada hito + 2h de holgura.
+  "cron_whatsapp_operations_evening-staff": { everyMin: 1440, graceMin: 120, skipIfNeverRan: true },
+  "cron_whatsapp_operations_morning-staff": { everyMin: 1440, graceMin: 120, skipIfNeverRan: true },
+  "cron_whatsapp_operations_morning-guests": { everyMin: 1440, graceMin: 120, skipIfNeverRan: true },
+  "cron_whatsapp_operations_checkout-cleaning": { everyMin: 1440, graceMin: 120, skipIfNeverRan: true },
 };
 
 const ALERT_COOLDOWN_HOURS = 6;
@@ -61,13 +72,17 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   for (const [key, sched] of Object.entries(EXPECTED_SCHEDULE)) {
     try {
       const staleLimit = sched.everyMin + sched.graceMin;
-      const recent = await env.DB.prepare(
-        `SELECT 1 AS x FROM system_heartbeat WHERE key = ? AND last_at > datetime('now', ?)`,
+      const hb = await env.DB.prepare(
+        `SELECT (last_at > datetime('now', ?)) AS fresh FROM system_heartbeat WHERE key = ?`,
       )
-        .bind(key, `-${staleLimit} minutes`)
-        .first<{ x: number }>();
+        .bind(`-${staleLimit} minutes`, key)
+        .first<{ fresh: number }>();
 
-      if (!recent) {
+      if (!hb && sched.skipIfNeverRan) {
+        // Nunca corrió y el hito vive en el cron-worker pegado a mano: todavía
+        // no hay nada que vigilar (se anota, sin alertar).
+        findings.push({ key, issue: "never_ran (hito aún no activado en el Worker)", alerted: false });
+      } else if (!hb || hb.fresh !== 1) {
         const alerted = await maybeAlert(
           env,
           `${key}_stale`,

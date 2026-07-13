@@ -20,12 +20,23 @@
  *   cada 30 min  → watchdog           (2026-07-06: avisa por WhatsApp si un cron
  *                  se queda callado o falla seguido — ver functions/api/cron/watchdog.ts)
  *   cada hora    → paypal-income      (ingreso Airbnb vía PayPal)
- *   00:00 UTC    → checkin-reminders  (6 PM HN — Correo #2 + WA T-1 día)
+ *   00:00 UTC    → checkin-reminders  (6 PM HN — Correo #2 + WA T-1 día al huésped)
+ *   00:05 UTC    → whatsapp-operations?hito=evening-staff (6:05 PM HN — aviso a
+ *                  LIMPIEZA de los check-ins de MAÑANA; RECORDATORIOS-0712)
  *   00:30/12:00 UTC → conversation-autotag (6:30 PM / 6 AM HN — 2×/día; etiqueta el
  *                  DESENLACE de los chats sin pisar tags manuales; ver B10 doc 11)
  *   11:30 UTC    → bot-qa-run         (5:30 AM HN — QA diario del bot)
- *   13:00/15:00/17:30 UTC → whatsapp-operations (avisos operativos — DESACTIVADO
- *                  hasta cargar property_contacts; descomentar abajo cuando esté)
+ *   13:00 UTC    → whatsapp-operations?hito=morning-staff (7 AM HN — SEGURIDAD de
+ *                  los check-ins de hoy; limpieza ya NO va acá, se movió a la víspera)
+ *   16:00 UTC    → whatsapp-operations?hito=morning-guests (10 AM HN — huésped que
+ *                  entra hoy + huésped que sale hoy; era 9 AM, César pidió 10)
+ *   17:30 UTC    → whatsapp-operations?hito=checkout-cleaning (11:30 AM HN — limpieza
+ *                  de los check-outs de hoy)
+ *
+ * ⚠️ evening-staff usa el template Meta `limpieza_aviso_entrada` — si aún no está
+ * APROBADO en WhatsApp Manager, ese hito marcará error y reintentará al día
+ * siguiente (inofensivo, visible en /inbox/reservas). Los otros 3 hitos usan
+ * templates ya aprobados.
  *
  * SETUP (una sola vez):
  *   1. Workers & Pages → estadia-jacari-cron → Edit code → pegar TODO → Deploy.
@@ -34,7 +45,7 @@
  *      dejar UNO SOLO: `* * * * *`. Deploy.
  *
  * PRUEBA MANUAL: abrir la URL del Worker con ?secret=TU_SECRET&hito=<hito>
- *   (hitos válidos: checkin, staff, guests, cleaning, followups, income,
+ *   (hitos válidos: checkin, evening, staff, guests, cleaning, followups, income,
  *    income-debug, qa, retry, watchdog, autotag).
  * ─────────────────────────────────────────────────────────────────────────────
  */
@@ -59,10 +70,11 @@ function dueEndpoints(date) {
   if ((h === 0 && m === 30) || (h === 12 && m === 0)) urls.push(BASE + '/api/inbox/conversation-autotag'); // 6:30 PM / 6 AM HN — autotag desenlaces 2×/día (B10)
   if (h === 11 && m === 30) urls.push(BASE + '/api/inbox/bot-qa-run');       // 5:30 AM HN
 
-  // Avisos operativos — DESCOMENTAR cuando property_contacts esté cargado:
-  // if (h === 13 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-staff');    // 7 AM HN
-  // if (h === 15 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-guests');   // 9 AM HN
-  // if (h === 17 && m === 30) urls.push(BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning');// 11:30 HN
+  // Avisos operativos (RECORDATORIOS-0712 — property_contacts ya cargada):
+  if (h === 0  && m === 5)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=evening-staff');    // 6:05 PM HN — limpieza, check-ins de MAÑANA
+  if (h === 13 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-staff');    // 7 AM HN — seguridad
+  if (h === 16 && m === 0)  urls.push(BASE + '/api/cron/whatsapp-operations?hito=morning-guests');   // 10 AM HN — huésped entra/sale
+  if (h === 17 && m === 30) urls.push(BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning');// 11:30 AM HN — limpieza salida
 
   return urls;
 }
@@ -70,6 +82,7 @@ function dueEndpoints(date) {
 // Mapeo manual ?hito= → URL (usado por el handler `fetch` para test).
 const MANUAL_DISPATCH = {
   checkin:        BASE + '/api/cron/checkin-reminders',
+  evening:        BASE + '/api/cron/whatsapp-operations?hito=evening-staff',
   staff:          BASE + '/api/cron/whatsapp-operations?hito=morning-staff',
   guests:         BASE + '/api/cron/whatsapp-operations?hito=morning-guests',
   cleaning:       BASE + '/api/cron/whatsapp-operations?hito=checkout-cleaning',

@@ -26,6 +26,7 @@ import {
   sendCheckoutDiaHuesped,
   sendCheckoutDiaLimpieza,
   sendConfirmacionWhatsappCapturado,
+  sendLimpiezaAvisoEntrada,
   formatDateShortEs,
   type SendTemplateResult,
 } from "./whatsapp-templates";
@@ -45,7 +46,8 @@ export type DispatchTemplateName =
   | "checkin_dia_seguridad"
   | "checkout_dia_huesped"
   | "checkout_dia_limpieza"
-  | "confirmacion_whatsapp_capturado";
+  | "confirmacion_whatsapp_capturado"
+  | "limpieza_aviso_entrada";
 
 export const VALID_TEMPLATES: DispatchTemplateName[] = [
   "checkin_dia_huesped",
@@ -54,6 +56,7 @@ export const VALID_TEMPLATES: DispatchTemplateName[] = [
   "checkout_dia_huesped",
   "checkout_dia_limpieza",
   "confirmacion_whatsapp_capturado",
+  "limpieza_aviso_entrada",
 ];
 
 export interface DispatchResult {
@@ -76,6 +79,7 @@ interface ReservationRow {
   wa_departure_guest_sent_at: string | null;
   wa_departure_cleaning_sent_at: string | null;
   wa_phone_capture_sent_at: string | null;
+  wa_eve_cleaning_sent_at: string | null;
 }
 
 const PROPERTY_NAMES: Record<string, string> = {
@@ -138,15 +142,25 @@ export async function dispatchTemplateToReservation(
   };
 
   // Cargar la reserva
-  const r = await env.DB.prepare(
-    `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone, guest_count,
+  const selectReservation = `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone, guest_count,
             wa_arrival_guest_sent_at, wa_arrival_cleaning_sent_at, wa_arrival_security_sent_at,
-            wa_departure_guest_sent_at, wa_departure_cleaning_sent_at, wa_phone_capture_sent_at
+            wa_departure_guest_sent_at, wa_departure_cleaning_sent_at, wa_phone_capture_sent_at,
+            wa_eve_cleaning_sent_at
        FROM reservations
-      WHERE id = ?`,
-  )
-    .bind(reservationId)
-    .first<ReservationRow>();
+      WHERE id = ?`;
+  let r: ReservationRow | null;
+  try {
+    r = await env.DB.prepare(selectReservation).bind(reservationId).first<ReservationRow>();
+  } catch (err) {
+    // Ventana pre-migración 0041 (wa_eve_cleaning_* aún no existe en la D1
+    // remota): los botones del inbox no deben morir con "no such column".
+    // Sin la columna no hay idempotencia para la víspera — aceptable porque el
+    // hito del cron se activa DESPUÉS de aplicar 0041 (orden documentado).
+    if (!/no such column/i.test((err as Error).message)) throw err;
+    r = await env.DB.prepare(selectReservation.replace(/,\s*wa_eve_cleaning_sent_at/, ""))
+      .bind(reservationId)
+      .first<ReservationRow>();
+  }
 
   if (!r) {
     return { ok: false, status: 404, body: { ok: false, error: `Reserva id=${reservationId} no encontrada` } };
@@ -193,6 +207,11 @@ export async function dispatchTemplateToReservation(
       sentAtColumn: "wa_phone_capture_sent_at",
       errorColumn: "wa_phone_capture_error",
       run: async () => runConfirmationTemplate(r, dryRun, waEnv, propertyName),
+    },
+    limpieza_aviso_entrada: {
+      sentAtColumn: "wa_eve_cleaning_sent_at",
+      errorColumn: "wa_eve_cleaning_error",
+      run: async () => runStaffTemplate(r, dryRun, env, waEnv, "cleaning", "arrival_eve", propertyName),
     },
   };
 
@@ -259,6 +278,7 @@ export async function dispatchTemplateToReservation(
       checkout_dia_limpieza: "🧹 Aviso de check-out a limpieza",
       checkin_dia_seguridad: "🛡️ Aviso de check-in a seguridad",
       confirmacion_whatsapp_capturado: "✅ Confirmación de reserva por WhatsApp",
+      limpieza_aviso_entrada: "🧹 Aviso víspera de check-in a limpieza",
     };
     for (const res of results) {
       if (!res.to) continue; // sin destinatario no hubo intento real de envío
@@ -336,7 +356,7 @@ async function runStaffTemplate(
   env: DispatchEnv,
   waEnv: { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
   role: "cleaning" | "security",
-  phase: "arrival" | "departure",
+  phase: "arrival" | "departure" | "arrival_eve",
   propertyName: string,
 ): Promise<{ results: DispatchSendResult[]; detail: string }> {
   const contacts =
@@ -367,6 +387,22 @@ async function runStaffTemplate(
           {
             toPhone: c.phoneE164,
             cleanerName: c.name,
+            propertyName,
+            checkOutDateEs: formatDateShortEs(r.check_out),
+          },
+          waEnv,
+        )),
+        to: c.phoneE164,
+      });
+    } else if (role === "cleaning" && phase === "arrival_eve") {
+      // Aviso de VÍSPERA (limpieza_aviso_entrada): el cron lo manda a las 6 PM
+      // del día anterior; este camino es el reenvío/adelanto manual del inbox.
+      results.push({
+        ...(await sendLimpiezaAvisoEntrada(
+          {
+            toPhone: c.phoneE164,
+            cleanerName: c.name,
+            checkInDateEs: formatDateShortEs(r.check_in),
             propertyName,
             checkOutDateEs: formatDateShortEs(r.check_out),
           },

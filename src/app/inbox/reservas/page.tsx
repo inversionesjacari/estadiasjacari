@@ -4,12 +4,14 @@
 //
 // Da visibilidad de cada reserva confirmada/pendiente que aún no terminó:
 // quién es, cuándo entra/sale, su WhatsApp, el estado del pago y —lo importante—
-// qué mensajes ya salieron (instrucciones, huésped, limpieza, seguridad). Resuelve
-// el dolor de "no sabemos a quién le toca seguimiento".
+// el checklist puntual de mensajes: QUÉ salió, a QUÉ hora exacta y qué FALLÓ
+// (con el motivo). Resuelve el dolor de "no sé si al huésped le llegó su aviso".
 //
-// Las reservas de Airbnb reciben los avisos del día-de en automático (cron
-// whatsapp-operations, solo source='airbnb'). Las directas (WhatsApp/web) se
-// disparan a mano desde acá con los botones, tras verificar el pago completo.
+// TODA reserva confirmada recibe los avisos en automático (cron
+// whatsapp-operations, sin filtro de source desde RECORDATORIOS-0712):
+// limpieza 6 PM víspera, seguridad 7 AM, huésped 10 AM, limpieza salida 11:30 AM,
+// más las instrucciones T-1 (checkin-reminders, 6 PM). Los botones de acá son
+// para adelantar o reenviar a mano (y para las 'pending' que el cron no toca).
 //
 // Lee /api/inbox/reservations-confirmed cada 30s. Protegido con la cookie del inbox.
 //
@@ -31,13 +33,23 @@ interface Reservation {
   created_at: string;
   notified_at: string | null;
   checkin_reminder_sent_at: string | null;
+  checkin_reminder_error?: string | null;
   whatsapp_sent_at: string | null;
+  whatsapp_error?: string | null;
   wa_arrival_guest_sent_at: string | null;
+  wa_arrival_guest_error?: string | null;
   wa_arrival_cleaning_sent_at: string | null;
+  wa_arrival_cleaning_error?: string | null;
   wa_arrival_security_sent_at: string | null;
+  wa_arrival_security_error?: string | null;
   wa_departure_guest_sent_at: string | null;
+  wa_departure_guest_error?: string | null;
   wa_departure_cleaning_sent_at: string | null;
+  wa_departure_cleaning_error?: string | null;
   wa_phone_capture_sent_at: string | null;
+  // De schema/0041 — pueden faltar si la migración aún no corrió (fallback API).
+  wa_eve_cleaning_sent_at?: string | null;
+  wa_eve_cleaning_error?: string | null;
   tr_amount: number | null;
   tr_expected_hnl: number | null;
   tr_currency: string | null;
@@ -49,23 +61,63 @@ type TemplateName =
   | "checkin_dia_limpieza"
   | "checkin_dia_seguridad"
   | "checkout_dia_huesped"
-  | "checkout_dia_limpieza";
+  | "checkout_dia_limpieza"
+  | "limpieza_aviso_entrada";
 
 interface ActionDef {
   template: TemplateName;
   label: string;
   sentKey: keyof Reservation;
+  errorKey: keyof Reservation;
+  title?: string;
 }
 
 const ARRIVAL_ACTIONS: ActionDef[] = [
-  { template: "checkin_dia_huesped", label: "Huésped", sentKey: "wa_arrival_guest_sent_at" },
-  { template: "checkin_dia_limpieza", label: "Limpieza", sentKey: "wa_arrival_cleaning_sent_at" },
-  { template: "checkin_dia_seguridad", label: "Seguridad", sentKey: "wa_arrival_security_sent_at" },
+  {
+    template: "limpieza_aviso_entrada",
+    label: "Limp. víspera",
+    sentKey: "wa_eve_cleaning_sent_at",
+    errorKey: "wa_eve_cleaning_error",
+    title: "Aviso a limpieza la víspera 6 PM (automático)",
+  },
+  {
+    template: "checkin_dia_seguridad",
+    label: "Seguridad",
+    sentKey: "wa_arrival_security_sent_at",
+    errorKey: "wa_arrival_security_error",
+    title: "Aviso a seguridad 7 AM del día de entrada (automático)",
+  },
+  {
+    template: "checkin_dia_huesped",
+    label: "Huésped",
+    sentKey: "wa_arrival_guest_sent_at",
+    errorKey: "wa_arrival_guest_error",
+    title: "Bienvenida al huésped 10 AM del día de entrada (automático)",
+  },
+  {
+    template: "checkin_dia_limpieza",
+    label: "Limp. día",
+    sentKey: "wa_arrival_cleaning_sent_at",
+    errorKey: "wa_arrival_cleaning_error",
+    title: "Aviso a limpieza el MISMO día — solo manual (respaldo si la víspera falló)",
+  },
 ];
 
 const DEPARTURE_ACTIONS: ActionDef[] = [
-  { template: "checkout_dia_huesped", label: "Huésped", sentKey: "wa_departure_guest_sent_at" },
-  { template: "checkout_dia_limpieza", label: "Limpieza", sentKey: "wa_departure_cleaning_sent_at" },
+  {
+    template: "checkout_dia_huesped",
+    label: "Huésped",
+    sentKey: "wa_departure_guest_sent_at",
+    errorKey: "wa_departure_guest_error",
+    title: "Despedida al huésped 10 AM del día de salida (automático)",
+  },
+  {
+    template: "checkout_dia_limpieza",
+    label: "Limpieza",
+    sentKey: "wa_departure_cleaning_sent_at",
+    errorKey: "wa_departure_cleaning_error",
+    title: "Aviso a limpieza 11:30 AM del día de salida (automático)",
+  },
 ];
 
 const SOURCE_META: Record<string, { label: string; emoji: string; cls: string }> = {
@@ -84,6 +136,7 @@ function recipientOf(template: TemplateName, guestName: string): string {
   switch (template) {
     case "checkin_dia_limpieza":
     case "checkout_dia_limpieza":
+    case "limpieza_aviso_entrada":
       return "el personal de limpieza";
     case "checkin_dia_seguridad":
       return "seguridad";
@@ -100,6 +153,25 @@ function fmtDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
   return `${d} ${MONTHS_ES[m - 1]}`;
+}
+
+/**
+ * Timestamp de envío → hora HONDURAS legible ("12 jul, 6:02 p. m.").
+ * D1 guarda datetime('now') = UTC "YYYY-MM-DD HH:MM:SS" (sin zona); también
+ * entra un ISO con T/Z (los crons que escriben toISOString).
+ */
+function fmtSentAtHn(ts: string): string {
+  const iso = ts.includes("T") ? ts : ts.replace(" ", "T");
+  const d = new Date(/[Z+]/.test(iso.slice(10)) ? iso : `${iso}Z`);
+  if (isNaN(d.getTime())) return ts;
+  return new Intl.DateTimeFormat("es-HN", {
+    timeZone: "America/Tegucigalpa",
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(d);
 }
 
 /** Días desde hoy hasta `iso` (0 = hoy, 1 = mañana, negativo = pasó). */
@@ -321,8 +393,9 @@ export default function ReservasPage() {
         )}
 
         <p className="text-[11px] text-slate-600 text-center mt-6 leading-relaxed">
-          Airbnb recibe los avisos del día-de en automático. Las reservas directas (Web / WhatsApp)
-          las disparás vos con los botones, tras verificar el pago completo.
+          TODA reserva confirmada recibe los avisos en automático: instrucciones + limpieza a las
+          6 pm de la víspera, seguridad 7 am, huésped 10 am, y limpieza de salida 11:30 am.
+          Los botones son para adelantar o reenviar a mano (las pendientes de pago no se automatizan).
         </p>
       </main>
     </div>
@@ -349,12 +422,13 @@ function ReservationCard({
   const stay = stayLabel(r);
   const pay = paymentBadge(r);
   const phoneDigits = r.guest_phone ? r.guest_phone.replace(/\D/g, "") : "";
-  const instructionsSent = Boolean(r.checkin_reminder_sent_at || r.whatsapp_sent_at);
 
   const renderActions = (defs: ActionDef[]) =>
     defs.map((a) => {
       const key = `${r.id}:${a.template}`;
-      const sent = Boolean(r[a.sentKey]);
+      const sentAt = (r[a.sentKey] as string | null | undefined) ?? null;
+      const sent = Boolean(sentAt);
+      const sendError = !sent ? ((r[a.errorKey] as string | null | undefined) ?? null) : null;
       const busy = Boolean(sending[key]);
       const msg = actionMsg[key];
       const to = recipientOf(a.template, r.guest_name || "el huésped");
@@ -364,16 +438,30 @@ function ReservationCard({
             type="button"
             disabled={busy}
             onClick={() => onSend(r.id, a.template, sent, to)}
-            title={sent ? "Ya enviado — clic para reenviar" : "Enviar ahora"}
+            title={
+              sent
+                ? `Enviado ${fmtSentAtHn(sentAt!)} — clic para reenviar${a.title ? ` · ${a.title}` : ""}`
+                : sendError
+                  ? `⚠ Último intento FALLÓ: ${sendError} — clic para reintentar`
+                  : `Enviar ahora${a.title ? ` · ${a.title}` : ""}`
+            }
             className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition disabled:opacity-50 ${
               sent
                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                : "border-white/15 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                : sendError
+                  ? "border-rose-500/50 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                  : "border-white/15 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
             }`}
           >
-            {busy ? "…" : sent ? `✓ ${a.label}` : a.label}
+            {busy ? "…" : sent ? `✓ ${a.label}` : sendError ? `⚠ ${a.label}` : a.label}
           </button>
-          {msg && <span className="text-[9px] text-slate-400 mt-0.5 max-w-[120px] truncate" title={msg}>{msg}</span>}
+          {msg ? (
+            <span className="text-[9px] text-slate-400 mt-0.5 max-w-[120px] truncate" title={msg}>{msg}</span>
+          ) : sent ? (
+            <span className="text-[9px] text-slate-500 mt-0.5">{fmtSentAtHn(sentAt!)}</span>
+          ) : sendError ? (
+            <span className="text-[9px] text-rose-400/80 mt-0.5 max-w-[120px] truncate" title={sendError}>falló — ver detalle</span>
+          ) : null}
         </div>
       );
     });
@@ -423,29 +511,70 @@ function ReservationCard({
         )}
       </div>
 
-      {/* Fila 3: estado de mensajes + acciones */}
+      {/* Fila 3: checklist puntual de mensajes + acciones */}
       <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
-        {/* Instrucciones T-1 (automático, solo lectura) */}
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-slate-500 w-16 shrink-0">Llegada</span>
-          <span
-            className={`px-2 py-0.5 rounded border ${
-              instructionsSent
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                : "border-white/10 bg-white/[0.03] text-slate-500"
-            }`}
-            title="Instrucciones T-1 día (correo + WhatsApp con PDF) — automático"
-          >
-            {instructionsSent ? "✓ Instrucciones" : "Instrucciones"}
-          </span>
-          <div className="flex gap-1.5 flex-wrap">{renderActions(ARRIVAL_ACTIONS)}</div>
+        {/* Instrucciones T-1 (automático, solo lectura) — correo y WhatsApp por separado */}
+        <div className="flex items-start gap-2 text-[11px]">
+          <span className="text-slate-500 w-16 shrink-0 pt-1">Llegada</span>
+          <div className="flex gap-1.5 flex-wrap items-start">
+            <StatusChip
+              label="📧 Instr."
+              sentAt={r.checkin_reminder_sent_at}
+              error={r.checkin_reminder_error ?? null}
+              what="Correo #2 con instrucciones de check-in (automático, 6 PM de la víspera)"
+            />
+            <StatusChip
+              label="📱 PDF"
+              sentAt={r.whatsapp_sent_at}
+              error={r.whatsapp_error ?? null}
+              what="WhatsApp con PDF de instrucciones (automático, 6 PM de la víspera)"
+            />
+            {renderActions(ARRIVAL_ACTIONS)}
+          </div>
         </div>
         {/* Salida */}
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-slate-500 w-16 shrink-0">Salida</span>
-          <div className="flex gap-1.5 flex-wrap">{renderActions(DEPARTURE_ACTIONS)}</div>
+        <div className="flex items-start gap-2 text-[11px]">
+          <span className="text-slate-500 w-16 shrink-0 pt-1">Salida</span>
+          <div className="flex gap-1.5 flex-wrap items-start">{renderActions(DEPARTURE_ACTIONS)}</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Chip de solo-lectura con hora exacta de envío o el error del último intento. */
+function StatusChip({
+  label,
+  sentAt,
+  error,
+  what,
+}: {
+  label: string;
+  sentAt: string | null | undefined;
+  error: string | null;
+  what: string;
+}) {
+  const sent = Boolean(sentAt);
+  const failed = !sent && Boolean(error);
+  return (
+    <div className="flex flex-col">
+      <span
+        className={`px-2 py-0.5 rounded border ${
+          sent
+            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+            : failed
+              ? "border-rose-500/50 bg-rose-500/10 text-rose-300"
+              : "border-white/10 bg-white/[0.03] text-slate-500"
+        }`}
+        title={sent ? `${what} — enviado ${fmtSentAtHn(sentAt!)}` : failed ? `${what} — ⚠ FALLÓ: ${error}` : `${what} — aún no enviado`}
+      >
+        {sent ? `✓ ${label}` : failed ? `⚠ ${label}` : label}
+      </span>
+      {sent ? (
+        <span className="text-[9px] text-slate-500 mt-0.5">{fmtSentAtHn(sentAt!)}</span>
+      ) : failed ? (
+        <span className="text-[9px] text-rose-400/80 mt-0.5 max-w-[120px] truncate" title={error ?? undefined}>falló — ver detalle</span>
+      ) : null}
     </div>
   );
 }

@@ -2,16 +2,19 @@
 //
 // POST /api/cron/whatsapp-operations?hito=<hito>
 //
-// Cron orquestador de los 6 templates UTILITY operativos de WhatsApp.
-// Disparado por el Worker `estadia-jacari-cron` en 3 horarios distintos del día
+// Cron orquestador de los templates UTILITY operativos de WhatsApp.
+// Disparado por el Worker `estadia-jacari-cron` en 4 horarios distintos del día
 // (hora Honduras, UTC-6 sin daylight saving):
 //
 //   ┌──────────────┬──────────────┬─────────────────────────────────────────────┐
 //   │ Hito         │ Hora HN      │ Qué hace                                     │
 //   ├──────────────┼──────────────┼─────────────────────────────────────────────┤
-//   │ morning-staff   │ 7:00 AM   │ Avisa a personal limpieza + seguridad de     │
-//   │                 │           │ las propiedades con CHECK-IN hoy.            │
-//   │ morning-guests  │ 9:00 AM   │ Mensaje al huésped con CHECK-IN hoy +        │
+//   │ evening-staff   │ 6:05 PM   │ Avisa a personal LIMPIEZA de las propiedades │
+//   │                 │ (víspera) │ con CHECK-IN MAÑANA (limpieza_aviso_entrada).│
+//   │ morning-staff   │ 7:00 AM   │ Avisa a SEGURIDAD de las propiedades con     │
+//   │                 │           │ CHECK-IN hoy. (Limpieza ya NO va acá — se    │
+//   │                 │           │ movió a evening-staff, César 2026-07-12.)    │
+//   │ morning-guests  │ 10:00 AM  │ Mensaje al huésped con CHECK-IN hoy +        │
 //   │                 │           │ mensaje al huésped con CHECKOUT hoy.         │
 //   │ checkout-cleaning│11:30 AM  │ Avisa a personal limpieza de las             │
 //   │                 │           │ propiedades con CHECKOUT hoy.                │
@@ -21,18 +24,23 @@
 // disparando el cron existente `/api/cron/checkin-reminders` a las 6 PM HN.
 // Este endpoint NO lo toca.
 //
-// SOLO AIRBNB: este cron automático filtra `source = 'airbnb'`. Las reservas
-// directas (website/whatsapp_bot/whatsapp_transfer) NO se automatizan acá — se
-// disparan a mano desde el dashboard /inbox/reservas (endpoint cookie
-// reservation-send-message), tras verificar el pago completo. El motor de envío
-// es el mismo (functions/_lib/whatsapp-dispatch.ts), que NO filtra por canal.
+// TODAS LAS CONFIRMADAS (César, 2026-07-12): el cron procesa toda reserva con
+// status='confirmed' sin importar el source (Airbnb, web, WhatsApp, manual) —
+// 'confirmed' ya implica pago verificado. Las 'pending' (depósito 50% / por
+// verificar) NO se automatizan; se disparan a mano desde /inbox/reservas
+// (endpoint cookie reservation-send-message) cuando corresponda.
+//
+// Cada envío real deja fila en `whatsapp_messages` vía logOutboundTemplate
+// (wa-log.ts) → el callback de Meta actualiza sent→delivered→read→failed y la
+// card "📬 Salud de entrega" del inbox lo ve.
 //
 // Auth: Authorization: Bearer <CRON_SECRET>
 //
 // Query params:
-//   ?hito=morning-staff|morning-guests|checkout-cleaning  (requerido)
-//   ?date=YYYY-MM-DD                                       (opcional, override de "hoy")
-//   ?dryRun=1                                              (opcional, no envía nada)
+//   ?hito=evening-staff|morning-staff|morning-guests|checkout-cleaning (requerido)
+//   ?date=YYYY-MM-DD  (opcional; fecha del check-in/out a procesar — para
+//                      evening-staff el default es MAÑANA HN, para el resto HOY)
+//   ?dryRun=1         (opcional, no envía nada)
 //
 // Idempotencia: cada wrapper revisa `wa_*_sent_at IS NULL` antes de enviar.
 // Si Meta retorna error, se guarda en `wa_*_error` y se reintenta al día
@@ -43,18 +51,19 @@
 // envíos individuales fallaron — el detalle lista cada uno).
 //
 
-import { todayHn } from "../../_lib/dates";
+import { todayHn, hnDatePlusDays } from "../../_lib/dates";
 import { normalizePhone, isValidE164 } from "../../_lib/phone";
 import { getCleaningContacts, getSecurityContacts } from "../../_lib/property-contacts";
 import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { withCronMonitor } from "../../_lib/cron-monitor";
+import { logOutboundTemplate } from "../../_lib/wa-log";
 import {
   sendCheckinDiaHuesped,
-  sendCheckinDiaLimpieza,
   sendCheckinDiaSeguridad,
   sendCheckoutDiaHuesped,
   sendCheckoutDiaLimpieza,
+  sendLimpiezaAvisoEntrada,
   formatDateShortEs,
   type SendTemplateResult,
 } from "../../_lib/whatsapp-templates";
@@ -66,7 +75,32 @@ interface Env {
   WHATSAPP_PHONE_NUMBER_ID?: string;
 }
 
-type Hito = "morning-staff" | "morning-guests" | "checkout-cleaning";
+export const VALID_HITOS = [
+  "evening-staff",
+  "morning-staff",
+  "morning-guests",
+  "checkout-cleaning",
+] as const;
+
+type Hito = (typeof VALID_HITOS)[number];
+
+/**
+ * Fecha objetivo del hito (el check_in/check_out a procesar). Para evening-staff
+ * (víspera 6 PM) el default es MAÑANA HN; para los demás hitos, HOY HN. Un
+ * ?date=YYYY-MM-DD válido siempre manda (útil para pruebas/dry-run).
+ * Pura (con relojes inyectables) y exportada para test.
+ */
+export function resolveTargetDate(
+  hito: Hito,
+  dateParam: string | null,
+  clock: { today: () => string; tomorrow: () => string } = {
+    today: todayHn,
+    tomorrow: () => hnDatePlusDays(1),
+  },
+): string {
+  if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return dateParam;
+  return hito === "evening-staff" ? clock.tomorrow() : clock.today();
+}
 
 interface ReservationRow {
   id: number;
@@ -81,6 +115,7 @@ interface ReservationRow {
   wa_arrival_security_sent_at: string | null;
   wa_departure_guest_sent_at: string | null;
   wa_departure_cleaning_sent_at: string | null;
+  wa_eve_cleaning_sent_at: string | null;
 }
 
 interface ActionResult {
@@ -121,9 +156,9 @@ function json(body: unknown, status = 200): Response {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const onRequestPost: PagesFunction<Env> = (context) => {
-  // El key incluye el hito (3 hitos diarios distintos por el mismo endpoint) —
-  // sigue DESACTIVADO en cron-worker.js (falta property_contacts), así que no
-  // está en el mapa del watchdog todavía; se agrega cuando se active.
+  // El key incluye el hito (4 hitos diarios distintos por el mismo endpoint).
+  // El watchdog los vigila con skipIfNeverRan: hasta que el hito corra por
+  // primera vez (César re-pega el cron-worker) no genera alertas falsas.
   const hito = new URL(context.request.url).searchParams.get("hito") || "unknown";
   return withCronMonitor(context.env, `cron_whatsapp_operations_${hito}`, () => handlePost(context));
 };
@@ -161,19 +196,17 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   // 2. Parse query
   const url = new URL(request.url);
   const hito = url.searchParams.get("hito") as Hito | null;
-  if (!hito || !["morning-staff", "morning-guests", "checkout-cleaning"].includes(hito)) {
+  if (!hito || !(VALID_HITOS as readonly string[]).includes(hito)) {
     return json(
       {
         ok: false,
-        error: `Query param 'hito' requerido. Valores válidos: morning-staff, morning-guests, checkout-cleaning. Recibido: ${hito}`,
+        error: `Query param 'hito' requerido. Valores válidos: ${VALID_HITOS.join(", ")}. Recibido: ${hito}`,
       },
       400,
     );
   }
   const dryRun = url.searchParams.get("dryRun") === "1";
-  const dateParam = url.searchParams.get("date");
-  const targetDate =
-    dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : todayHn();
+  const targetDate = resolveTargetDate(hito, url.searchParams.get("date"));
 
   // 3. Sin config Meta → no podemos enviar nada. Devolvemos info útil pero
   //    no es error (puede ser que el sistema aún no está configurado).
@@ -196,7 +229,9 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
   // 4. Dispatch
   const actions: ActionResult[] = [];
   try {
-    if (hito === "morning-staff") {
+    if (hito === "evening-staff") {
+      await runEveningStaff(env, waEnv, targetDate, dryRun, actions);
+    } else if (hito === "morning-staff") {
       await runMorningStaff(env, waEnv, targetDate, dryRun, actions);
     } else if (hito === "morning-guests") {
       await runMorningGuests(env, waEnv, targetDate, dryRun, actions);
@@ -234,81 +269,113 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hito 1: morning-staff (7 AM HN)
-// Avisa a personal limpieza + seguridad de las propiedades con CHECK-IN hoy.
+// Hito 0: evening-staff (6:05 PM HN, VÍSPERA)
+// Avisa a personal LIMPIEZA de las propiedades con CHECK-IN MAÑANA, para que
+// planifiquen con un día de anticipación (César, 2026-07-12). Reemplaza al
+// aviso matutino a limpieza que vivía en morning-staff.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function runMorningStaff(
+export async function runEveningStaff(
   env: Env,
   waEnv: { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
   targetDate: string,
   dryRun: boolean,
   actions: ActionResult[],
 ): Promise<void> {
-  const reservations = await fetchArrivalsToday(env.DB, targetDate);
+  // targetDate = el CHECK-IN de mañana (lo resuelve resolveTargetDate).
+  const reservations = await fetchArrivals(env.DB, targetDate);
+
+  for (const r of reservations) {
+    if (r.wa_eve_cleaning_sent_at) continue;
+
+    const propertyName = PROPERTY_NAMES[r.property_slug] || r.property_slug;
+    const cleaners = await getCleaningContacts(r.property_slug, env.DB);
+    if (cleaners.length === 0) {
+      actions.push({
+        reservationId: r.id,
+        slug: r.property_slug,
+        action: "limpieza_aviso_entrada",
+        status: "skipped",
+        detail: "Sin contactos de limpieza activos para esta propiedad",
+      });
+      continue;
+    }
+
+    const results: SendTemplateResult[] = [];
+    for (const c of cleaners) {
+      if (!isValidE164(c.phoneE164)) {
+        results.push({ ok: false, error: `Teléfono inválido del contacto: ${c.phoneE164}` });
+        continue;
+      }
+      if (dryRun) {
+        results.push({ ok: true, messageId: "DRY_RUN" });
+        actions.push({
+          reservationId: r.id,
+          slug: r.property_slug,
+          action: `limpieza_aviso_entrada → ${c.name} (${c.phoneE164})`,
+          status: "sent",
+          detail: "dryRun",
+        });
+        continue;
+      }
+      const res = await sendLimpiezaAvisoEntrada(
+        {
+          toPhone: c.phoneE164,
+          cleanerName: c.name,
+          checkInDateEs: formatDateShortEs(r.check_in),
+          propertyName,
+          checkOutDateEs: formatDateShortEs(r.check_out),
+        },
+        waEnv,
+      );
+      results.push(res);
+      actions.push({
+        reservationId: r.id,
+        slug: r.property_slug,
+        action: `limpieza_aviso_entrada → ${c.name} (${c.phoneE164})`,
+        status: res.ok ? "sent" : "failed",
+        detail: res.ok ? res.messageId : res.error,
+      });
+      await logSend(
+        env,
+        "tpl_limpieza_aviso_entrada",
+        `🧹 Aviso víspera de check-in a limpieza — ${propertyName}`,
+        r.id,
+        res,
+        c.phoneE164,
+      );
+    }
+    await markBatchResult(
+      env.DB,
+      r.id,
+      "wa_eve_cleaning_sent_at",
+      "wa_eve_cleaning_error",
+      results,
+      dryRun,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hito 1: morning-staff (7 AM HN)
+// Avisa a SEGURIDAD de las propiedades con CHECK-IN hoy. (El aviso a limpieza
+// se movió a la víspera — hito evening-staff — por decisión de César 2026-07-12;
+// checkin_dia_limpieza queda disponible solo para disparo manual.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function runMorningStaff(
+  env: Env,
+  waEnv: { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
+  targetDate: string,
+  dryRun: boolean,
+  actions: ActionResult[],
+): Promise<void> {
+  const reservations = await fetchArrivals(env.DB, targetDate);
 
   for (const r of reservations) {
     const propertyName = PROPERTY_NAMES[r.property_slug] || r.property_slug;
     const guestFullName = r.guest_name || "Huésped sin nombre";
     const checkOutEs = formatDateShortEs(r.check_out);
-
-    // ── Limpieza ──────────────────────────────────────────────────
-    if (!r.wa_arrival_cleaning_sent_at) {
-      const cleaners = await getCleaningContacts(r.property_slug, env.DB);
-      if (cleaners.length === 0) {
-        actions.push({
-          reservationId: r.id,
-          slug: r.property_slug,
-          action: "checkin_dia_limpieza",
-          status: "skipped",
-          detail: "Sin contactos de limpieza activos para esta propiedad",
-        });
-      } else {
-        const results: SendTemplateResult[] = [];
-        for (const c of cleaners) {
-          if (!isValidE164(c.phoneE164)) {
-            results.push({ ok: false, error: `Teléfono inválido del contacto: ${c.phoneE164}` });
-            continue;
-          }
-          if (dryRun) {
-            results.push({ ok: true, messageId: "DRY_RUN" });
-            actions.push({
-              reservationId: r.id,
-              slug: r.property_slug,
-              action: `checkin_dia_limpieza → ${c.name} (${c.phoneE164})`,
-              status: "sent",
-              detail: "dryRun",
-            });
-            continue;
-          }
-          const res = await sendCheckinDiaLimpieza(
-            {
-              toPhone: c.phoneE164,
-              cleanerName: c.name,
-              propertyName,
-              checkOutDateEs: checkOutEs,
-            },
-            waEnv,
-          );
-          results.push(res);
-          actions.push({
-            reservationId: r.id,
-            slug: r.property_slug,
-            action: `checkin_dia_limpieza → ${c.name} (${c.phoneE164})`,
-            status: res.ok ? "sent" : "failed",
-            detail: res.ok ? res.messageId : res.error,
-          });
-        }
-        await markBatchResult(
-          env.DB,
-          r.id,
-          "wa_arrival_cleaning_sent_at",
-          "wa_arrival_cleaning_error",
-          results,
-          dryRun,
-        );
-      }
-    }
 
     // ── Seguridad ─────────────────────────────────────────────────
     if (!r.wa_arrival_security_sent_at) {
@@ -355,6 +422,14 @@ async function runMorningStaff(
             status: res.ok ? "sent" : "failed",
             detail: res.ok ? res.messageId : res.error,
           });
+          await logSend(
+            env,
+            "tpl_checkin_dia_seguridad",
+            `🛡️ Aviso de check-in a seguridad — ${propertyName}`,
+            r.id,
+            res,
+            g.phoneE164,
+          );
         }
         await markBatchResult(
           env.DB,
@@ -370,7 +445,7 @@ async function runMorningStaff(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hito 2: morning-guests (9 AM HN)
+// Hito 2: morning-guests (10 AM HN)
 // Mensaje al huésped con CHECK-IN hoy + mensaje al huésped con CHECKOUT hoy.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -382,7 +457,7 @@ async function runMorningGuests(
   actions: ActionResult[],
 ): Promise<void> {
   // ── Llegadas hoy ──────────────────────────────────────────────────
-  const arrivals = await fetchArrivalsToday(env.DB, targetDate);
+  const arrivals = await fetchArrivals(env.DB, targetDate);
   for (const r of arrivals) {
     if (r.wa_arrival_guest_sent_at) continue;
     await sendToGuest(
@@ -409,7 +484,7 @@ async function runMorningGuests(
   }
 
   // ── Salidas hoy ───────────────────────────────────────────────────
-  const departures = await fetchDeparturesToday(env.DB, targetDate);
+  const departures = await fetchDepartures(env.DB, targetDate);
   for (const r of departures) {
     if (r.wa_departure_guest_sent_at) continue;
     await sendToGuest(
@@ -443,7 +518,7 @@ async function runCheckoutCleaning(
   dryRun: boolean,
   actions: ActionResult[],
 ): Promise<void> {
-  const departures = await fetchDeparturesToday(env.DB, targetDate);
+  const departures = await fetchDepartures(env.DB, targetDate);
 
   for (const r of departures) {
     if (r.wa_departure_cleaning_sent_at) continue;
@@ -497,6 +572,14 @@ async function runCheckoutCleaning(
         status: res.ok ? "sent" : "failed",
         detail: res.ok ? res.messageId : res.error,
       });
+      await logSend(
+        env,
+        "tpl_checkout_dia_limpieza",
+        `🧹 Aviso de check-out a limpieza — ${propertyName}`,
+        r.id,
+        res,
+        c.phoneE164,
+      );
     }
     await markBatchResult(
       env.DB,
@@ -513,15 +596,18 @@ async function runCheckoutCleaning(
 // Helpers compartidos
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchArrivalsToday(db: D1Database, targetDate: string): Promise<ReservationRow[]> {
+// Sin filtro de source (César, 2026-07-12): 'confirmed' ya implica pago
+// verificado, así que Airbnb, web y directas se automatizan por igual. La
+// idempotencia por wa_*_sent_at evita dobles con los disparos inline del
+// paypal-webhook (reservas directas del mismo día) y con los manuales.
+async function fetchArrivals(db: D1Database, targetDate: string): Promise<ReservationRow[]> {
   const { results } = await db
     .prepare(
       `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone, guest_count,
               wa_arrival_guest_sent_at, wa_arrival_cleaning_sent_at, wa_arrival_security_sent_at,
-              wa_departure_guest_sent_at, wa_departure_cleaning_sent_at
+              wa_departure_guest_sent_at, wa_departure_cleaning_sent_at, wa_eve_cleaning_sent_at
          FROM reservations
         WHERE status = 'confirmed'
-          AND source = 'airbnb'
           AND check_in = ?`,
     )
     .bind(targetDate)
@@ -529,15 +615,14 @@ async function fetchArrivalsToday(db: D1Database, targetDate: string): Promise<R
   return results ?? [];
 }
 
-async function fetchDeparturesToday(db: D1Database, targetDate: string): Promise<ReservationRow[]> {
+async function fetchDepartures(db: D1Database, targetDate: string): Promise<ReservationRow[]> {
   const { results } = await db
     .prepare(
       `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone, guest_count,
               wa_arrival_guest_sent_at, wa_arrival_cleaning_sent_at, wa_arrival_security_sent_at,
-              wa_departure_guest_sent_at, wa_departure_cleaning_sent_at
+              wa_departure_guest_sent_at, wa_departure_cleaning_sent_at, wa_eve_cleaning_sent_at
          FROM reservations
         WHERE status = 'confirmed'
-          AND source = 'airbnb'
           AND check_out = ?`,
     )
     .bind(targetDate)
@@ -577,7 +662,7 @@ async function sendToGuest(
   env: Env,
   _waEnv: { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
   r: ReservationRow,
-  _phase: "arrival" | "departure",
+  phase: "arrival" | "departure",
   sendFn: (toPhone: string, guestName: string, propertyName: string) => Promise<SendTemplateResult>,
   sentAtColumn: string,
   errorColumn: string,
@@ -629,6 +714,16 @@ async function sendToGuest(
     status: res.ok ? "sent" : "failed",
     detail: res.ok ? res.messageId : res.error,
   });
+  await logSend(
+    env,
+    `tpl_${templateLabel}`,
+    phase === "arrival"
+      ? `🏠 Aviso día de check-in al huésped — ${propertyName}`
+      : `🧳 Aviso día de check-out al huésped — ${propertyName}`,
+    r.id,
+    res,
+    e164,
+  );
 
   try {
     if (res.ok) {
@@ -657,6 +752,33 @@ async function sendToGuest(
       (dbErr as Error).message,
     );
   }
+}
+
+/**
+ * Fila rastreable en whatsapp_messages por cada envío REAL (nunca en dryRun —
+ * los caminos de dryRun hacen `continue` antes de llegar acá). Con el wamid,
+ * el callback de Meta actualiza sent→delivered→read→failed y el envío aparece
+ * en la card "📬 Salud de entrega". Fail-soft: logOutboundTemplate nunca lanza.
+ */
+async function logSend(
+  env: Env,
+  rule: string,
+  summary: string,
+  reservationId: number,
+  res: SendTemplateResult,
+  toPhone: string,
+): Promise<void> {
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) return;
+  await logOutboundTemplate(env.DB, {
+    fromPhone: env.WHATSAPP_PHONE_NUMBER_ID,
+    toPhone,
+    rule,
+    summary,
+    reservationId,
+    ok: res.ok,
+    messageId: res.messageId ?? null,
+    error: res.error ?? null,
+  });
 }
 
 /**

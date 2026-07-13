@@ -18,9 +18,8 @@
 // telemetría (heartbeats owner_alert_ok/fail + bot_trace OWNER_ALERT_FAIL) y sus
 // fallos de entrega igual quedan en WA_DELIVERY_FAILED vía el callback.
 //
-// Hook listo para whatsapp-operations (hoy desactivado en el cron-worker): cuando
-// se active, sus senders (sendToGuest / markBatchResult) llaman logOutboundTemplate
-// con las reglas tpl_* de abajo y entran solos a la card.
+// whatsapp-operations (los 4 hitos del cron) ya llama logOutboundTemplate en
+// cada envío real (RECORDATORIOS-0712) — sus reglas tpl_* entran solas a la card.
 //
 // Carpeta `_lib/` (prefijo underscore) NO es ruteable como endpoint.
 //
@@ -38,6 +37,7 @@ export const STAFF_OPERATIONAL_RULES = [
   "tpl_checkin_dia_limpieza",
   "tpl_checkout_dia_limpieza",
   "tpl_checkin_dia_seguridad",
+  "tpl_limpieza_aviso_entrada", // víspera 6 PM (hito evening-staff)
 ] as const;
 
 export interface OutboundTemplateLog {
