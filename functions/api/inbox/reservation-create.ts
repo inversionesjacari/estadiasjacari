@@ -13,6 +13,7 @@
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
 import { normalizePhone } from "../../_lib/phone";
+import { overlapSlugs, slugPlaceholders } from "../../_lib/slug-overlap";
 
 interface Env {
   DB: D1Database;
@@ -32,6 +33,77 @@ const SLUGS = new Set([
 ]);
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Nombres legibles para el texto del aviso de solape (mapa local, como el
+// PROPERTY_NAMES de whatsapp-dispatch/paypal-webhook).
+const PROPERTY_NAMES: Record<string, string> = {
+  "villa-b11-palma-real": "Villa B11 — Palma Real",
+  "casa-brisa": "Casa Brisa",
+  "casa-marea": "Casa Marea",
+  "centro-morazan": "Centro Morazán",
+  "casa-lara-townhouse": "Casa Lara Townhouse",
+  "la-florida": "La Florida",
+  "las-gemelas-tela": "Las Gemelas (Tela)",
+};
+
+export interface OverlapRow {
+  property_slug: string;
+  check_in: string;
+  check_out: string;
+  guest_name: string | null;
+  status: string;
+}
+
+/**
+ * Reservas activas que se PISAN con [check_in, check_out) — incluyendo el
+ * inventario cruzado del combo Las Gemelas ↔ Brisa/Marea (overlapSlugs).
+ * Es ADVISORY (la alta manual advierte, no bloquea): si la consulta falla,
+ * devuelve [] para que un error acá nunca frene la carga.
+ */
+export async function findOverlappingReservations(
+  db: D1Database,
+  property_slug: string,
+  check_in: string,
+  check_out: string,
+): Promise<OverlapRow[]> {
+  const slugs = overlapSlugs(property_slug);
+  try {
+    const res = await db.prepare(
+      `SELECT property_slug, check_in, check_out, guest_name, status
+         FROM reservations
+        WHERE property_slug IN (${slugPlaceholders(slugs)})
+          AND status IN ('pending','confirmed')
+          AND check_in < ? AND check_out > ?
+        ORDER BY check_in LIMIT 4`,
+    ).bind(...slugs, check_out, check_in).all<OverlapRow>();
+    return res.results ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Texto del aviso cuando la reserva nueva se solapa con otras activas; null si
+ * no hay solape. La reserva se guarda IGUAL: César a veces registra algo que ya
+ * sabe (por eso advertir y no bloquear) — el aviso le deja decidir si es una
+ * doble venta de verdad.
+ */
+export function buildOverlapWarning(createdSlug: string, rows: OverlapRow[]): string | null {
+  if (rows.length === 0) return null;
+  const items = rows.slice(0, 3).map((r) => {
+    const name = PROPERTY_NAMES[r.property_slug] ?? r.property_slug;
+    const who = r.guest_name ? ` de ${r.guest_name}` : "";
+    const st = r.status === "confirmed" ? "confirmada" : "por verificar";
+    return `${name} ${r.check_in} → ${r.check_out}${who} (${st})`;
+  });
+  const extra = rows.length > 3 ? " …y hay más" : "";
+  // El único cruce entre slugs distintos es el combo (ver slug-overlap.ts).
+  const comboNote = rows.some((r) => r.property_slug !== createdSlug)
+    ? " Acordate: Las Gemelas ocupa Casa Brisa + Casa Marea."
+    : "";
+  const others = rows.length === 1 ? "otra reserva activa" : "otras reservas activas";
+  return `⚠️ Se guardó, pero se pisa con ${others}: ${items.join(" · ")}${extra}. Revisá que no sea una doble venta.${comboNote}`;
+}
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const auth = await requireInboxAuth(request, env);
@@ -99,6 +171,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       return json({ ok: false, error: "Ya hay una reserva cargada para esa propiedad en esas fechas." }, 409);
     }
 
+    // Aviso de SOLAPE (no bloquea): el guard de arriba solo caza el duplicado
+    // EXACTO; acá detectamos cualquier cruce de fechas con otra reserva activa
+    // (incluyendo el combo Las Gemelas ↔ Brisa/Marea) y lo devolvemos como
+    // advertencia — la reserva se guarda igual. Va ANTES del INSERT para no
+    // contarse a sí misma.
+    const overlaps = await findOverlappingReservations(env.DB, property_slug, check_in, check_out);
+    const warning = buildOverlapWarning(property_slug, overlaps);
+
     const res = await env.DB.prepare(
       `INSERT INTO reservations
          (property_slug, check_in, check_out, guest_name, guest_phone, guest_phone_normalized,
@@ -108,7 +188,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       property_slug, check_in, check_out, guest_name || null, guest_phone, guest_phone_normalized,
       guest_count, total_hnl, paid_hnl, status, paypal_order_id, created_at,
     ).run();
-    return json({ ok: true, id: res.meta?.last_row_id ?? null });
+    return json({ ok: true, id: res.meta?.last_row_id ?? null, warning });
   } catch (err) {
     const msg = (err as Error).message || "";
     if (/no such column|total_hnl|paid_hnl/i.test(msg)) {

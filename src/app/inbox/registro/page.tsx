@@ -126,6 +126,8 @@ export default function RegistroPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  // Aviso de solape tras un alta que SÍ se guardó (el endpoint advierte, no bloquea).
+  const [saveWarning, setSaveWarning] = useState("");
   // Edición de pago de una reserva existente
   const [payRes, setPayRes] = useState<Reservation | null>(null);
   const [payForm, setPayForm] = useState({ total_hnl: "", paid_hnl: "" });
@@ -285,10 +287,12 @@ export default function RegistroPage() {
         body: JSON.stringify(form),
       });
       if (resp.status === 401) { setAuthed(false); return; }
-      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string; warning?: string | null };
       if (data.ok) {
         setShowAdd(false);
         setForm(EMPTY_FORM);
+        // Si se guardó con solape, el banner queda visible (un alta limpia lo borra).
+        setSaveWarning(data.warning || "");
         fetchData();
       } else {
         setFormError(data.error || "No se pudo guardar.");
@@ -392,6 +396,21 @@ export default function RegistroPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-5">
+        {/* Aviso de solape: la reserva SÍ se guardó, pero pisa otra activa */}
+        {saveWarning && (
+          <div className="flex items-start gap-3 mb-4 px-4 py-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm">
+            <p className="flex-1">{saveWarning}</p>
+            <button
+              type="button"
+              onClick={() => setSaveWarning("")}
+              className="shrink-0 text-amber-300/70 hover:text-amber-200"
+              aria-label="Cerrar aviso"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Filtros */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <input
