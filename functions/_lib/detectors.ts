@@ -20,6 +20,10 @@ export const TERMINAL_RULES = new Set([
   "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
   "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
   "escalar_humano", "call_requested", "farewell", "event_inquiry_handoff",
+  // Pregunta en el paso de comprobante que ningún detector supo responder → escaló a
+  // César; el followup NO debe nagear "¿pudiste transferir?" mientras la pregunta
+  // sigue en manos del humano (caso +504 9583-9796, 13-jul-2026).
+  "transfer_question_escalated",
 ]);
 
 /** Detecta si un texto tiene intención de pedir cotización / precio. */
@@ -699,4 +703,157 @@ export function isCheckinTimeRequest(text: string): boolean {
     /\b(what time|check[ -]?in time|check[ -]?out time|arrival time)\b/.test(t) ||
     /\bwhat time (can|do|should) i (check ?in|arrive|get in|come in|leave|check ?out)\b/.test(t)
   );
+}
+
+/**
+ * Pregunta/confirmación del TOTAL a pagar ("¿ese es el total por las 2 noches?",
+ * "¿cuánto sería el total?", "¿ya incluye la limpieza?"). Plata = dato exacto → se
+ * responde por CÓDIGO con la misma fuente que cotizó (buildQuote), nunca con el
+ * guion de pago. Caso real 13-jul-2026 (+504 9583-9796, awaiting_transfer_proof):
+ * la pregunta del total escondía una CONFUSIÓN DE PROPIEDAD — el monto enviado era
+ * el depósito 50% de las gemelas (10,700/2 = 5,350) y el cliente creía que era el
+ * total de una casa sola (2×2,500+350 = 5,350, el MISMO número) — y el bot repitió
+ * "mandame el comprobante" dos veces. El recap que esto habilita (propiedad + total
+ * vs monto a transferir) destapa esa confusión en el momento.
+ * Guards: headcount ("en total somos 6") y reporte de pago ("ya pagué el total")
+ * NO son la pregunta.
+ */
+export function isTotalConfirmationQuestion(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // "total" de PERSONAS ("en total somos 6", "somos 8 en total", "el total de adultos")
+  // → headcount, no plata. Estrecho a propósito: una pregunta de plata que menciona al
+  // grupo ("¿cuánto es el total por las 6 personas?") SÍ debe pasar, y un reporte de
+  // pago que ADEMÁS pregunta ("ya transferí, ¿ese es el total?") también — la pregunta
+  // gana (2 hallazgos de la revisión adversaria: el guard ancho mataba ambas). Un
+  // reporte SIN forma de pregunta ("ya pagué el total") no matchea ningún positivo.
+  if (
+    /\b(somos|seremos|son|vamos|viajamos)\s+\d+\s+en\s+total\b/.test(t) ||
+    /\ben\s+total\s+(somos|seremos|vamos|viajamos)\b/.test(t) ||
+    /\btotal\s+de\s+(personas|adultos|ninos|ninas|huespedes|bebes)\b/.test(t)
+  ) {
+    return false;
+  }
+  return (
+    // "¿cuánto es/sería el total (a pagar)?" / "¿cuál es el precio final?"
+    /\b(cuanto|cual)\b[^.!?]{0,30}\b(total|precio final|monto final)\b/.test(t) ||
+    // "¿y el total cuánto sería?" (orden invertido)
+    /\btotal\b[^.!?]{0,25}\bcuanto\b/.test(t) ||
+    // "¿cuánto le debo / tengo que pagar / me sale / sería por todo?"
+    /\bcuanto\b[^.!?]{0,20}\b(debo|debemos|tengo\s+que\s+pagar|hay\s+que\s+pagar|me\s+sale|nos\s+sale|sale|por\s+todo)\b/.test(t) ||
+    // "¿cuánto falta/resta/queda por pagar?"
+    /\bcuanto\b[^.!?]{0,20}\b(falta|resta|queda)\b[^.!?]{0,15}\b(pagar|abonar|cancelar)\b/.test(t) ||
+    // "¿ese/eso es/era el total…?" / "el depósito es el total?" / "es todo lo que pago?"
+    /\b(es|era|seria|sera)\s+(el\s+)?(total|precio final|monto final)\b/.test(t) ||
+    /\b(es|era|sera|seria)\s+todo\s+lo\s+que\s+(pago|pagamos|debo|pagaria|pagariamos)\b/.test(t) ||
+    // "…el total …verdad/cierto/correcto?" / "¿me confirmás el total?"
+    /\btotal\b[^.!?]{0,35}\b(verdad|cierto|correcto)\b/.test(t) ||
+    /\b(confirmas?|confirme|confirmame|confirma)\b[^.!?]{0,15}\b(el\s+)?total\b/.test(t) ||
+    // monto citado: "¿el total es 5,350?" / "¿son 5,350 en total?" / "¿queda cancelado el total?"
+    /\btotal\s+(es|son|seria|serian)\s+(de\s+)?[\d.,]+/.test(t) ||
+    /\b(es|son|serian?)\s+[\d.,]+\s+en\s+total\b/.test(t) ||
+    /\bcancelad[oa]s?\b[^.!?]{0,15}\b(el\s+)?total\b/.test(t) ||
+    // "¿(el total) ya incluye la limpieza / impuestos?" / "todo incluido" / "¿incluye todo?"
+    // ("incluye todo <cosa>" con objeto es AMENIDAD, no plata — hallazgo adversario:
+    //  "¿incluye todo el equipo de cocina?" no debe disparar el recap del total).
+    /\b(incluye|incluido|incluida)\b[^.!?]{0,25}\b(limpieza|impuestos?|tasas?|cargos?|total)\b/.test(t) ||
+    /\btotal\b[^.!?]{0,15}\bincluye\b/.test(t) ||
+    /\btodo\s+incluido\b/.test(t) ||
+    /\bincluye\s+todo\s*[?!.,¿¡\s]*$/.test(t) ||
+    // English
+    /\bis\s+(that|this|it)\s+the\s+total\b/.test(t) ||
+    /\bthat('|’)?s\s+the\s+total\b/.test(t) ||
+    /\bthe\s+total\s*\?/.test(t) ||
+    /\b(what('|’)?s|what\s+is|how\s+much\s+is)\s+the\s+total\b/.test(t) ||
+    /\btotal\s+for\s+(the|both|all|our)\b/.test(t) ||
+    /\b(all|everything)\s+included\b/.test(t) ||
+    /\bdoes\s+(it|that|the\s+price)\s+include\b/.test(t)
+  );
+}
+
+export interface StayDayPair {
+  inDay: number;
+  outDay: number;
+  /** Mes EXPLÍCITO si el cliente lo dijo ("del 17 de julio al 19") — 1-12, o null.
+   *  Quien confirme contra el estado DEBE cotejarlo cuando venga (hallazgo adversario:
+   *  "¿del 17 al 19 de octubre?" con reserva en julio no puede dar "¡Confirmado!"). */
+  inMonth: number | null;
+  outMonth: number | null;
+}
+
+const STAY_MONTHS: Record<string, number> = {
+  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8,
+  septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7,
+  august: 8, september: 9, october: 10, november: 11, december: 12,
+};
+const STAY_MONTH_ALT = Object.keys(STAY_MONTHS).join("|");
+
+/**
+ * Día de ENTRADA y SALIDA mencionados sin mes ("del 17 al 19", "sería entrar el 17
+ * y salida el 19", "entre el 20 y el 22", "desde el 17 hasta el 19"). Complemento
+ * determinístico de date-parser.extractDatePhrases (que exige el mes). En los pasos
+ * de pago sirve para CONFIRMAR las fechas contra el estado sin LLM — el bot
+ * respondía "mandame el comprobante" a una confirmación de fechas (caso
+ * +504 9583-9796, 13-jul-2026). NO fija fechas nuevas; solo lee el par de días.
+ * Guards (afinados por revisión adversaria): la HORA se chequea POR NÚMERO, no por
+ * span — "entrada a las 3 y salida a las 11" (horarios de check-in/out) es null,
+ * pero "llegamos el 17 como a las 3 pm y salimos el 19" sí da {17,19}; headcount
+ * ("de 17 a 19 personas"), porcentajes y números fuera de 1-31 devuelven null.
+ */
+export function extractStayDayPair(text: string): StayDayPair | null {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+  let inDayS: string, outDayS: string;
+  let inMonth: number | null = null;
+  let outMonth: number | null = null;
+
+  // Patrón 1 — "del 17 (de julio)? al 19 (de octubre)?" / "desde el 17 hasta el 19":
+  // el mes se CAPTURA (no se descarta) para que el que confirma pueda cotejarlo.
+  let m = t.match(new RegExp(
+    `\\b(?:del|desde\\s+el)\\s+(\\d{1,2})(?:\\s+de\\s+(${STAY_MONTH_ALT}))?\\s+(?:al|hasta\\s+el|a)\\s+(?:el\\s+)?(\\d{1,2})(?:\\s+de\\s+(${STAY_MONTH_ALT}))?\\b`,
+  ));
+  if (m) {
+    inDayS = m[1];
+    outDayS = m[3];
+    inMonth = m[2] ? STAY_MONTHS[m[2]] ?? null : null;
+    outMonth = m[4] ? STAY_MONTHS[m[4]] ?? null : null;
+  } else {
+    m =
+      t.match(/\bentre\s+el\s+(\d{1,2})\s+y\s+(?:el\s+)?(\d{1,2})\b/) ??
+      t.match(
+        /\b(?:entra(?:r|mos|riamos)?|entrada|llega(?:r|mos|riamos)?|ingres\w+|check[ -]?in)\b[^.!?]{0,25}?\b(?:el\s+)?(\d{1,2})\b[^.!?]{0,30}?\b(?:salida|salir|saliendo|salimos|saldriamos|nos\s+vamos|regres\w+|check[ -]?out)\b[^.!?]{0,25}?\b(?:el\s+)?(\d{1,2})\b/,
+      ) ??
+      t.match(/\bfrom\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|until|till)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b/);
+    if (!m || m.index == null) return null;
+    inDayS = m[1];
+    outDayS = m[2];
+    // Estas formas no capturan mes: si el span trae uno explícito, es territorio de
+    // date-parser/cotización → null (que lo maneje el flujo normal, no la confirmación).
+    if (new RegExp(`\\b(${STAY_MONTH_ALT})\\b`).test(t.slice(m.index, m.index + m[0].length + 15))) {
+      return null;
+    }
+  }
+  if (m.index == null) return null;
+
+  // Headcount/edades pegado al par ("de 17 a 19 personas") → no es estadía.
+  const span = t.slice(m.index, m.index + m[0].length + 12);
+  if (/\b(personas?|adultos?|ninos?|ninas?|huespedes|anos)\b/.test(span)) return null;
+
+  // Guard de HORA por número: "las" antes ("a las 3"), o am/pm/hrs/"de la tarde"/
+  // "por ciento" después. Por número y no por span, para no anular pares válidos
+  // que además traen hora ("llegamos el 17 como a las 3 pm y salimos el 19").
+  const p1 = m.index + m[0].indexOf(inDayS);
+  const p2 = m.index + m[0].lastIndexOf(outDayS);
+  for (const [p, s] of [[p1, inDayS], [p2, outDayS]] as const) {
+    if (/\blas\s*$/.test(t.slice(Math.max(0, p - 8), p))) return null;
+    const after = t.slice(p + s.length, p + s.length + 14);
+    if (/^\s*(?::\d{2})?\s*(am|pm|hrs?|horas?)\b/.test(after)) return null;
+    if (/^\s*de\s+la\s+(tarde|manana|noche)\b/.test(after)) return null;
+    if (/^\s*(?:por\s+ciento|%)/.test(after)) return null;
+  }
+
+  const inDay = Number(inDayS);
+  const outDay = Number(outDayS);
+  if (inDay < 1 || inDay > 31 || outDay < 1 || outDay > 31 || inDay === outDay) return null;
+  return { inDay, outDay, inMonth, outMonth };
 }

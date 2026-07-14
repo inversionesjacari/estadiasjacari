@@ -32,10 +32,12 @@ import {
   mentionsValleDeAngeles,
   detectPackageInquiry,
   detectPackageByAdPrice,
+  isTotalConfirmationQuestion,
+  extractStayDayPair,
   TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
-import { T } from "../../i18n";
+import { T, stayRangeHuman } from "../../i18n";
 import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos, TELA_CROQUIS_URL } from "../../property-photos";
 import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
@@ -889,5 +891,63 @@ describe("CHAT: lead de Tela — '¿está cerca del mar?' → croquis + guion (1
     expect(TELA_CROQUIS_URL).toBe(
       "https://estadiasjacari.com/images/las-gemelas-tela/croquis.jpg",
     );
+  });
+});
+describe("CHAT: +504 9583-9796 parte 2 — el paso de comprobante tragaba fechas y la pregunta del TOTAL (13-jul-2026)", () => {
+  // En awaiting_transfer_proof el bot respondió transfer_ask_proof VERBATIM a
+  // "Sería entrar el 17 y salida el 19" y a "¿ese es el total por las 2 noches?".
+  // La pregunta del total escondía una CONFUSIÓN DE PROPIEDAD: el monto enviado
+  // (HNL 5,350) era el DEPÓSITO de las gemelas (total 10,700) y el cliente creía
+  // que era el TOTAL de una casa sola (2×2,500+350 = 5,350 — el MISMO número).
+  it("los 2 mensajes reales se detectan por código (nunca más transfer_ask_proof verbatim)", () => {
+    expect(isTotalConfirmationQuestion("Perfecto , ese es el total por las 2 noches  y 3 días  verdad ?")).toBe(true);
+    expect(extractStayDayPair("Sería entrar el 17 y salida el 19")).toEqual({ inDay: 17, outDay: 19, inMonth: null, outMonth: null });
+    expect(extractStayDayPair("Del 17 al 19")).toEqual({ inDay: 17, outDay: 19, inMonth: null, outMonth: null });
+  });
+  it("el recap del total NOMBRA la propiedad y separa total vs monto a transferir (destapa la confusión)", () => {
+    // Las gemelas 17→19: total 10,700, a transferir 5,350 (depósito 50%) → el recap lo dice.
+    const msg = T.transferTotalConfirm("es", {
+      propertyName: PROPERTY_PRICING["las-gemelas-tela"].name,
+      nights: 2,
+      datesHuman: stayRangeHuman("2026-07-17", "2026-07-19", "es"),
+      totalHNL: 10700,
+      transferHNL: 5350,
+    });
+    expect(msg).toContain("Las Gemelas");
+    expect(msg).toContain("10,700");
+    expect(msg).toContain("5,350");
+    expect(msg).toContain("depósito");
+    expect(msg).toContain("del 17 al 19 jul");
+  });
+  it("si el monto a transferir ES el total, el recap lo dice sin inventar un saldo", () => {
+    // Una casa sola 17→19: total 5,350 y transferencia por el total.
+    const msg = T.transferTotalConfirm("es", {
+      propertyName: PROPERTY_PRICING["casa-marea"].name,
+      nights: 2,
+      datesHuman: stayRangeHuman("2026-07-17", "2026-07-19", "es"),
+      totalHNL: 5350,
+      transferHNL: 5350,
+    });
+    expect(msg).toContain("total completo");
+    expect(msg).not.toContain("saldo");
+  });
+  it("la confirmación de fechas nombra propiedad + rango legible", () => {
+    const msg = T.transferStayDatesConfirm("es", {
+      propertyName: PROPERTY_PRICING["casa-marea"].name,
+      nights: 2,
+      datesHuman: stayRangeHuman("2026-07-17", "2026-07-19", "es"),
+    });
+    expect(msg).toContain("Casa Marea");
+    expect(msg).toContain("del 17 al 19 jul");
+  });
+  it("headcount y reporte de pago NO disparan el recap del total (guards)", () => {
+    expect(isTotalConfirmationQuestion("en total somos 8")).toBe(false);
+    expect(isTotalConfirmationQuestion("ya transferí el total")).toBe(false);
+  });
+  it("la escalación del anti-tragón es handoff terminal (no la nagea el followup)", () => {
+    expect(TERMINAL_RULES.has("transfer_question_escalated")).toBe(true);
+  });
+  it("stayRangeHuman cruza de mes con el mes en ambos días", () => {
+    expect(stayRangeHuman("2026-07-30", "2026-08-02", "es")).toBe("del 30 jul al 2 ago");
   });
 });

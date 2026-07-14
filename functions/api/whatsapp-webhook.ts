@@ -76,6 +76,7 @@ const HANDOFF_RULES = new Set<string>([
   "paypal_usd_requested",       // pidió el monto en USD del link PayPal
   "escalar_humano",             // pidió hablar con un humano (rule-based)
   "event_inquiry_handoff",      // lead de EVENTO (Valle de Ángeles) → el equipo arma la propuesta
+  "transfer_question_escalated", // pregunta sin respuesta determinística esperando comprobante → César la toma
 ]);
 import type { IcalEnv } from "../_lib/availability";
 

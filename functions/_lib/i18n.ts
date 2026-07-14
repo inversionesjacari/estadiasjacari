@@ -21,6 +21,25 @@ export function asLang(v: unknown): Lang {
   return v === "en" ? "en" : "es";
 }
 
+const MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const MONTHS_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Rango de estadía legible para recaps de pago: "del 17 al 19 jul" / "Jul 17 → Jul 19".
+ * Si el rango cruza de mes, el mes aparece en ambos días ("del 30 jul al 2 ago").
+ */
+export function stayRangeHuman(checkInIso: string, checkOutIso: string, l: Lang): string {
+  const day = (iso: string) => Number(iso.slice(8, 10));
+  const monthIdx = (iso: string) => Number(iso.slice(5, 7)) - 1;
+  if (l === "en") {
+    return `${MONTHS_EN[monthIdx(checkInIso)]} ${day(checkInIso)} → ${MONTHS_EN[monthIdx(checkOutIso)]} ${day(checkOutIso)}`;
+  }
+  const sameMonth = checkInIso.slice(0, 7) === checkOutIso.slice(0, 7);
+  return sameMonth
+    ? `del ${day(checkInIso)} al ${day(checkOutIso)} ${MESES_ES[monthIdx(checkOutIso)]}`
+    : `del ${day(checkInIso)} ${MESES_ES[monthIdx(checkInIso)]} al ${day(checkOutIso)} ${MESES_ES[monthIdx(checkOutIso)]}`;
+}
+
 export const T = {
   welcome: (l: Lang): string =>
     l === "en"
@@ -296,6 +315,68 @@ export const T = {
     l === "en"
       ? "Totally understandable to want to make sure before paying 🙏\n\nWe're *Inversiones Jacarí S. de R.L.*, a registered company in Honduras — the transfer goes to the company's bank account, not a personal one. You can also check us out here:\n📸 Instagram: instagram.com/estadiasjacari\n🌐 estadiasjacari.com\n⭐ We're on Airbnb too, with real guest reviews.\n\nAnd you're welcome to call us anytime at +504 9764-9035."
       : "¡Totalmente entendible querer confirmar antes de transferir! 🙏\n\nSomos *Inversiones Jacarí S. de R.L.*, una empresa registrada en Honduras — la transferencia va a la cuenta de la empresa, no a una personal. También podés vernos acá:\n📸 Instagram: instagram.com/estadiasjacari\n🌐 estadiasjacari.com\n⭐ Estamos en Airbnb, con reseñas reales de huéspedes.\n\nY cuando quieras, podés llamarnos al +504 9764-9035.",
+
+  // El cliente pregunta/confirma el TOTAL con la plata en la mano ("¿ese es el
+  // total por las 2 noches?"). Responder SIEMPRE nombrando la propiedad y separando
+  // total vs monto a transferir: el caso real 13-jul-2026 (+504 9583-9796) era una
+  // confusión de propiedad disfrazada de pregunta de total — el DEPÓSITO de las
+  // gemelas (5,350 de 10,700) es idéntico al TOTAL de una casa sola (5,350). Un
+  // recap con nombre + desglose la destapa en el momento; repetir "mandame el
+  // comprobante" la dejó pasar.
+  transferTotalConfirm: (
+    l: Lang,
+    p: { propertyName: string; nights: number; datesHuman: string; totalHNL: number; transferHNL: number },
+  ): string => {
+    const total = p.totalHNL.toLocaleString("en-US");
+    const amount = p.transferHNL.toLocaleString("en-US");
+    const balance = Math.max(0, p.totalHNL - p.transferHNL).toLocaleString("en-US");
+    const isFull = p.transferHNL >= p.totalHNL;
+    if (l === "en") {
+      const nightsTxt = p.nights === 1 ? "1 night" : `${p.nights} nights`;
+      return (
+        `Good question! 🙏 Your booking is *${p.propertyName}*, ${p.datesHuman} (${nightsTxt}).\n` +
+        `💰 Total: *HNL ${total}* — cleaning included, no extra charges.\n` +
+        (isFull
+          ? `The amount to transfer (*HNL ${amount}*) is the full total.`
+          : `The amount to transfer (*HNL ${amount}*) is the 50% deposit — the balance (HNL ${balance}) is paid before check-in.`) +
+        `\nOnce you make the transfer, send me a photo of the receipt here and I'll confirm your booking. 🙏`
+      );
+    }
+    const nightsTxt = p.nights === 1 ? "1 noche" : `${p.nights} noches`;
+    return (
+      `¡Buena pregunta! 🙏 Tu reserva es *${p.propertyName}*, ${p.datesHuman} (${nightsTxt}).\n` +
+      `💰 Total: *HNL ${total}* — ya incluye la limpieza, sin cargos extra.\n` +
+      (isFull
+        ? `El monto a transferir (*HNL ${amount}*) es el total completo.`
+        : `El monto a transferir (*HNL ${amount}*) es el depósito del 50%; el saldo (HNL ${balance}) se completa antes del check-in.`) +
+      `\nCuando hagas la transferencia, mandame la foto del comprobante por acá y te confirmo la reserva. 🙏`
+    );
+  },
+
+  // El cliente confirma/repite sus FECHAS esperando el comprobante ("sería entrar
+  // el 17 y salida el 19") → confirmarlas EXPLÍCITO contra lo cotizado, nunca
+  // responder "mandame el comprobante" a una confirmación de fechas (caso 13-jul).
+  transferStayDatesConfirm: (
+    l: Lang,
+    p: { propertyName: string; nights: number; datesHuman: string },
+  ): string => {
+    if (l === "en") {
+      const nightsTxt = p.nights === 1 ? "1 night" : `${p.nights} nights`;
+      return `Confirmed! ✅ *${p.propertyName}*: ${p.datesHuman} (${nightsTxt}). Once you make the transfer, send me a photo of the receipt here and I'll confirm your booking. 🙏`;
+    }
+    const nightsTxt = p.nights === 1 ? "1 noche" : `${p.nights} noches`;
+    return `¡Confirmado! ✅ *${p.propertyName}*: ${p.datesHuman} (${nightsTxt}). Cuando hagas la transferencia, mandame la foto del comprobante por acá y te confirmo la reserva. 🙏`;
+  },
+
+  // Pregunta en el paso de comprobante que ningún detector sabe responder → NUNCA
+  // repetir el guion de pago (el bot repitió "mandame el comprobante" verbatim a
+  // preguntas reales, caso 13-jul). Ack cálido + escalación: César responde a mano
+  // (el handoff pausa el bot). Con la plata en la mano, un humano en 1 minuto vale
+  // más que un bot que ignora.
+  transferQuestionHold: (l: Lang): string =>
+    l === "en"
+      ? "Good question! 🙏 Let me confirm that with the team — I'll get back to you in a moment."
+      : "¡Buena pregunta! 🙏 Dejame confirmarla con el equipo y te respondo en un momento.",
 
   // "Último aviso" antes de cerrar la ventana de 24h — la fecha SIGUE disponible.
   // 🌴 SOLO para zona de playa (Tela / La Ceiba). Tegucigalpa es ciudad → sin palmera

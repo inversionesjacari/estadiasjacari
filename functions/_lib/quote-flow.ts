@@ -50,7 +50,7 @@ import {
 } from "./bank-transfer";
 import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl, TELA_CROQUIS_URL } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
-import { T, asLang, type Lang } from "./i18n";
+import { T, asLang, stayRangeHuman, type Lang } from "./i18n";
 import { paymentButtons, confirmButtons, type ButtonReply } from "./button-map";
 import type { QuoteData } from "./quote-extractor";
 import {
@@ -84,6 +84,8 @@ import {
   mentionsValleDeAngeles,
   detectPackageInquiry,
   detectPackageByAdPrice,
+  isTotalConfirmationQuestion,
+  extractStayDayPair,
   LONG_TERM_NIGHTS,
   nightsBetween,
 } from "./detectors";
@@ -841,6 +843,108 @@ export async function handleQuoteIncoming(
         tokensUsed:      0,
       };
     }
+    // El cliente pregunta/confirma el TOTAL ("¿ese es el total por las 2 noches?").
+    // Plata = dato exacto → recap por CÓDIGO con la MISMA fuente que cotizó, nombrando
+    // la propiedad y separando total vs monto a transferir. Caso +504 9583-9796 (13-jul):
+    // la pregunta escondía una CONFUSIÓN DE PROPIEDAD — el monto enviado era el DEPÓSITO
+    // de las gemelas (5,350 de 10,700) y el cliente creía que era el TOTAL de una casa
+    // sola (5,350, el MISMO número); el bot repitió "mandame el comprobante" y la dejó
+    // pasar. Si no se puede re-cotizar, cae al anti-tragón de abajo (escala, no repite).
+    if (isTotalConfirmationQuestion(text)) {
+      const quote = applyPackagePricing(await buildQuote(
+        {
+          property: existing.data.property!,
+          checkIn:  existing.data.checkIn!,
+          checkOut: existing.data.checkOut!,
+          guests:   existing.data.guests!,
+          adults:   existing.data.adults,
+          children: existing.data.children,
+        },
+        env.DB,
+        pricingMap,
+      ), existing.data);
+      // Solo confirmar totales que el motor daría por BUENOS hoy: si la cotización ya
+      // no está disponible (alguien tomó las fechas) o no se pudo armar, esto cae al
+      // anti-tragón de abajo y ESCALA — jamás invitar a transferir por un conflicto
+      // (hallazgo adversario: buildQuote computa totales aunque available=false).
+      if (quote && quote.available) {
+        return {
+          reply: T.transferTotalConfirm(lang, {
+            propertyName: quote.propertyName,
+            nights:       quote.nights,
+            datesHuman:   stayRangeHuman(existing.data.checkIn!, existing.data.checkOut!, lang),
+            totalHNL:     quote.totalHNL,
+            transferHNL:  quote.depositHNL,
+          }),
+          escalateToOwner: false,
+          ruleName:        "transfer_total_confirmed",
+          tokensUsed:      0,
+        };
+      }
+    }
+    // El cliente menciona/confirma FECHAS ("sería entrar el 17 y salida el 19"):
+    //   · coinciden con lo cotizado (día Y mes si lo dijo) → confirmarlas EXPLÍCITO
+    //     (nunca responder "mandame el comprobante" a una confirmación de fechas);
+    //   · difieren → cambió el trato con la plata en la mano → ESCALAR con ack cálido.
+    //     No delegamos a gatherQuoteData a ciegas: con un par sin mes el LLM puede no
+    //     extraer nada, el estado degradaría a awaiting_quote_data y el pipeline del
+    //     comprobante se desarma (hallazgo adversario). Un humano re-cotiza seguro.
+    {
+      const pair = extractStayDayPair(text);
+      const propertyName = existing.data.property
+        ? (pricingMap?.[existing.data.property] ?? PROPERTY_PRICING[existing.data.property])?.name
+        : undefined;
+      if (pair && propertyName && existing.data.checkIn && existing.data.checkOut) {
+        const sameDays =
+          pair.inDay  === Number(existing.data.checkIn.slice(8, 10)) &&
+          pair.outDay === Number(existing.data.checkOut.slice(8, 10)) &&
+          (pair.inMonth  == null || pair.inMonth  === Number(existing.data.checkIn.slice(5, 7))) &&
+          (pair.outMonth == null || pair.outMonth === Number(existing.data.checkOut.slice(5, 7)));
+        if (sameDays) {
+          return {
+            reply: T.transferStayDatesConfirm(lang, {
+              propertyName,
+              nights:     nightsBetween(existing.data.checkIn, existing.data.checkOut),
+              datesHuman: stayRangeHuman(existing.data.checkIn, existing.data.checkOut, lang),
+            }),
+            escalateToOwner: false,
+            ruleName:        "transfer_dates_confirmed",
+            tokensUsed:      0,
+          };
+        }
+        return {
+          reply:           T.transferQuestionHold(lang),
+          escalateToOwner: true,
+          ruleName:        "transfer_question_escalated",
+          tokensUsed:      0,
+        };
+      }
+    }
+    // Pide (de nuevo) los datos bancarios → re-enviarlos por código con el monto
+    // recalculado, nunca escalar algo que tiene respuesta determinística (hallazgo
+    // adversario: "¿a qué cuenta transfiero?" caía al anti-tragón por el "?").
+    if (isBankAccountRequest(text)) {
+      const quote = applyPackagePricing(await buildQuote(
+        {
+          property: existing.data.property!,
+          checkIn:  existing.data.checkIn!,
+          checkOut: existing.data.checkOut!,
+          guests:   existing.data.guests!,
+          adults:   existing.data.adults,
+          children: existing.data.children,
+        },
+        env.DB,
+        pricingMap,
+      ), existing.data);
+      if (quote && quote.available) {
+        return {
+          reply:           buildTransferMessageHNL(quote.depositHNL, lang),
+          escalateToOwner: false,
+          ruleName:        "transfer_details_resent",
+          tokensUsed:      0,
+        };
+      }
+    }
     // El cliente dice que TODAVÍA no transfirió / lo posterga ("No", "primero se
     // valida con la familia") → recordatorio amable, SIN asumir comprobante;
     // mantenemos el estado (sigue esperando la foto del comprobante).
@@ -853,6 +957,29 @@ export async function handleQuoteIncoming(
         ruleName:        "transfer_pending_reminder",
         tokensUsed:      0,
       };
+    }
+    // "ok"/"gracias"/"dale" tras pedir el comprobante = acuse de recibo → silencio
+    // (no repetir el guion ni escalar por un acuse; espejo de closing_ack_silent).
+    // isConfirmation incluido: un "sí"/"dale" acá es "ya va", no una pregunta
+    // (hallazgo adversario: sin esto, el 2º "ok" del flujo más feliz escalaba).
+    if (isBareAck(text) || isFarewell(text) || isConfirmation(text)) {
+      return { reply: "", silent: true, escalateToOwner: false, ruleName: "transfer_ack_silent", tokensUsed: 0 };
+    }
+    // Anti-tragón: si el texto trae una pregunta ("?") o si el turno pasado YA
+    // respondimos transfer_ask_proof (o el nudge del cron), NO repetir el guion
+    // verbatim — ack cálido + escalar (el handoff pausa el bot; César responde).
+    // El bot repitió transfer_ask_proof ×2 a preguntas reales con la plata en la
+    // mano (caso 13-jul).
+    {
+      const lastRule = await getLastOutRule(phone, env.DB);
+      if (text.includes("?") || lastRule === "transfer_ask_proof" || lastRule === "auto_followup" || lastRule === "last_call") {
+        return {
+          reply:           T.transferQuestionHold(lang),
+          escalateToOwner: true,
+          ruleName:        "transfer_question_escalated",
+          tokensUsed:      0,
+        };
+      }
     }
     // El comprobante REAL es una FOTO (la captura el webhook). Acá llega TEXTO:
     // pedimos la foto para confirmar, sin asumir que ya la mandó (era el bug de

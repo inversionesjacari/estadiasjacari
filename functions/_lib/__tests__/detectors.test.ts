@@ -22,6 +22,8 @@ import {
   mentionsValleDeAngeles,
   detectPackageInquiry,
   detectPackageByAdPrice,
+  isTotalConfirmationQuestion,
+  extractStayDayPair,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -368,5 +370,105 @@ describe("isBeachProximityQuestion — proximidad al mar/playa (croquis de Tela,
     expect(isBeachProximityQuestion("queda lejos del aeropuerto?")).toBe(false);
     expect(isBeachProximityQuestion("Casa Marea está disponible?")).toBe(false);
     expect(isBeachProximityQuestion("¿cuántas cuadras al supermercado?")).toBe(false);
+  });
+});
+
+describe("isTotalConfirmationQuestion — pregunta del TOTAL con la plata en la mano (caso +504 9583-9796, 13-jul-2026)", () => {
+  it("reconoce la pregunta/confirmación del total (es/en) — incluye los 2 mensajes REALES del chat", () => {
+    // Los dos mensajes reales que el bot se tragó con transfer_ask_proof verbatim:
+    expect(isTotalConfirmationQuestion("Perfecto , ese es el total por las 2 noches  y 3 días  verdad ?")).toBe(true);
+    expect(isTotalConfirmationQuestion("Haaa OK perfecto y ahí cuanto seria el total a pagar en las fechas que necesito?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿ese es el total?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿cuál sería el precio final?")).toBe(true);
+    expect(isTotalConfirmationQuestion("el depósito es el total?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿eso es todo lo que pago?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿ya incluye la limpieza?")).toBe(true);
+    expect(isTotalConfirmationQuestion("es con todo incluido?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿cuánto falta por pagar?")).toBe(true);
+    expect(isTotalConfirmationQuestion("is that the total for the 2 nights?")).toBe(true);
+    expect(isTotalConfirmationQuestion("what's the total?")).toBe(true);
+    expect(isTotalConfirmationQuestion("does it include everything?")).toBe(true);
+  });
+  it("NO confunde 'total' de PERSONAS (headcount) ni el reporte de pago ya hecho", () => {
+    expect(isTotalConfirmationQuestion("en total somos 6 personas")).toBe(false);
+    expect(isTotalConfirmationQuestion("somos 8 en total")).toBe(false);
+    expect(isTotalConfirmationQuestion("el total de adultos sería 6")).toBe(false);
+    expect(isTotalConfirmationQuestion("ya pagué el total")).toBe(false);
+    expect(isTotalConfirmationQuestion("ya transferí el total de 5,350")).toBe(false);
+    expect(isTotalConfirmationQuestion("Transferencia")).toBe(false);
+    expect(isTotalConfirmationQuestion("Sería entrar el 17 y salida el 19")).toBe(false);
+    expect(isTotalConfirmationQuestion("ok perfecto")).toBe(false);
+  });
+  it("la PREGUNTA le gana al reporte de pago cuando vienen juntos (hallazgo adversario)", () => {
+    // El escenario EXACTO de la confusión del depósito: transfirió y pregunta si era el total.
+    expect(isTotalConfirmationQuestion("Ya transferí, ¿ese es el total verdad?")).toBe(true);
+    expect(isTotalConfirmationQuestion("Ya pagué el depósito, ¿cuánto falta por pagar?")).toBe(true);
+    expect(isTotalConfirmationQuestion("Ya hice la transferencia, ¿ese era el total?")).toBe(true);
+  });
+  it("pregunta de plata que MENCIONA al grupo SÍ dispara (el guard de headcount es estrecho)", () => {
+    expect(isTotalConfirmationQuestion("¿Cuánto sería el total por las 6 personas?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿cuánto es el total para 6 personas?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿El total incluye a los niños?")).toBe(true);
+  });
+  it("formas hondureñas comunes del total (hallazgo adversario)", () => {
+    expect(isTotalConfirmationQuestion("¿Cuánto le debo?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿Cuánto tengo que pagar?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿En cuánto me sale todo?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿El total es 5,350?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿Son 5,350 en total?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿Y el total cuánto sería?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿me confirma el total?")).toBe(true);
+    expect(isTotalConfirmationQuestion("¿Con la transferencia queda cancelado el total?")).toBe(true);
+  });
+  it("'incluye todo <cosa>' es AMENIDAD, no plata (hallazgo adversario)", () => {
+    expect(isTotalConfirmationQuestion("¿Incluye todo el equipo de cocina?")).toBe(false);
+    expect(isTotalConfirmationQuestion("¿incluye todo lo de la piscina?")).toBe(false);
+    expect(isTotalConfirmationQuestion("¿ya incluye todo?")).toBe(true);
+  });
+});
+
+describe("extractStayDayPair — par de días entrada/salida SIN mes (caso +504 9583-9796, 13-jul-2026)", () => {
+  const pair = (inDay: number, outDay: number, inMonth: number | null = null, outMonth: number | null = null) =>
+    ({ inDay, outDay, inMonth, outMonth });
+  it("extrae el par de días de las formas reales del chat (es/en)", () => {
+    // Los dos mensajes reales:
+    expect(extractStayDayPair("Sería entrar el 17 y salida el 19")).toEqual(pair(17, 19));
+    expect(extractStayDayPair("Del 17 al 19")).toEqual(pair(17, 19));
+    expect(extractStayDayPair("del 20 al 22")).toEqual(pair(20, 22));
+    expect(extractStayDayPair("desde el 17 hasta el 19")).toEqual(pair(17, 19));
+    expect(extractStayDayPair("entre el 3 y el 5")).toEqual(pair(3, 5));
+    expect(extractStayDayPair("llegamos el 17 y nos vamos el 19")).toEqual(pair(17, 19));
+    expect(extractStayDayPair("entrada el 24 y salida el 26")).toEqual(pair(24, 26));
+    expect(extractStayDayPair("from the 17th to the 19th")).toEqual(pair(17, 19));
+    // Cruce de mes ("del 30 al 2") es válido — la comparación contra el estado decide.
+    expect(extractStayDayPair("del 30 al 2")).toEqual(pair(30, 2));
+  });
+  it("el MES explícito se captura para cotejarlo contra el estado (hallazgo adversario)", () => {
+    // "¿del 17 al 19 de octubre?" con reserva en julio NO puede dar "¡Confirmado!".
+    expect(extractStayDayPair("del 17 de julio al 19")).toEqual(pair(17, 19, 7, null));
+    expect(extractStayDayPair("del 17 al 19 de octubre")).toEqual(pair(17, 19, null, 10));
+    expect(extractStayDayPair("del 17 de julio al 19 de julio")).toEqual(pair(17, 19, 7, 7));
+  });
+  it("la HORA anula por NÚMERO, no por span (hallazgos adversarios)", () => {
+    // Horarios de check-in/out — jamás son un par de días:
+    expect(extractStayDayPair("entramos a las 3 y salimos a las 11")).toBe(null);
+    expect(extractStayDayPair("entrada a las 3 y salida a las 11, ¿verdad?")).toBe(null);
+    expect(extractStayDayPair("¿el check in es a las 3 y el check out a las 11?")).toBe(null);
+    // …pero fechas + hora de llegada en el mismo mensaje SÍ dan el par:
+    expect(extractStayDayPair("Llegamos el 17 como a las 3 pm y salimos el 19")).toEqual(pair(17, 19));
+    expect(extractStayDayPair("entre el 3 y el 5 de la tarde")).toBe(null);
+    expect(extractStayDayPair("¿hay descuento del 10 al 15 por ciento?")).toBe(null);
+  });
+  it("NO extrae horas, headcount, edades ni números sueltos", () => {
+    expect(extractStayDayPair("de 3 a 5 pm")).toBe(null);
+    expect(extractStayDayPair("del 2 al 4 pm")).toBe(null);
+    expect(extractStayDayPair("de 17 a 19 personas")).toBe(null);
+    expect(extractStayDayPair("entre el 15 y el 17 huéspedes")).toBe(null);
+    expect(extractStayDayPair("somos 6 personas")).toBe(null);
+    expect(extractStayDayPair("el 17")).toBe(null);
+    expect(extractStayDayPair("llegamos como a las 3")).toBe(null);
+    expect(extractStayDayPair("del 17 al 17")).toBe(null);
+    expect(extractStayDayPair("del 45 al 50")).toBe(null);
+    expect(extractStayDayPair("Transferencia")).toBe(null);
   });
 });

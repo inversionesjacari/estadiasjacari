@@ -47,6 +47,7 @@ const HANDOFF_RULES = new Set<string>([
   "transfer_proof_received",
   "paypal_usd_requested",
   "escalar_humano",
+  "transfer_question_escalated", // pregunta sin respuesta determinística esperando comprobante → César la toma
 ]);
 
 interface QueueRow { phone: string; last_in_id: string | null; attempts: number; }
