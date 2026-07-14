@@ -23,6 +23,7 @@ import { getCleaningContacts, getSecurityContacts } from "../_lib/property-conta
 // Auditoría Sesión 2 — B1 doble booking
 import { refundPayPalCapture } from "../_lib/paypal-refund";
 import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
+import { overlapSlugs, slugPlaceholders } from "../_lib/slug-overlap";
 // Quote flow (bot WhatsApp con LLM) — para órdenes originadas vía WhatsApp
 import { parseWhatsAppCustomId } from "../_lib/paypal-checkout";
 import { sendTextMessage } from "../_lib/whatsapp";
@@ -489,17 +490,20 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         // pasar el cobro normalmente. Mejor un doble booking eventual (raro)
         // que rechazar pagos válidos por error de infraestructura.
         try {
+          // Slugs expandidos: el combo las-gemelas-tela ocupa brisa+marea y
+          // cada casa rompe el combo (ver slug-overlap.ts).
+          const blockSlugs = overlapSlugs(propertySlug);
           const overlap = await env.DB.prepare(
             `SELECT paypal_order_id, guest_email, guest_name, check_in, check_out
                FROM reservations
-              WHERE property_slug = ?
+              WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
                 AND status IN ('pending', 'confirmed')
                 AND paypal_order_id != ?
                 AND check_in < ?
                 AND check_out > ?
               LIMIT 1`,
           )
-            .bind(propertySlug, orderId, checkOut, checkIn)
+            .bind(...blockSlugs, orderId, checkOut, checkIn)
             .first<{
               paypal_order_id: string;
               guest_email: string | null;

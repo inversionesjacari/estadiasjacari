@@ -16,6 +16,7 @@
 // @ts-ignore — ical.js no publica tipos oficiales
 import ICAL from "ical.js";
 import { fetchWithTimeout, TIMEOUT } from "./fetch";
+import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 
 export type IcalEnvKey =
   | "AIRBNB_ICAL_VILLA_B11_PALMA_REAL"
@@ -131,18 +132,21 @@ export async function getBlockedDates(
     }
   }
 
-  // D1: reservas pending/confirmed del propio sitio
+  // D1: reservas pending/confirmed del propio sitio. Slugs expandidos: una
+  // reserva D1 de las-gemelas-tela debe bloquear casa-brisa/casa-marea (el
+  // iCal cruzado de LAS_GEMELAS solo cubre las reservas que Airbnb conoce).
   if (env.DB) {
     try {
       const todayIso = new Date().toISOString().slice(0, 10);
+      const blockSlugs = overlapSlugs(slug);
       const { results } = await env.DB.prepare(
         `SELECT check_in, check_out
            FROM reservations
-          WHERE property_slug = ?
+          WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
             AND status IN ('pending', 'confirmed')
             AND check_out >= ?`,
       )
-        .bind(slug, todayIso)
+        .bind(...blockSlugs, todayIso)
         .all<{ check_in: string; check_out: string }>();
 
       let d1Count = 0;

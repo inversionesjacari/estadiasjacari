@@ -27,6 +27,7 @@ import { BANK_HNL } from "./bank-transfer";
 import { buildQuote } from "./quote-builder";
 import { buildPricingMap } from "./kb-store";
 import { clearState, type ConversationStateRow } from "./quote-state";
+import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 import { T, asLang } from "./i18n";
 import { todayHn } from "./dates";
 
@@ -199,9 +200,10 @@ export async function processTransferReceipt(args: {
     let reservationId: number | null = null;
     if (accountOk || nameOk) {
       try {
+        const blockSlugs = overlapSlugs(property); // el combo las-gemelas ocupa brisa+marea y viceversa
         const overlap = await env.DB.prepare(
-          `SELECT id FROM reservations WHERE property_slug = ? AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
-        ).bind(property, checkOut, checkIn).first();
+          `SELECT id FROM reservations WHERE property_slug IN (${slugPlaceholders(blockSlugs)}) AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
+        ).bind(...blockSlugs, checkOut, checkIn).first();
         if (!overlap) {
           reservationId = await createTransferReservation({
             env, property, checkIn, checkOut, guestName, phone, status: "pending",
@@ -217,11 +219,13 @@ export async function processTransferReceipt(args: {
     return { ...escalateReview(`Chequeos fallaron${reservationId ? ` → reserva PENDIENTE #${reservationId} (por verificar)` : ""}: ${fails.join("; ")}`), tokensUsed: read.tokensUsed };
   }
 
-  // 6. Anti doble-reserva: ¿se ocuparon las fechas mientras tanto?
+  // 6. Anti doble-reserva: ¿se ocuparon las fechas mientras tanto? (slugs expandidos:
+  // una reserva de las-gemelas-tela bloquea el comprobante de casa-brisa/marea y viceversa)
   try {
+    const blockSlugs = overlapSlugs(property);
     const overlap = await env.DB.prepare(
-      `SELECT id FROM reservations WHERE property_slug = ? AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
-    ).bind(property, checkOut, checkIn).first();
+      `SELECT id FROM reservations WHERE property_slug IN (${slugPlaceholders(blockSlugs)}) AND status IN ('pending','confirmed') AND check_in < ? AND check_out > ? LIMIT 1`,
+    ).bind(...blockSlugs, checkOut, checkIn).first();
     if (overlap) {
       await logReceipt(env, { phone, r, property, checkIn, checkOut, expectedHnl, decision: "escalated", reason: "overlap: fechas ocupadas", reservationId: null });
       return { ...escalateReview(`Overlap: ${property} ${checkIn}→${checkOut} ya tomado`), tokensUsed: read.tokensUsed };

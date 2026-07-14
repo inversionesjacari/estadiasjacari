@@ -27,6 +27,7 @@
 import { T, type Lang } from "./i18n";
 import type { OwnerAlert } from "./owner-alerts";
 import type { PayPalRefundParams, PayPalRefundResult } from "./paypal-refund";
+import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 
 export interface WaCaptureInput {
   phone: string;          // dígitos E.164 sin '+' (formato del custom_id)
@@ -84,6 +85,10 @@ export async function handleWaCapture(
 
   const cliente = `${guestName ?? "(sin nombre)"} +${phone}`;
 
+  // Slugs que comparten inventario físico con el pedido (combo las-gemelas ↔
+  // brisa+marea): el chequeo de solape debe mirar TODOS, no solo el slug exacto.
+  const blockSlugs = overlapSlugs(propertySlug);
+
   /** ¿Este orderId ya tiene fila? (reintento de PayPal → ya lo procesamos entero:
    *  NO volver a reembolsar ni a mensajear). Fail-open: si la query falla, el
    *  INSERT OR IGNORE de abajo sigue deduplicando la fila. */
@@ -121,7 +126,7 @@ export async function handleWaCapture(
            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'whatsapp_bot', 'pending', ?, ?
             WHERE NOT EXISTS (
               SELECT 1 FROM reservations
-               WHERE property_slug = ?
+               WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
                  AND status IN ('pending', 'confirmed')
                  AND paypal_order_id != ?
                  AND check_in < ?
@@ -131,7 +136,7 @@ export async function handleWaCapture(
         .bind(
           propertySlug, checkIn, checkOut, guestName, guestEmail,
           phone, phone, orderId, amountUsd || null, rawBody, guests,
-          propertySlug, orderId, checkOut, checkIn,
+          ...blockSlugs, orderId, checkOut, checkIn,
         )
         .run();
       inserted = ins.meta?.changes ?? 0;
@@ -186,14 +191,14 @@ export async function handleWaCapture(
         .prepare(
           `SELECT paypal_order_id, check_in, check_out
              FROM reservations
-            WHERE property_slug = ?
+            WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
               AND status IN ('pending', 'confirmed')
               AND paypal_order_id != ?
               AND check_in < ?
               AND check_out > ?
             LIMIT 1`,
         )
-        .bind(propertySlug, orderId, checkOut, checkIn)
+        .bind(...blockSlugs, orderId, checkOut, checkIn)
         .first<{ paypal_order_id: string; check_in: string; check_out: string }>();
     } catch {
       overlap = null;

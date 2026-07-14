@@ -16,6 +16,7 @@
 import type { PropertySlug, City } from "./quote-extractor";
 import type { Lang } from "./i18n";
 import { capacityFit } from "./party-size";
+import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 
 /** Precios + capacidad por propiedad — single source of truth para el bot. */
 export interface PropertyPricing {
@@ -202,19 +203,21 @@ export async function buildQuote(
   const exceedsCapacity = capVerdict === "exceeds";
   const sharedBeds = capVerdict === "fits_shared_beds";
 
-  // Disponibilidad — verificar overlap con reservaciones D1 confirmed/pending
+  // Disponibilidad — verificar overlap con reservaciones D1 confirmed/pending.
+  // Slugs expandidos: el combo las-gemelas-tela ocupa brisa+marea y viceversa.
   let hasConflict = false;
   let conflictReason: string | undefined;
   try {
+    const blockSlugs = overlapSlugs(input.property);
     const conflict = await db
       .prepare(
         `SELECT COUNT(*) as cnt
            FROM reservations
-          WHERE property_slug = ?
+          WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
             AND status IN ('confirmed', 'pending')
             AND NOT (check_out <= ? OR check_in >= ?)`,
       )
-      .bind(input.property, input.checkIn, input.checkOut)
+      .bind(...blockSlugs, input.checkIn, input.checkOut)
       .first<{ cnt: number }>();
     if ((conflict?.cnt ?? 0) > 0) {
       hasConflict = true;

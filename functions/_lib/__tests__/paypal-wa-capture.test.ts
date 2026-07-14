@@ -219,3 +219,40 @@ describe("handleWaCapture — reintentos e I/O roto", () => {
     expect(res.ownerAlert).not.toBeNull();
   });
 });
+
+describe("handleWaCapture — cruce del combo Las Gemelas (slugs expandidos, GEMELAS-XBLOCK)", () => {
+  // El NOT EXISTS por slug EXACTO dejaba pasar la doble venta cruzada: una
+  // reserva de las-gemelas-tela no frenaba el pago de casa-marea ni al revés.
+  it("pago del combo las-gemelas-tela → el NOT EXISTS mira también casa-brisa y casa-marea", async () => {
+    const { db, inserts } = makeDb();
+    const refund = makeRefund();
+    const res = await handleWaCapture(
+      { db, refund: refund.fn },
+      { ...baseInput, propertySlug: "las-gemelas-tela", propertyName: "Las Gemelas de Tela" },
+    );
+    expect(res.outcome).toBe("reserved");
+    expect(inserts[0].sql).toContain("property_slug IN (?, ?, ?)");
+    expect(inserts[0].binds).toContain("casa-brisa");
+    expect(inserts[0].binds).toContain("casa-marea");
+  });
+
+  it("pago de casa-marea → el NOT EXISTS mira también el combo (marea bloquea gemelas y viceversa)", async () => {
+    const { db, inserts } = makeDb();
+    const refund = makeRefund();
+    await handleWaCapture(
+      { db, refund: refund.fn },
+      { ...baseInput, propertySlug: "casa-marea", propertyName: "Casa Marea" },
+    );
+    expect(inserts[0].sql).toContain("property_slug IN (?, ?)");
+    expect(inserts[0].binds).toContain("las-gemelas-tela");
+  });
+
+  it("pago de casa-brisa NO consulta casa-marea (casas separadas: brisa no bloquea marea)", async () => {
+    const { db, inserts } = makeDb();
+    const refund = makeRefund();
+    await handleWaCapture({ db, refund: refund.fn }, baseInput); // baseInput = casa-brisa
+    expect(inserts[0].sql).toContain("property_slug IN (?, ?)");
+    expect(inserts[0].binds).toContain("las-gemelas-tela");
+    expect(inserts[0].binds).not.toContain("casa-marea");
+  });
+});

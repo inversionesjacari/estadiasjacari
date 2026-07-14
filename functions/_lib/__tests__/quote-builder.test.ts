@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildQuote,
   computeDayPassHNL,
   addDayPass,
   applyVillaB11PackagePrice,
@@ -77,5 +78,52 @@ describe("applyVillaB11PackagePrice — Family pack / Love Trip (precio fijo L.5
   it("otra duración (no 2 noches) → NO aplica el precio fijo del paquete", () => {
     const q = applyVillaB11PackagePrice(baseQuote({ nights: 3, totalHNL: 7850 }));
     expect(q.totalHNL).toBe(7850);
+  });
+});
+
+// GEMELAS-XBLOCK (13-jul-2026): el chequeo de conflicto D1 de buildQuote filtraba
+// por slug EXACTO → una reserva de las-gemelas-tela no tumbaba la cotización de
+// casa-marea (mismas fechas) ni al revés. Estos tests fijan la expansión del combo.
+function makeConflictDb(cnt: number) {
+  const calls: { sql: string; binds: unknown[] }[] = [];
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind(...binds: unknown[]) {
+          calls.push({ sql, binds });
+          return { async first() { return { cnt }; } };
+        },
+      };
+    },
+  } as unknown as D1Database;
+  return { db, calls };
+}
+
+describe("buildQuote — cruce del combo Las Gemelas en el conflicto D1", () => {
+  const stay = { checkIn: "2026-08-15", checkOut: "2026-08-17" };
+
+  it("cotizar las-gemelas-tela consulta también casa-brisa y casa-marea; conflicto → no disponible", async () => {
+    const { db, calls } = makeConflictDb(1); // hay una reserva que pisa (p.ej. casa-marea sola)
+    const q = await buildQuote({ property: "las-gemelas-tela", guests: 8, ...stay }, db);
+    expect(q).not.toBeNull();
+    expect(q!.available).toBe(false);
+    expect(calls[0].sql).toContain("property_slug IN (?, ?, ?)");
+    expect(calls[0].binds).toContain("casa-brisa");
+    expect(calls[0].binds).toContain("casa-marea");
+  });
+
+  it("cotizar casa-marea consulta también el combo; reserva del combo → no disponible", async () => {
+    const { db, calls } = makeConflictDb(1);
+    const q = await buildQuote({ property: "casa-marea", guests: 4, ...stay }, db);
+    expect(q!.available).toBe(false);
+    expect(calls[0].binds).toContain("las-gemelas-tela");
+  });
+
+  it("cotizar casa-brisa NO consulta casa-marea (brisa no bloquea marea); sin conflicto → disponible", async () => {
+    const { db, calls } = makeConflictDb(0);
+    const q = await buildQuote({ property: "casa-brisa", guests: 4, ...stay }, db);
+    expect(q!.available).toBe(true);
+    expect(calls[0].binds).toContain("las-gemelas-tela");
+    expect(calls[0].binds).not.toContain("casa-marea");
   });
 });
