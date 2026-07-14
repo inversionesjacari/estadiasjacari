@@ -24,6 +24,9 @@ export const TERMINAL_RULES = new Set([
   // César; el followup NO debe nagear "¿pudiste transferir?" mientras la pregunta
   // sigue en manos del humano (caso +504 9583-9796, 13-jul-2026).
   "transfer_question_escalated",
+  // Pidió un HUMANO / se trabó en el clarify de pago → lo tomó César; no re-nagear
+  // (mismo caso +504 9583-9796, paso de método de pago).
+  "human_agent_requested", "payment_help_escalated",
 ]);
 
 /** Detecta si un texto tiene intención de pedir cotización / precio. */
@@ -383,6 +386,24 @@ export function isCallRequested(text: string): boolean {
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "");
   return /\b(me puede llamar|me pueden llamar|puede llamarme|pueden llamarme|que me llame|que me llamen|llamenme|llamame|me puede marcar|me pueden marcar|marquenme|prefiero una llamada|mejor una llamada|quiero una llamada|me podrian llamar|podrian llamarme)\b/.test(t);
+}
+
+/**
+ * Cliente pide que lo atienda una PERSONA / un humano (distinto de isCallRequested, que
+ * es pedir una LLAMADA). Incluye la frustración "no leen mis mensajes / esto es un bot":
+ * la respuesta es la misma → que un humano tome el chat. Caso +504 9583-9796 (13-jul):
+ * en pleno clarify de pago el cliente pidió una persona ("si me atiende una persona… para
+ * que realmente lean mis mensajes") y el bot repitió "elegí una opción" ignorándolo ×2.
+ * Determinístico → escala + pausa el bot (HANDOFF_RULES) para que lo tome un humano.
+ */
+export function isHumanAgentRequested(text: string): boolean {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return (
+    /\b(me atienda|me atiende|atienda|hablar|comunicar\w*|contactar\w*)\b[^.!?]{0,20}\b(una persona|persona|alguien|un humano|un agente|un asesor|asesor|humano|real|de verdad)\b/.test(t) ||
+    /\b(persona real|atencion personal|un humano|una persona real)\b/.test(t) ||
+    /\bno (leen|lees|lei|entienden)\b[^.!?]{0,20}\b(mis |los )?mensajes\b/.test(t) ||
+    /\b(esto es un bot|eres un bot|sos un bot|es un robot)\b/.test(t)
+  );
 }
 
 /**

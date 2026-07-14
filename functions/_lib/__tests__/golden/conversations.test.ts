@@ -34,6 +34,7 @@ import {
   detectPackageByAdPrice,
   isTotalConfirmationQuestion,
   extractStayDayPair,
+  isHumanAgentRequested,
   TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
@@ -891,6 +892,19 @@ describe("CHAT: lead de Tela — '¿está cerca del mar?' → croquis + guion (1
     expect(TELA_CROQUIS_URL).toBe(
       "https://estadiasjacari.com/images/las-gemelas-tela/croquis.jpg",
     );
+  });
+});
+describe("CHAT: +504 9583-9796 parte 1 — objeción de capacidad leída como 'sí' + pedido de humano tragado (13-jul-2026)", () => {
+  it("la objeción NO es confirmación (no debe saltar a cobrar; 'si'=if)", () => {
+    expect(isConfirmation("Nos gusta más la villa y sentimos que si nos ubicamos bien pero lastima que ud tiene ese límite, porque los niños que llevamos son pequeños, es mucho alquilar dos casa realmente")).toBe(false);
+  });
+  it("pedir un humano se detecta en cualquier estado (→ escala + pausa, no clarify)", () => {
+    expect(isHumanAgentRequested("si me atiende una persona me gustaría para que realmente lean mis mensajes")).toBe(true);
+    expect(isHumanAgentRequested("Creo que no leen los mensajes")).toBe(true);
+  });
+  it("el escalado a humano NO se re-nagea (está en TERMINAL_RULES)", () => {
+    expect(TERMINAL_RULES.has("human_agent_requested")).toBe(true);
+    expect(TERMINAL_RULES.has("payment_help_escalated")).toBe(true);
   });
 });
 describe("CHAT: +504 9583-9796 parte 2 — el paso de comprobante tragaba fechas y la pregunta del TOTAL (13-jul-2026)", () => {

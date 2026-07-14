@@ -77,6 +77,8 @@ const HANDOFF_RULES = new Set<string>([
   "escalar_humano",             // pidió hablar con un humano (rule-based)
   "event_inquiry_handoff",      // lead de EVENTO (Valle de Ángeles) → el equipo arma la propuesta
   "transfer_question_escalated", // pregunta sin respuesta determinística esperando comprobante → César la toma
+  "human_agent_requested",       // pidió una persona / "no leen mis mensajes" → lo toma un humano
+  "payment_help_escalated",      // se trabó en el clarify de pago → lo toma un humano
 ]);
 import type { IcalEnv } from "../_lib/availability";
 

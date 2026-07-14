@@ -24,6 +24,7 @@ import {
   detectPackageByAdPrice,
   isTotalConfirmationQuestion,
   extractStayDayPair,
+  isHumanAgentRequested,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -69,6 +70,26 @@ describe("isConfirmation — 'si' suele ser 'if', no 'sí'", () => {
     // Si el cliente objeta PERO igual dice un sí fuerte, es una confirmación real.
     expect(isConfirmation("sí, aunque es un poco caro, dale")).toBe(true);
     expect(isConfirmation("perfecto, me gusta pero quiero reservar")).toBe(true);
+  });
+});
+
+describe("isHumanAgentRequested — pide una persona / se frustra (caso +504 9583-9796, 13-jul-2026)", () => {
+  it("pedir un humano dispara (en cualquier estado escala + pausa)", () => {
+    expect(isHumanAgentRequested("si me atiende una persona me gustaría para que realmente lean mis mensajes")).toBe(true);
+    expect(isHumanAgentRequested("quiero hablar con una persona")).toBe(true);
+    expect(isHumanAgentRequested("me pueden comunicar con un agente")).toBe(true);
+    expect(isHumanAgentRequested("prefiero atención personal")).toBe(true);
+  });
+  it("'no leen mis mensajes' / 'esto es un bot' también (misma respuesta: un humano)", () => {
+    expect(isHumanAgentRequested("Creo que no leen los mensajes")).toBe(true);
+    expect(isHumanAgentRequested("esto es un bot?")).toBe(true);
+  });
+  it("NO dispara con chatter normal de reserva (sin falsos positivos)", () => {
+    expect(isHumanAgentRequested("quiero reservar la villa")).toBe(false);
+    expect(isHumanAgentRequested("a qué hora es el check in?")).toBe(false);
+    expect(isHumanAgentRequested("las casas están conectadas?")).toBe(false);
+    expect(isHumanAgentRequested("me pasás las fotos?")).toBe(false);
+    expect(isHumanAgentRequested("sí, dale, transferencia")).toBe(false);
   });
 });
 

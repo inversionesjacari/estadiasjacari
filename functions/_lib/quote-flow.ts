@@ -62,6 +62,7 @@ import {
   isBedroomPhotoRequest,
   isCallRequested,
   isCapacityQuestion,
+  isHumanAgentRequested,
   isCardChoice,
   isCheckinTimeRequest,
   isConfirmation,
@@ -560,6 +561,23 @@ export async function handleQuoteIncoming(
       reply:           T.longTermInquiry(lang),
       escalateToOwner: true,
       ruleName:        "long_term_inquiry",
+      tokensUsed:      0,
+    };
+  }
+
+  // ── Cliente pide un HUMANO / dice que "no leen sus mensajes" → escalar YA ──────────
+  // "que me atienda una persona", "hablar con alguien", "esto es un bot", "no leen mis
+  // mensajes". El paso de pago/comprobante es 100% determinístico y se lo TRAGABA: en el
+  // caso +504 9583-9796 el cliente pidió una persona ×2 en pleno clarify de pago y el bot
+  // repitió "elegí una opción". Determinístico, ANTES del LLM y en CUALQUIER estado;
+  // escala + pausa (HANDOFF_RULES) para que lo tome un humano — que es lo único que pidió.
+  if (isHumanAgentRequested(text)) {
+    return {
+      reply: lang === "en"
+        ? "Of course — someone from our team will take it from here to help you personally 🙏"
+        : "¡Con gusto! Te atiende alguien de nuestro equipo enseguida para ayudarte personalmente 🙏",
+      escalateToOwner: true,
+      ruleName:        "human_agent_requested",
       tokensUsed:      0,
     };
   }
@@ -1811,6 +1829,24 @@ async function handlePaymentMethodChoice(
           : "¡Sin problema! 🙏 Quedamos a la orden — si más adelante querés reservar o ver otra opción, escribime con gusto. ¡Que tengás buen día!",
         escalateToOwner: false,
         ruleName:        "payment_declined",
+        tokensUsed:      0,
+      };
+    }
+    // Anti-bucle: si YA le mandamos el clarify la vuelta pasada y SIGUE sin elegir método
+    // —y no pidió fotos ni rechazó— NO repetimos la MISMA aclaración: el cliente tiene una
+    // duda/pregunta que el clarify no resuelve. El bot machacaba "elegí una opción" ×3
+    // ignorando preguntas reales y hasta el pedido de un humano (caso +504 9583-9796). Lo
+    // pasa a un humano (el handoff pausa el bot), igual que el anti-tragón del paso de
+    // comprobante (transfer_question_escalated). Damos UN clarify de gracia (un "ok" suelto
+    // tras "¿cómo preferís pagar?" merece el recordatorio, no un escalado prematuro).
+    const lastRule = await getLastOutRule(phone, env.DB);
+    if (lastRule === "ask_payment_method_clarify") {
+      return {
+        reply: lang === "en"
+          ? "Let me bring in a teammate to help you finish up here 🙏 One moment."
+          : "Dejame que un compañero del equipo te ayude a cerrar esto 🙏 Un momento.",
+        escalateToOwner: true,
+        ruleName:        "payment_help_escalated",
         tokensUsed:      0,
       };
     }
