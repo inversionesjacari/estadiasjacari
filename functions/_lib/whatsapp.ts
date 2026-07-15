@@ -645,6 +645,8 @@ export interface CatalogProduct {
   availability?: string;
   /** URL de la imagen PRINCIPAL que Meta tiene guardada para el producto. */
   imageUrl?: string;
+  /** Imágenes ADICIONALES (galería que se ve al abrir la tarjeta; máx 10). */
+  additionalImageUrls?: string[];
   /** "approved" / "pending" / "rejected" / "outdated" — elegibilidad para product messages. */
   reviewStatus?: string;
   /** "DIRECT_UPLOAD_SUCCESS" / "OUTDATED" / "FETCH_FAILED"… — estado de la imagen que causa el "obsoleto". */
@@ -686,7 +688,7 @@ export async function listCatalogProducts(
   const headers = { Authorization: `Bearer ${token}` };
   const products: CatalogProduct[] = [];
   let url: string | undefined =
-    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability,image_url,review_status,image_fetch_status,visibility&limit=200`;
+    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability,image_url,additional_image_urls,review_status,image_fetch_status,visibility&limit=200`;
 
   // Tope de 5 páginas (1000 productos) — de sobra para un catálogo de 7 casas;
   // solo existe para no quedar en loop infinito si Meta devuelve paging raro.
@@ -710,6 +712,7 @@ export async function listCatalogProducts(
         name?: string;
         availability?: string;
         image_url?: string;
+        additional_image_urls?: string[];
         review_status?: string;
         image_fetch_status?: string;
         visibility?: string;
@@ -736,6 +739,7 @@ export async function listCatalogProducts(
         name: item.name,
         availability: item.availability,
         imageUrl: item.image_url,
+        additionalImageUrls: item.additional_image_urls,
         reviewStatus: item.review_status,
         imageFetchStatus: item.image_fetch_status,
         visibility: item.visibility,
@@ -755,23 +759,32 @@ export interface UpdateProductImageResult {
 }
 
 /**
- * Cambia la imagen PRINCIPAL de UN producto del catálogo (nodo ProductItem):
- * `POST /{productItemId}` con `image_url`. Síncrono — Meta responde éxito/fallo
- * al toque (a diferencia del items_batch, que es asíncrono con handles). Requiere
- * un token con `catalog_management` (el de WhatsApp NO sirve, da #100).
+ * Cambia la imagen PRINCIPAL y (opcional) la GALERÍA de UN producto del catálogo
+ * (nodo ProductItem): `POST /{productItemId}` con `image_url` + `additional_image_urls`.
+ * Síncrono — Meta responde éxito/fallo al toque. Requiere un token con
+ * `catalog_management` (el de WhatsApp NO sirve, da #100).
  *
- * @param productItemId  fbid del producto (campo `id` de listCatalogProducts, NO el retailer_id)
- * @param imageUrl       URL absoluta y pública de la nueva portada (debe responder 200)
- * @param token          System User token con catalog_management (env CATALOG_ADMIN_TOKEN)
+ * @param productItemId       fbid del producto (campo `id` de listCatalogProducts, NO el retailer_id)
+ * @param imageUrl            URL absoluta y pública de la portada principal (debe responder 200)
+ * @param token               System User token con catalog_management (env CATALOG_ADMIN_TOKEN)
+ * @param additionalImageUrls hasta 10 URLs adicionales (la galería al abrir la tarjeta). Opcional.
  */
 export async function updateProductImage(
   productItemId: string,
   imageUrl: string,
   token: string,
+  additionalImageUrls?: string[],
 ): Promise<UpdateProductImageResult> {
   if (!token) return { ok: false, error: "Falta token de catálogo" };
   if (!productItemId) return { ok: false, error: "Falta productItemId" };
   if (!imageUrl) return { ok: false, error: "Falta imageUrl" };
+
+  const params: Record<string, string> = { image_url: imageUrl };
+  if (additionalImageUrls && additionalImageUrls.length > 0) {
+    // Los arrays en el Graph API (form-urlencoded) van como JSON string. Meta
+    // permite hasta 10 imágenes adicionales; cortamos defensivamente.
+    params.additional_image_urls = JSON.stringify(additionalImageUrls.slice(0, 10));
+  }
 
   let resp: Response;
   try {
@@ -784,7 +797,7 @@ export async function updateProductImage(
           // Las escrituras del Graph API son form-urlencoded, no JSON.
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({ image_url: imageUrl }).toString(),
+        body: new URLSearchParams(params).toString(),
       },
       TIMEOUT.CRITICAL,
     );
