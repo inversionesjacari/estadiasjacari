@@ -643,6 +643,8 @@ export interface CatalogProduct {
   name?: string;
   /** "in stock" / "out of stock" etc. según lo reporta Meta. */
   availability?: string;
+  /** URL de la imagen PRINCIPAL que Meta tiene guardada para el producto. */
+  imageUrl?: string;
 }
 
 export interface ListCatalogProductsResult {
@@ -661,18 +663,24 @@ export interface ListCatalogProductsResult {
  */
 export async function listCatalogProducts(
   env: WhatsAppEnv,
+  tokenOverride?: string,
 ): Promise<ListCatalogProductsResult> {
-  if (!env.WHATSAPP_ACCESS_TOKEN) {
-    return { ok: false, error: "Falta env var WHATSAPP_ACCESS_TOKEN" };
+  // El token de WhatsApp (whatsapp_business_messaging) NO puede leer el Catalog
+  // API — devuelve #100. Para eso se pasa `tokenOverride` = un System User token
+  // con `catalog_management` (env CATALOG_ADMIN_TOKEN). Sin override, usa el de
+  // WhatsApp (sirve para confirmar el catalog_id aunque el listado falle).
+  const token = tokenOverride || env.WHATSAPP_ACCESS_TOKEN;
+  if (!token) {
+    return { ok: false, error: "Falta token (WHATSAPP_ACCESS_TOKEN o CATALOG_ADMIN_TOKEN)" };
   }
   if (!env.WHATSAPP_CATALOG_ID) {
     return { ok: false, error: "Falta env var WHATSAPP_CATALOG_ID" };
   }
 
-  const headers = { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` };
+  const headers = { Authorization: `Bearer ${token}` };
   const products: CatalogProduct[] = [];
   let url: string | undefined =
-    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability&limit=200`;
+    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability,image_url&limit=200`;
 
   // Tope de 5 páginas (1000 productos) — de sobra para un catálogo de 7 casas;
   // solo existe para no quedar en loop infinito si Meta devuelve paging raro.
@@ -690,7 +698,7 @@ export async function listCatalogProducts(
     }
 
     let parsed: {
-      data?: Array<{ id: string; retailer_id?: string; name?: string; availability?: string }>;
+      data?: Array<{ id: string; retailer_id?: string; name?: string; availability?: string; image_url?: string }>;
       paging?: { next?: string };
       error?: { message?: string; code?: number };
     };
@@ -712,12 +720,79 @@ export async function listCatalogProducts(
         retailerId: item.retailer_id ?? "",
         name: item.name,
         availability: item.availability,
+        imageUrl: item.image_url,
       });
     }
     url = parsed.paging?.next;
   }
 
   return { ok: true, products };
+}
+
+export interface UpdateProductImageResult {
+  ok: boolean;
+  /** Respuesta cruda de Meta (para diagnosticar la forma exacta si algo falla). */
+  metaResponse?: unknown;
+  error?: string;
+}
+
+/**
+ * Cambia la imagen PRINCIPAL de UN producto del catálogo (nodo ProductItem):
+ * `POST /{productItemId}` con `image_url`. Síncrono — Meta responde éxito/fallo
+ * al toque (a diferencia del items_batch, que es asíncrono con handles). Requiere
+ * un token con `catalog_management` (el de WhatsApp NO sirve, da #100).
+ *
+ * @param productItemId  fbid del producto (campo `id` de listCatalogProducts, NO el retailer_id)
+ * @param imageUrl       URL absoluta y pública de la nueva portada (debe responder 200)
+ * @param token          System User token con catalog_management (env CATALOG_ADMIN_TOKEN)
+ */
+export async function updateProductImage(
+  productItemId: string,
+  imageUrl: string,
+  token: string,
+): Promise<UpdateProductImageResult> {
+  if (!token) return { ok: false, error: "Falta token de catálogo" };
+  if (!productItemId) return { ok: false, error: "Falta productItemId" };
+  if (!imageUrl) return { ok: false, error: "Falta imageUrl" };
+
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(
+      `${GRAPH_API_BASE}/${productItemId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // Las escrituras del Graph API son form-urlencoded, no JSON.
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ image_url: imageUrl }).toString(),
+      },
+      TIMEOUT.CRITICAL,
+    );
+  } catch (err) {
+    return { ok: false, error: `Timeout/red actualizando imagen: ${(err as Error).message}` };
+  }
+
+  const bodyText = await resp.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: `JSON inválido: ${bodyText.slice(0, 200)}` };
+  }
+
+  if (!resp.ok || (parsed as { error?: unknown })?.error) {
+    const e = (parsed as { error?: { message?: string; code?: number } }).error;
+    return {
+      ok: false,
+      metaResponse: parsed,
+      error: e ? `Meta error ${e.code ?? "?"}: ${e.message ?? "desconocido"}` : `HTTP ${resp.status}`,
+    };
+  }
+
+  // Meta responde `{ "success": true }` al actualizar un ProductItem.
+  return { ok: true, metaResponse: parsed };
 }
 
 /**
