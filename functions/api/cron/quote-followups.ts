@@ -23,6 +23,9 @@
 
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { sendTextMessage } from "../../_lib/whatsapp";
+import { sendTextTemplate } from "../../_lib/whatsapp-templates";
+import { logOutboundTemplate } from "../../_lib/wa-log";
+import { buildTemplateFollowupVars } from "../../_lib/followup-template";
 import { PROPERTY_PRICING } from "../../_lib/quote-builder";
 import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "../../_lib/availability";
 import { isNotInterested } from "../../_lib/quote-flow";
@@ -37,6 +40,10 @@ interface Env extends AvailabilityEnv {
   CRON_SECRET?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
+  /** B4 — se prende ("1") cuando el template `seguimiento_cotizacion` está
+   *  APPROVED en Meta. Apagado ⇒ la rama de followup >24h ni se evalúa (evita
+   *  envíos rechazados mientras el template está en revisión). */
+  FOLLOWUP_TEMPLATE_ENABLED?: string;
 }
 
 interface StateRow {
@@ -435,11 +442,126 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
     lastCall.push({ phone: "—", sent: false, error: `lastCall: ${(err as Error).message}` });
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // B4 — FOLLOWUP FUERA DE LA VENTANA DE 24h (template `seguimiento_cotizacion`).
+  // Las dos ramas de arriba solo alcanzan al lead DENTRO de las 24h (texto
+  // libre). Pasadas 24h la ventana se cierra y el ÚNICO canal es un template
+  // aprobado. Un solo toque por lead (Meta penaliza las cadenas de re-engagement):
+  // se marca template_followup_sent_at haya salido o no, igual que el último aviso.
+  // Gate por env: la rama ni corre hasta que César prenda FOLLOWUP_TEMPLATE_ENABLED
+  // (al aprobarse el template), para no acumular envíos rechazados mientras está
+  // en revisión.
+  // ════════════════════════════════════════════════════════════════════════
+  const templateFollowup: Array<{ phone: string; sent: boolean; kind?: string; error?: string }> = [];
+  if (env.FOLLOWUP_TEMPLATE_ENABLED === "1") {
+    try {
+      // Ventana 28–48h: el piso de 28h da ~4h de separación del "último aviso"
+      // (que dispara a 20–24h) para no encimar dos re-engagements ni matchear el
+      // mismo lead en el mismo tick. El techo es el TTL del state (48h): pasado
+      // eso la fila se borra (cleanupExpired) y perdemos propiedad/fechas para
+      // armar el template. ⚠️ Límite conocido v1: leads fríos >48h NO se alcanzan
+      // (necesitaría TTL a 7 días + selección por mensajes — follow-up).
+      const tf = await env.DB.prepare(
+        `SELECT phone, state, data
+           FROM conversation_state
+          WHERE state IN ('quote_provided','awaiting_payment_method','awaiting_transfer_proof','awaiting_paypal_capture')
+            AND template_followup_sent_at IS NULL
+            AND updated_at <= datetime('now','-28 hours')
+            AND expires_at > datetime('now')
+            AND phone NOT IN (SELECT phone FROM bot_pauses)
+          LIMIT 20`,
+      ).all<StateRow>();
+
+      for (const row of tf.results ?? []) {
+        let data: Record<string, unknown> = {};
+        if (row.data) { try { data = JSON.parse(row.data) as Record<string, unknown>; } catch { /* {} */ } }
+
+        // Marcar SIEMPRE (una sola oportunidad por lead), como el último aviso.
+        const markDone = async () => {
+          try { await env.DB.prepare(`UPDATE conversation_state SET template_followup_sent_at = datetime('now') WHERE phone = ?`).bind(row.phone).run(); } catch { /* best-effort */ }
+        };
+
+        // (1) Desinterés en el último mensaje → no molestar (y no gastar un template).
+        let lastIn = "";
+        try {
+          const r = await env.DB.prepare(
+            `SELECT body FROM whatsapp_messages WHERE from_phone = ? AND direction = 'in' ORDER BY created_at DESC, id DESC LIMIT 1`,
+          ).bind(row.phone).first<{ body: string | null }>();
+          lastIn = r?.body ?? "";
+        } catch { /* best-effort */ }
+        if (lastIn && isNotInterested(lastIn)) { await markDone(); templateFollowup.push({ phone: row.phone, sent: false, kind: "skip_not_interested" }); continue; }
+
+        // (2) Conversación cerrada/derivada/escalada → no insistir.
+        const lastOutRule = await lastRealOutRule(row.phone, env.DB);
+        if (lastOutRule && TERMINAL_RULES.has(lastOutRule)) { await markDone(); templateFollowup.push({ phone: row.phone, sent: false, kind: `skip_${lastOutRule}` }); continue; }
+
+        // (3) Ya tiene reserva activa/futura → no re-enganchar.
+        let hasActiveReservation = false;
+        try {
+          const rv = await env.DB.prepare(
+            `SELECT 1 FROM reservations WHERE (guest_phone_normalized = ? OR guest_phone = ?) AND status IN ('pending','confirmed') AND check_out >= date('now','-1 day') LIMIT 1`,
+          ).bind(row.phone, row.phone).first();
+          hasActiveReservation = !!rv;
+        } catch { /* best-effort: ante error NO bloqueamos */ }
+        if (hasActiveReservation) { await markDone(); templateFollowup.push({ phone: row.phone, sent: false, kind: "skip_active_reservation" }); continue; }
+
+        // Nombre del contacto para {{1}}.
+        let profileName: string | null = null;
+        try {
+          const c = await env.DB.prepare(`SELECT profile_name FROM whatsapp_contacts WHERE phone = ?`).bind(row.phone).first<{ profile_name: string | null }>();
+          profileName = c?.profile_name ?? null;
+        } catch { /* best-effort */ }
+
+        const vars = buildTemplateFollowupVars(data, profileName);
+        if (!vars) { await markDone(); templateFollowup.push({ phone: row.phone, sent: false, kind: "skip_no_quote_data" }); continue; }
+
+        if (dryRun) { templateFollowup.push({ phone: row.phone, sent: false, kind: "template(dry)" }); continue; }
+
+        // CLAIM ANTES de enviar: marcar template_followup_sent_at de forma atómica
+        // y solo enviar si ESTE tick lo ganó (changes==1). Un template de MARKETING
+        // no se manda dos veces (Meta penaliza las cadenas de re-engagement) — marcar
+        // primero evita (a) que dos ticks concurrentes lo manden 2×, y (b) que un
+        // fallo del UPDATE post-envío lo re-dispare cada 10 min. Trade-off consciente:
+        // si el envío falla (Meta 500/timeout), NO se reintenta (one-shot); el fallo
+        // queda visible en la card "📬 Salud de entrega" para que César lo retome a mano.
+        let claimed = false;
+        try {
+          const c = await env.DB.prepare(
+            `UPDATE conversation_state SET template_followup_sent_at = datetime('now') WHERE phone = ? AND template_followup_sent_at IS NULL`,
+          ).bind(row.phone).run();
+          claimed = (c.meta?.changes ?? 0) > 0;
+        } catch { claimed = false; }
+        if (!claimed) { templateFollowup.push({ phone: row.phone, sent: false, kind: "skip_claim" }); continue; }
+
+        const sr = await sendTextTemplate("seguimiento_cotizacion", row.phone, [vars.name, vars.property, vars.dates], env);
+        await logOutboundTemplate(env.DB, {
+          fromPhone: env.WHATSAPP_PHONE_NUMBER_ID!,
+          toPhone: row.phone,
+          rule: "template_followup",
+          summary: `🔁 Seguimiento >24h — ${vars.property} (${vars.dates})`,
+          reservationId: null,
+          ok: sr.ok,
+          messageId: sr.messageId ?? null,
+          error: sr.error ?? null,
+        });
+        templateFollowup.push({ phone: row.phone, sent: sr.ok, kind: "template", error: sr.ok ? undefined : sr.error });
+      }
+    } catch (err) {
+      templateFollowup.push({ phone: "—", sent: false, error: `templateFollowup: ${(err as Error).message}` });
+    }
+  }
+
   return json({
     ok: true,
     candidates: rows.length,
     sent: results.filter((r) => r.sent).length,
     lastCall: { processed: lastCall.length, sent: lastCall.filter((r) => r.sent).length, detail: lastCall },
+    templateFollowup: {
+      enabled: env.FOLLOWUP_TEMPLATE_ENABLED === "1",
+      processed: templateFollowup.length,
+      sent: templateFollowup.filter((r) => r.sent).length,
+      detail: templateFollowup,
+    },
     dryRun,
     results,
   });

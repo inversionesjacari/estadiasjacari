@@ -219,6 +219,10 @@ interface MetaMessage {
     button_reply?: { id?: string; title?: string };
     list_reply?: { id?: string; title?: string };
   };
+  // Presente cuando el huésped TOCA un botón quick-reply de un TEMPLATE (ej. el
+  // followup B4 "Sí, me interesa"/"Ya no, gracias"). Llega como type "button"
+  // (distinto de "interactive", que es para mensajes interactivos no-template).
+  button?: { text?: string; payload?: string };
   contacts?: Array<{
     name?: { formatted_name?: string; first_name?: string };
     phones?: Array<{ phone?: string; wa_id?: string }>;
@@ -422,6 +426,16 @@ async function processIncomingMessage(
       return;
     }
     bodyText = mapped;
+  } else if (msg.type === "button") {
+    // Quick-reply de un TEMPLATE (followup B4 y futuros). El texto visible del
+    // botón ("Sí, me interesa" / "Ya no, gracias") es español natural que los
+    // detectors YA entienden (isNotInterested/isConfirmation) → lo dejamos fluir
+    // como texto por el mismo pipeline, sin bifurcar. Sin texto → escala.
+    bodyText = msg.button?.text?.trim();
+    if (!bodyText) {
+      await handleMediaMessage(msg, contacts, env);
+      return;
+    }
   } else if (msg.type !== "text") {
     // Audio/imagen/video/documento/sticker: guardamos el archivo (para verlo en
     // el inbox) y escalamos a César. El bot no interpreta media.

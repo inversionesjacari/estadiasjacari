@@ -470,7 +470,7 @@ export function isLegitimacyQuestion(text: string): boolean {
 export function isFarewell(text: string): boolean {
   const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
   return (
-    /^((muchas |mil )?gracias|ya no gracias|no,? gracias|ok,? gracias|okay gracias|listo,? gracias|esta bien,? gracias|gracias igualmente|igualmente|adios|nos vemos|hasta luego|hasta pronto|bye|goodbye|thank you|thanks|ty)[.,!\s🙏👍🙂😊]*$/.test(t) ||
+    /^((muchas |mil )?gracias|ya no,? gracias|no,? gracias|ok,? gracias|okay gracias|listo,? gracias|esta bien,? gracias|gracias igualmente|igualmente|adios|nos vemos|hasta luego|hasta pronto|bye|goodbye|thank you|thanks|ty)[.,!\s🙏👍🙂😊]*$/.test(t) ||
     // Un "no" simple, o "no" + una razón corta + "gracias", o "no" + despedida —
     // cierres reales que el ancla de arriba no cubre por tener texto extra en
     // medio ("No, pues son nuestros días libres, gracias"; "No, hasta luego"; "No"

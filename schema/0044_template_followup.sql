@@ -1,0 +1,21 @@
+-- 0044_template_followup.sql
+--
+-- B4 — followup FUERA de la ventana de 24h de WhatsApp.
+--
+-- Las 2 ramas actuales de quote-followups.ts (early followup + último aviso)
+-- solo alcanzan al lead DENTRO de las 24h (texto libre). Pasadas 24h la ventana
+-- se cierra y el único canal es un TEMPLATE aprobado (`seguimiento_cotizacion`).
+-- Esta columna marca que ya se mandó ESE template una sola vez por conversación
+-- (Meta penaliza las cadenas de re-engagement): sin ella, cada tick del cron lo
+-- reenviaría. NULL = todavía no se envió.
+--
+-- ⚠️ Aplicar UNA sola vez (mismo patrón que 0014/0017/0026): SQLite no soporta
+-- ADD COLUMN IF NOT EXISTS y re-ejecutar da "duplicate column name" (wrangler NO
+-- lo silencia). Cada migración numerada se corre una vez, en orden.
+--
+-- ⚙️ Para ENCENDER B4 (después de aplicar esto y de que Meta apruebe el template
+-- `seguimiento_cotizacion`): en Cloudflare Pages → Settings → Environment
+-- variables (environment Production) agregar  FOLLOWUP_TEMPLATE_ENABLED = 1.
+-- Sin esa var, la rama de followup >24h ni se evalúa (no envía nada).
+
+ALTER TABLE conversation_state ADD COLUMN template_followup_sent_at TEXT;

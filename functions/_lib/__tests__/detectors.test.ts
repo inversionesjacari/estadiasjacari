@@ -226,6 +226,12 @@ describe("isFarewell — 'no' suelto o con texto extra no se reconocía como cie
     expect(isFarewell("no tengo tarjeta, solo efectivo")).toBe(false);
     expect(isFarewell("no me llegó la ubicación")).toBe(false);
   });
+  // El botón "Ya no, gracias" del template de followup (B4) llega como texto —
+  // debe reconocerse como cierre (antes "ya no, gracias" con coma no matcheaba).
+  it("'ya no, gracias' (botón opt-out del followup) es cierre, con o sin coma", () => {
+    expect(isFarewell("Ya no, gracias")).toBe(true);
+    expect(isFarewell("ya no gracias")).toBe(true);
+  });
 });
 
 describe("isEventInquiry — eventos (Valle de Ángeles) vs estadías (ads Jacarí eventos, 9-jul-2026)", () => {
