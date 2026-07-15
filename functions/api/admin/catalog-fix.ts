@@ -68,6 +68,10 @@ interface PlanRow {
   plannedImage: string;
   found: boolean;
   needsChange: boolean;
+  /** Elegibilidad para la tarjeta nativa: si NO es approved/published/success, cae a fallback. */
+  reviewStatus?: string;
+  imageFetchStatus?: string;
+  visibility?: string;
 }
 
 /** Lista el catálogo con el token de catálogo y arma el plan portada-actual→planeada. */
@@ -111,6 +115,9 @@ async function buildPlan(env: Env): Promise<
       plannedImage,
       found: Boolean(prod),
       needsChange: Boolean(prod) && prod!.imageUrl !== plannedImage,
+      reviewStatus: prod?.reviewStatus,
+      imageFetchStatus: prod?.imageFetchStatus,
+      visibility: prod?.visibility,
     };
   });
   return { ok: true, plan, products: listed.products ?? [] };

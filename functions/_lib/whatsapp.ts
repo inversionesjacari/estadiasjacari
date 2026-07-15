@@ -645,6 +645,12 @@ export interface CatalogProduct {
   availability?: string;
   /** URL de la imagen PRINCIPAL que Meta tiene guardada para el producto. */
   imageUrl?: string;
+  /** "approved" / "pending" / "rejected" / "outdated" — elegibilidad para product messages. */
+  reviewStatus?: string;
+  /** "DIRECT_UPLOAD_SUCCESS" / "OUTDATED" / "FETCH_FAILED"… — estado de la imagen que causa el "obsoleto". */
+  imageFetchStatus?: string;
+  /** "published" / "staging" — si no está published, no sale en la tarjeta. */
+  visibility?: string;
 }
 
 export interface ListCatalogProductsResult {
@@ -680,7 +686,7 @@ export async function listCatalogProducts(
   const headers = { Authorization: `Bearer ${token}` };
   const products: CatalogProduct[] = [];
   let url: string | undefined =
-    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability,image_url&limit=200`;
+    `${GRAPH_API_BASE}/${env.WHATSAPP_CATALOG_ID}/products?fields=id,retailer_id,name,availability,image_url,review_status,image_fetch_status,visibility&limit=200`;
 
   // Tope de 5 páginas (1000 productos) — de sobra para un catálogo de 7 casas;
   // solo existe para no quedar en loop infinito si Meta devuelve paging raro.
@@ -698,7 +704,16 @@ export async function listCatalogProducts(
     }
 
     let parsed: {
-      data?: Array<{ id: string; retailer_id?: string; name?: string; availability?: string; image_url?: string }>;
+      data?: Array<{
+        id: string;
+        retailer_id?: string;
+        name?: string;
+        availability?: string;
+        image_url?: string;
+        review_status?: string;
+        image_fetch_status?: string;
+        visibility?: string;
+      }>;
       paging?: { next?: string };
       error?: { message?: string; code?: number };
     };
@@ -721,6 +736,9 @@ export async function listCatalogProducts(
         name: item.name,
         availability: item.availability,
         imageUrl: item.image_url,
+        reviewStatus: item.review_status,
+        imageFetchStatus: item.image_fetch_status,
+        visibility: item.visibility,
       });
     }
     url = parsed.paging?.next;
