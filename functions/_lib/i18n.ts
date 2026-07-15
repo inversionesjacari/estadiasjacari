@@ -241,6 +241,64 @@ export const T = {
       ? "Perfect, thank you! 🙌 I've passed your info to our events team — they'll write to you right here shortly to put together a proposal made just for you. 🌿"
       : "¡Perfecto, mil gracias! 🙌 Ya le pasé tu información a nuestro equipo de eventos — te van a escribir por acá en breve para armarte una propuesta a tu medida. 🌿",
 
+  // Etiqueta legible del tipo de evento (para el intake/estimado). "tu {label}" es
+  // género-neutro a propósito ("tu boda", "tu evento corporativo") — evita el/la.
+  eventTypeLabel: (l: Lang, type: "boda" | "xv" | "corporativo" | "social"): string => {
+    if (l === "en") {
+      return type === "boda" ? "wedding"
+        : type === "xv" ? "quinceañera (XV)"
+        : type === "corporativo" ? "corporate event"
+        : "event";
+    }
+    return type === "boda" ? "boda"
+      : type === "xv" ? "quinceañera"
+      : type === "corporativo" ? "evento corporativo"
+      : "evento";
+  },
+
+  // Intake cuando YA sabemos el tipo (lo dijo en el 1er mensaje): no lo re-preguntamos
+  // (anti-repetición), solo pedimos fecha + personas para armar el "desde".
+  eventIntakeWithType: (l: Lang, typeLabel: string): string =>
+    l === "en"
+      ? `How exciting! 🎉 For your ${typeLabel} at our Valle de Ángeles venue we'll put together a custom proposal. Just tell me:\n\n1️⃣ Around what date?\n2️⃣ Roughly how many guests?`
+      : `¡Qué emoción! 🎉 Para tu ${typeLabel} en nuestro espacio de Valle de Ángeles te armamos una propuesta a medida. Contame:\n\n1️⃣ ¿Para qué fecha aproximada?\n2️⃣ ¿Cuántas personas estiman?`,
+
+  // Turno 2 del flujo de eventos: da el "DESDE" (piso comunicable — nunca precio
+  // cerrado), informa que es solo renta del espacio + hospedaje opcional, y deriva al
+  // equipo. `desde` viene ya formateado ("L.31,800"). Con typeLabel/pax cuando los
+  // conocemos; sin ellos, el "desde" genérico por piso. El bot NUNCA confirma el
+  // precio final de un evento — de ahí "el precio final lo confirma nuestro equipo".
+  eventEstimate: (
+    l: Lang,
+    opts: { typeLabel?: string | null; pax?: number | null; desde: string },
+  ): string => {
+    const hasPax = typeof opts.pax === "number" && opts.pax > 0;
+    if (l === "en") {
+      const forWhat = opts.typeLabel
+        ? `For your ${opts.typeLabel}${hasPax ? ` for ~${opts.pax} guests` : ""}, renting`
+        : "Renting";
+      const scope = opts.typeLabel
+        ? `the space at our Valle de Ángeles venue starts *from ${opts.desde}*`
+        : `the space at our Valle de Ángeles venue starts *from ${opts.desde}*, depending on the type of event and how many guests`;
+      return (
+        `Perfect! 🎉 ${forWhat} ${scope} — a preliminary estimate; our team confirms the final price based on the exact date and details.\n\n` +
+        `ℹ️ We rent the space only: you bring your own catering, décor and DJ. If you also need lodging, we can arrange that too 🏡.\n\n` +
+        `I've passed your info to our events team — they'll write to you right here shortly to close the details. 🌿`
+      );
+    }
+    const forWhat = opts.typeLabel
+      ? `Para tu ${opts.typeLabel}${hasPax ? ` de ~${opts.pax} personas` : ""}, el alquiler`
+      : "El alquiler";
+    const scope = opts.typeLabel
+      ? `del espacio en nuestro Valle de Ángeles va *desde ${opts.desde}*`
+      : `del espacio en nuestro Valle de Ángeles va *desde ${opts.desde}*, según el tipo de evento y cuántas personas sean`;
+    return (
+      `¡Perfecto! 🎉 ${forWhat} ${scope} — es un estimado preliminar; el precio final lo confirma nuestro equipo según la fecha exacta y los detalles.\n\n` +
+      `ℹ️ Alquilamos solo el espacio: vos traés el catering, la decoración y el DJ a tu gusto. Si además necesitás hospedaje, también lo armamos 🏡.\n\n` +
+      `Ya le pasé tu info a nuestro equipo de eventos — te escriben por acá en breve para cerrar los detalles. 🌿`
+    );
+  },
+
   // PAQUETES de marketing (9-jul-2026). "Family pack"/"Love Trip" (Villa B11):
   // precio fijo, se puede comunicar directo. "Friends Trip" (Las Gemelas + day
   // pass): el precio varía por adultos/niños y día de semana — se pide el

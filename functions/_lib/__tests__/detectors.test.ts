@@ -25,6 +25,8 @@ import {
   isTotalConfirmationQuestion,
   extractStayDayPair,
   isHumanAgentRequested,
+  detectEventType,
+  extractEventGuestCount,
 } from "../detectors";
 
 // Cada caso de acá es un BUG REAL que ya vimos (ver references/patrones-de-fallo.md).
@@ -497,5 +499,106 @@ describe("extractStayDayPair — par de días entrada/salida SIN mes (caso +504 
     expect(extractStayDayPair("del 17 al 17")).toBe(null);
     expect(extractStayDayPair("del 45 al 50")).toBe(null);
     expect(extractStayDayPair("Transferencia")).toBe(null);
+  });
+});
+
+// EVENTOS (Valle de Ángeles): clasificar el tipo y extraer el # de invitados para
+// elegir el "desde" correcto (ver event-pricing.ts). Solo se llaman DENTRO del flujo
+// de eventos, ya gateado por isEventInquiry.
+describe("detectEventType — clasifica el tipo de evento", () => {
+  it("boda gana (mayor precio) sobre las demás señales", () => {
+    expect(detectEventType("quiero cotizar una boda")).toBe("boda");
+    expect(detectEventType("es para mi wedding")).toBe("boda");
+    expect(detectEventType("nuestro matrimonio en diciembre")).toBe("boda");
+    // boda mencionada junto a "fiesta" → sigue siendo boda (precedencia)
+    expect(detectEventType("una gran fiesta de boda")).toBe("boda");
+  });
+
+  it("XV / quinceañera", () => {
+    expect(detectEventType("los XV de mi hija")).toBe("xv");
+    expect(detectEventType("una quinceañera")).toBe("xv");
+    expect(detectEventType("es para los 15 años de mi niña")).toBe("xv");
+  });
+
+  it("corporativo", () => {
+    expect(detectEventType("un evento corporativo")).toBe("corporativo");
+    expect(detectEventType("a corporate event")).toBe("corporativo");
+    expect(detectEventType("una conferencia de la empresa")).toBe("corporativo");
+    expect(detectEventType("un lanzamiento de producto")).toBe("corporativo");
+  });
+
+  it("social = el resto de celebraciones", () => {
+    expect(detectEventType("un cumpleaños")).toBe("social");
+    expect(detectEventType("el aniversario de mis papás")).toBe("social");
+    expect(detectEventType("una graduación")).toBe("social");
+    expect(detectEventType("un baby shower")).toBe("social");
+    expect(detectEventType("la despedida de soltera")).toBe("social");
+    expect(detectEventType("un bautizo")).toBe("social");
+  });
+
+  it("sin señal de tipo → null (el bot da el 'desde' genérico igual)", () => {
+    expect(detectEventType("quiero información del espacio")).toBeNull();
+    expect(detectEventType("para el 15 de marzo, unas 80 personas")).toBeNull();
+    expect(detectEventType("Valle de Ángeles")).toBeNull();
+  });
+
+  // Revisión adversaria 15-jul-2026: "enlace" en WhatsApp = link/URL, no "enlace
+  // matrimonial" → no debe clasificar como boda (mostraría el 'desde' más caro).
+  it("'enlace' (link) NO es boda; 'enlace matrimonial' SÍ (bug revisión adversaria)", () => {
+    expect(detectEventType("me pasás el enlace de la ubicación?")).not.toBe("boda");
+    expect(detectEventType("mándame el enlace de pago")).not.toBe("boda");
+    expect(detectEventType("es para nuestro enlace matrimonial")).toBe("boda");
+  });
+
+  // Revisión adversaria 15-jul-2026: un aniversario es SOCIAL aunque diga "15 años"
+  // o "bodas de plata" → antes caía en xv/boda e inflaba el 'desde'.
+  it("aniversario es social aunque nombre '15 años' o 'bodas de plata' (bug revisión adversaria)", () => {
+    expect(detectEventType("celebrar nuestro aniversario de 15 años")).toBe("social");
+    expect(detectEventType("nuestros 15 años de casados")).toBe("social");
+    expect(detectEventType("bodas de plata")).toBe("social");
+    // pero unos XV reales siguen siendo xv (no hay "aniversario"/"casados")
+    expect(detectEventType("los 15 años de mi hija")).toBe("xv");
+  });
+});
+
+describe("extractEventGuestCount — # de invitados sin confundir fechas/años/precios", () => {
+  it("número pegado a una palabra de personas", () => {
+    expect(extractEventGuestCount("somos como 80 personas")).toBe(80);
+    expect(extractEventGuestCount("unos 100 invitados")).toBe(100);
+    expect(extractEventGuestCount("60 pax aprox")).toBe(60);
+    expect(extractEventGuestCount("calculo unas 50 personas")).toBe(50);
+  });
+
+  it("verbo de conteo + número", () => {
+    expect(extractEventGuestCount("somos 50")).toBe(50);
+    expect(extractEventGuestCount("seremos unos 40")).toBe(40);
+    expect(extractEventGuestCount("vamos a ser 120")).toBe(120);
+  });
+
+  it("cuantificador femenino 'unas' + condicional 'seríamos' (bug revisión adversaria)", () => {
+    // "personas" es femenino → "unas" es la forma natural; antes solo veía "unos".
+    expect(extractEventGuestCount("seremos unas 40")).toBe(40);
+    expect(extractEventGuestCount("somos unas 50")).toBe(50);
+    expect(extractEventGuestCount("seríamos unos 60")).toBe(60);
+    // sigue anclado a un verbo: "faltan unos 40 días" NO es headcount
+    expect(extractEventGuestCount("faltan unos 40 días para la boda")).toBeNull();
+  });
+
+  it("rango → toma el mayor (banda conservadora)", () => {
+    expect(extractEventGuestCount("entre 60 y 80 personas")).toBe(80);
+    expect(extractEventGuestCount("de 60 a 80 invitados")).toBe(80);
+  });
+
+  it("NO confunde una fecha, un año ni un precio con el headcount", () => {
+    expect(extractEventGuestCount("para el 15 de marzo")).toBeNull();
+    expect(extractEventGuestCount("en 2027")).toBeNull();
+    expect(extractEventGuestCount("vi la oferta de L.6700")).toBeNull();
+    expect(extractEventGuestCount("el sábado 22")).toBeNull();
+    expect(extractEventGuestCount("una boda")).toBeNull();
+  });
+
+  it("frase mixta fecha + personas → solo el headcount", () => {
+    expect(extractEventGuestCount("una boda para 80 personas el 15 de marzo")).toBe(80);
+    expect(extractEventGuestCount("el 3 de mayo, somos 45")).toBe(45);
   });
 });

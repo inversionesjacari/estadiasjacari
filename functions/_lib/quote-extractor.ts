@@ -51,6 +51,13 @@ export interface QuoteData {
    *  no se guardan acá — son gratis y no cuentan, ver party-size.ts). */
   adults?: number | null;
   children?: number | null;
+  /** EVENTOS (Valle de Ángeles): tipo detectado (boda/xv/corporativo/social) y # de
+   *  invitados, persistidos entre el turno 1 (intake) y el turno 2 (estimado + handoff)
+   *  para que el "desde" y la captura para César no dependan de que el cliente lo
+   *  repita todo en el mismo mensaje. NO son cotizables por noche — el venue de eventos
+   *  no tiene tarifa de estadía (ver event-pricing.ts). */
+  eventType?: "boda" | "xv" | "corporativo" | "social" | null;
+  eventGuests?: number | null;
 }
 
 export interface ExtractionResult {

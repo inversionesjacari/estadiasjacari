@@ -886,7 +886,8 @@ async function processIncomingMessage(
         reason: quoteResult?.ruleName === "long_term_inquiry"
           ? "Renta a LARGO PLAZO (estadía de un mes o más) — el bot lo pausó para que vos evalúes la propuesta a medida con el cliente."
           : quoteResult?.ruleName === "event_inquiry_handoff"
-          ? "🎉 Lead de EVENTO (Valle de Ángeles) — el bot le preguntó tipo/fecha/personas (mirá el chat) y pausó la conversación para que el equipo mande la propuesta."
+          ? (quoteResult.ownerSummary
+              ?? "🎉 Lead de EVENTO (Valle de Ángeles) — el bot capturó tipo/fecha/personas (mirá el chat) y le dio un rango; pausó para que el equipo cierre la propuesta.")
           : quoteResult?.ruleName === "out_of_scope_redirect"
           ? "Fuera de alcance — el bot redirigió al cliente a tu WhatsApp (+504 9764-9035). Escribile vos si querés cerrarlo."
           : quoteResult?.ruleName === "existing_guest_escalation"

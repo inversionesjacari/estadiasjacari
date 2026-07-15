@@ -35,13 +35,16 @@ import {
   isTotalConfirmationQuestion,
   extractStayDayPair,
   isHumanAgentRequested,
+  detectEventType,
+  extractEventGuestCount,
   TERMINAL_RULES,
 } from "../../detectors";
 import { normalizePhone } from "../../phone";
 import { T, stayRangeHuman } from "../../i18n";
 import { PROPERTY_PRICING, computeDayPassHNL } from "../../quote-builder";
 import { getBedroomPhotos, TELA_CROQUIS_URL } from "../../property-photos";
-import { locationFromText, isEventInquiryTurn2, gemelasOverSized } from "../../quote-flow";
+import { locationFromText, isEventInquiryTurn2, gemelasOverSized, buildEventOwnerSummary } from "../../quote-flow";
+import { eventDesdeHnl, formatEventHnl } from "../../event-pricing";
 import { fechaEnPalabras } from "../../conversational-bot";
 import { extractPartySize, partyHeadcount, mergeFriendsTripParty, capacityFit } from "../../party-size";
 import { findAlternativeDates, formatWindowHuman } from "../../suggest-dates";
@@ -491,6 +494,15 @@ describe("CHAT: Lead de eventos Valle de Ángeles — detección y handoff", () 
     expect(isEventInquiry("una casa en Tela del 7 al 9 para celebrar un cumple")).toBe(false);
     // "cumpleaños"/"celebrar" sueltos, sin contexto de venue → tampoco
     expect(isEventInquiry("es el cumpleaños de mi esposa")).toBe(false);
+    // 🐛 Revisión adversaria 15-jul: "alquilar/rentar" son también los verbos de renta
+    // de una CASA. Un pedido de estadía que menciona la ocasión SIN nombrar ciudad
+    // (click de anuncio) no debe robarle el lead al cotizador de noches (invariante #3).
+    expect(isEventInquiry("quiero alquilar una casa para el cumpleaños de mi mamá, seríamos 6, del 15 al 17 de agosto")).toBe(false);
+    expect(isEventInquiry("busco rentar una casa para celebrar mi aniversario, somos 8")).toBe(false);
+    expect(isEventInquiry("rentar un apartamento para mi graduación")).toBe(false);
+    // pero pedir el ESPACIO/venue (sin sustantivo de casa) SÍ es evento
+    expect(isEventInquiry("alquilan el espacio para un cumpleaños?")).toBe(true);
+    expect(isEventInquiry("busco un lugar para celebrar un cumpleaños")).toBe(true);
   });
 
   it("Valle de Ángeles nombrado gana SIEMPRE (aun a mitad de otra conversación)", () => {
@@ -562,6 +574,97 @@ describe("CHAT: Lead de eventos Valle de Ángeles — detección y handoff", () 
     // en vez de caer al LLM → out_of_scope (grupo grande, sin ciudad en alcance).
     expect(isEventInquiry("70 personas")).toBe(false);
     expect(isEventInquiryTurn2(undefined, "event_inquiry_intake")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAPACIDAD NUEVA — Eventos Valle de Ángeles: el bot da un "DESDE" (15-jul-2026)
+//
+// Antes el flujo de eventos solo escalaba sin precio. Ahora cotiza un rango
+// "desde" (piso comunicable), captura tipo/personas y escala con un resumen para
+// César. La INVARIANTE DURA a blindar: el bot NUNCA cierra el precio final de un
+// evento — el flujo solo tiene intake + handoff, jamás un estado de pago. La rate
+// card en sí está blindada en event-pricing.test.ts; acá blindamos el hilo del
+// chat (intake con tipo → "desde" → captura → handoff) con las piezas puras.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CHAT: Eventos Valle de Ángeles — intake, 'desde' y handoff (no cierra precio)", () => {
+  it("turno 1 con el tipo ya dicho NO lo re-pregunta (anti-repetición), pide fecha + personas", () => {
+    // "quiero cotizar una boda 🎉" → tipo=boda; el intake con tipo pide solo 2 datos.
+    expect(detectEventType("Vi su anuncio de Valle de Ángeles, quiero cotizar una boda 🎉")).toBe("boda");
+    const withType = T.eventIntakeWithType("es", T.eventTypeLabel("es", "boda"));
+    expect(withType).toContain("boda");
+    expect(withType).toContain("1️⃣");
+    expect(withType).toContain("2️⃣");
+    expect(withType).not.toContain("3️⃣"); // ya no re-pregunta el tipo
+    // en inglés también existe
+    expect(T.eventIntakeWithType("en", T.eventTypeLabel("en", "boda"))).toContain("wedding");
+  });
+
+  it("turno 1 sin tipo → el intake completo de 3 datos (comportamiento previo intacto)", () => {
+    expect(detectEventType("Hola, info del espacio de Valle de Ángeles porfa")).toBeNull();
+    for (const l of ["es", "en"] as const) {
+      expect(T.eventIntake(l)).toContain("1️⃣");
+      expect(T.eventIntake(l)).toContain("3️⃣");
+    }
+  });
+
+  it("turno 2: combina el tipo del turno 1 + las personas de ahora → 'desde' tallado", () => {
+    // "Sería para el 15 de marzo, unas 80 personas": sin tipo en el mensaje (usa el
+    // guardado=boda), pax=80. eventDesdeHnl(boda,80)=31,800 (el editorial del doc §2.4).
+    expect(detectEventType("Sería para el 15 de marzo, unas 80 personas")).toBeNull();
+    expect(extractEventGuestCount("Sería para el 15 de marzo, unas 80 personas")).toBe(80);
+    const desde = eventDesdeHnl("boda", 80);
+    expect(desde).toBe(31800);
+    const reply = T.eventEstimate("es", { typeLabel: T.eventTypeLabel("es", "boda"), pax: 80, desde: formatEventHnl(desde) });
+    expect(reply).toContain("desde");
+    expect(reply).toContain(formatEventHnl(31800)); // "L.31,800"
+    expect(reply).toContain("preliminar");
+    expect(reply).toContain("confirma"); // el equipo confirma el precio final
+    expect(reply).toContain("solo el espacio"); // renta del espacio, cliente trae proveedores
+    expect(reply).toContain("hospedaje");
+  });
+
+  it("los 'desde' por tipo salen bien al cliente (XV y corporativo/social)", () => {
+    expect(eventDesdeHnl("xv", 60)).toBe(20700);
+    // corporativo de 30 pax en la referencia (sáb·baja) = L.10,100, arriba del piso:
+    // el número tallado al tamaño puede superar el "desde" genérico, y está bien.
+    expect(eventDesdeHnl("corporativo", 30)).toBeGreaterThanOrEqual(9000);
+    // sin personas → el "desde" editorial por tipo (doc §2.4)
+    expect(eventDesdeHnl("boda")).toBe(31800);
+    expect(eventDesdeHnl("corporativo")).toBe(9000);
+    expect(eventDesdeHnl("social")).toBe(9000);
+  });
+
+  it("🔒 INVARIANTE: el estimado NUNCA cierra el precio (nada de pago/depósito/reserva confirmada)", () => {
+    for (const l of ["es", "en"] as const) {
+      const reply = T.eventEstimate(l, { typeLabel: T.eventTypeLabel(l, "boda"), pax: 80, desde: formatEventHnl(31800) });
+      // Siempre defiere el número final al equipo; jamás invita a pagar un evento.
+      expect(/reserva confirmada|dep[oó]sito|link de pago|a transferir|confirmado el total/i.test(reply)).toBe(false);
+      expect(/preliminar|preliminary/i.test(reply)).toBe(true);
+    }
+    // El handoff es TERMINAL (no re-nagea) y NO es un estado de pago: el flujo de
+    // eventos solo emite intake/handoff, nunca quote_provided ni awaiting_payment_*.
+    expect(TERMINAL_RULES.has("event_inquiry_handoff")).toBe(true);
+  });
+
+  it("el resumen para César lleva tipo + personas + el 'desde' y avisa que NO se cerró precio", () => {
+    const summary = buildEventOwnerSummary("boda", 80, 31800);
+    expect(summary).toContain("boda");
+    expect(summary).toContain("80");
+    expect(summary).toContain(formatEventHnl(31800));
+    expect(summary).toMatch(/NO cerr|confirm/i);
+    // sin datos → sigue siendo útil (tipo sin definir, pax s/d)
+    const bare = buildEventOwnerSummary(null, null, 9000);
+    expect(bare).toContain("sin definir");
+    expect(bare).toContain("pax s/d");
+    // grupo grande (>100): lo marca como fuera de tabla para que César arme a medida
+    expect(buildEventOwnerSummary("boda", 150, 31800)).toContain(">100");
+  });
+
+  it("una boda chica cuesta menos que el editorial de 80 pax → no ancla de más", () => {
+    // 20 pax boda: el 'desde' es tallado a su tamaño, por debajo del editorial 31,800.
+    expect(eventDesdeHnl("boda", 20)).toBeLessThan(31800);
+    expect(eventDesdeHnl("boda", 20)).toBeGreaterThanOrEqual(9000);
   });
 });
 

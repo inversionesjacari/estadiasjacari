@@ -7,6 +7,8 @@
 // blindado por functions/_lib/__tests__/detectors.test.ts — si tocás una regex,
 // el test te avisa si rompés un caso real ya visto.
 //
+// (Solo import de TIPO — event-pricing.ts también es un módulo puro/hoja, sin ciclo.)
+import type { EventType } from "./event-pricing";
 
 /**
  * Reglas "terminales": el bot ya cerró / derivó / cobró esta conversación. Ni el
@@ -585,7 +587,78 @@ export function isEventInquiry(text: string): boolean {
   // Débiles: requieren además contexto de venue/alquiler de espacio.
   const weak  = /\b(eventos?|cumplean\w*|cumple|brunch|celebracion(es)?|celebrar|graduacion(es)?|aniversario)\b/.test(t);
   const venue = /\b(salon(es)?|espacio|local|lugar|alquil\w*|rent\w*|jardin|venue)\b/.test(t);
-  return weak && venue;
+  // Veto de ALOJAMIENTO: "alquilar/rentar" son también los verbos de renta de una
+  // CASA, así que un pedido de estadía que menciona la ocasión ("alquilar una casa
+  // para el cumpleaños") NO debe robarle el lead al cotizador de noches. Si nombra
+  // un sustantivo de alojamiento, es estadía, no evento (los tipos FUERTES —boda/
+  // corporativo— ya salieron arriba y no pasan por acá). Preserva "¿alquilan el
+  // ESPACIO/para eventos?" (sin sustantivo de casa → sigue siendo evento).
+  // "quinta" queda FUERA a propósito: en Honduras suele ser una finca/quinta que se
+  // alquila justo PARA eventos → no es señal de estadía.
+  const lodging = /\b(casas?|apartamento?s?|apartamentos?|deptos?|departamentos?|villas?|cabanas?|habitacion\w*|alojamiento?s?|hospedaje|airbnb)\b/.test(t);
+  return weak && venue && !lodging;
+}
+
+/**
+ * Clasifica el TIPO de evento a partir del texto (para elegir el multiplicador y el
+ * "desde" correctos — ver event-pricing.ts). Determinístico y en capas: boda gana
+ * sobre todo (mayor precio), luego XV, luego corporativo, y el resto de celebraciones
+ * cae en "social" (el multiplicador 1.0 base). `null` si no reconoce ningún tipo →
+ * el handler da el "desde" genérico (piso L9,000) y escala igual. Solo se llama DENTRO
+ * del flujo de eventos (ya gateado por isEventInquiry/turno de evento), así que
+ * palabras genéricas como "fiesta"/"celebración" acá sí significan un evento social.
+ */
+export function detectEventType(text: string): EventType | null {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // ANIVERSARIO primero: un aniversario es un evento SOCIAL aunque nombre "boda"
+  // ("bodas de plata/oro") o "15 años" ("aniversario de 15 años", "15 años de
+  // casados") — no es una boda ni unos XV. Sin esto, "15 anos" caía en xv y "bodas
+  // de plata" en boda, inflando el "desde".
+  if (/\baniversario\w*\b|\banos de casados\b|\bbodas? de (plata|oro|rubi\w*|diamante|perla|coral|marfil)\b/.test(t)) {
+    return "social";
+  }
+  // "enlace" quedó FUERA de boda a propósito: en WhatsApp "enlace" = link/URL.
+  // Incluirlo clasificaba "me pasás el enlace?" como boda → el "desde" más caro a
+  // quien pedía un link. La forma legítima "enlace matrimonial" igual cae en boda
+  // vía `matrimoni\w*` (cubre matrimonio Y matrimonial).
+  if (/\b(bodas?|weddings?|matrimoni\w*|casamiento\w*)\b/.test(t)) return "boda";
+  if (/\b(xv|quincean\w*|quince anos|15 anos|sweet\s*(15|sixteen))\b/.test(t)) return "xv";
+  if (/\b(corporativ\w*|corporate|empresarial\w*|conferencia\w*|capacitacion\w*|lanzamiento\w*|convencion\w*|team\s*building|reunion(es)? de (trabajo|empresa))\b/.test(t)) {
+    return "corporativo";
+  }
+  if (/\b(cumplean\w*|cumple|aniversario\w*|graduacion\w*|baby\s*shower|despedida\w*|bautizo\w*|bautismo\w*|primera comunion|fiesta\w*|celebracion(es)?|brunch|reunion(es)?|social)\b/.test(t)) {
+    return "social";
+  }
+  return null;
+}
+
+/**
+ * Extrae el # de invitados de un mensaje de evento ("80 personas", "unos 100
+ * invitados", "somos 50", "entre 60 y 80"). Conservador a propósito: exige que el
+ * número esté PEGADO a una palabra de personas o a un verbo de conteo, para NO
+ * confundir una FECHA ("el 15 de marzo" → 15), un AÑO ("en 2027") ni un PRECIO con
+ * el headcount. En un rango toma el MAYOR (banda conservadora). `null` si no hay una
+ * señal clara → el bot usa el "desde" editorial por tipo. Devuelve el conteo aunque
+ * supere 100 (el que cotiza decide: >100 no cabe en la rate card → editorial + escala).
+ */
+export function extractEventGuestCount(text: string): number | null {
+  const t = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const person = "(?:personas?|invitad[oa]s?|gente|asistentes?|comensales?|pax|people|guests?)";
+  const candidates: number[] = [];
+  // "80 personas" / "100 invitados" / "60 pax"
+  for (const m of t.matchAll(new RegExp(`(\\d{1,4})\\s*${person}\\b`, "g"))) {
+    candidates.push(Number(m[1]));
+  }
+  // "somos 50" / "seremos unos 80" / "seremos unas 40" / "seríamos 60" / "vamos a ser 40".
+  // El cuantificador acepta masculino Y femenino (unos/unas — "personas" es femenino).
+  // Van anclados a un VERBO de conteo a propósito (no una forma suelta tipo "unas 80"),
+  // para no confundir "faltan unos 40 días" con el headcount.
+  for (const m of t.matchAll(/\b(?:somos|seremos|seran|seriamos|vamos a ser|calculo|calculamos|estimo|estimamos)\s+(?:como\s+|unos?\s+|unas?\s+|mas o menos\s+|alrededor de\s+|aprox\w*\s+)?(\d{1,4})\b/g)) {
+    candidates.push(Number(m[1]));
+  }
+  const valid = candidates.filter((n) => n >= 1 && n <= 2000);
+  if (valid.length === 0) return null;
+  return Math.max(...valid);
 }
 
 export type PackageType = "family_pack" | "love_trip" | "friends_trip";

@@ -83,6 +83,8 @@ import {
   isUnverifiedQuoteClaim,
   isEventInquiry,
   mentionsValleDeAngeles,
+  detectEventType,
+  extractEventGuestCount,
   detectPackageInquiry,
   detectPackageByAdPrice,
   isTotalConfirmationQuestion,
@@ -117,6 +119,13 @@ export {
   nightsBetween,
 } from "./detectors";
 import { resolveDates } from "./date-parser";
+import {
+  eventDesdeHnl,
+  formatEventHnl,
+  EVENT_CAPACITY_MAX,
+  EVENT_PRICE_FLOOR_HNL,
+} from "./event-pricing";
+import type { EventType } from "./event-pricing";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Detectores puros → ahora viven en ./detectors (importados/re-exportados arriba).
@@ -229,6 +238,26 @@ export function isEventInquiryTurn2(
   lastOutRule: string,
 ): boolean {
   return state === "event_inquiry" || lastOutRule === "event_inquiry_intake";
+}
+
+/** Resumen estructurado del lead de evento para la alerta/email a César (NO se le
+ *  manda al cliente). El chat del inbox ya tiene el texto crudo; esto es la
+ *  destilación para que no arranque de cero. Función pura para testearla. `paxRaw` es
+ *  el conteo REAL capturado (incluso >100, que no cabe en la rate card); `desdeHnl` es
+ *  el piso que el bot le mostró al cliente. Deja explícito que el bot NO cerró precio. */
+export function buildEventOwnerSummary(
+  type: EventType | null,
+  paxRaw: number | null | undefined,
+  desdeHnl: number,
+): string {
+  const paxTxt = typeof paxRaw === "number" && paxRaw > 0 ? `~${paxRaw} pax` : "pax s/d";
+  const oversize =
+    typeof paxRaw === "number" && paxRaw > EVENT_CAPACITY_MAX ? " ⚠️ >100 (fuera de tabla)" : "";
+  return (
+    `🎉 Lead de EVENTO (Valle de Ángeles) · tipo: ${type ?? "sin definir"} · ${paxTxt}${oversize} · ` +
+    `el bot le dijo "desde" ${formatEventHnl(desdeHnl)} (preliminar). ` +
+    `NO cerró precio — confirmá el final con el cliente.`
+  );
 }
 
 /** Las Gemelas de Tela (`las-gemelas-tela`) = las DOS casas juntas, el producto de
@@ -361,6 +390,10 @@ export interface QuoteFlowResult {
    *  sendButtonsMessage en vez de sendTextMessage. Un tap vuelve como texto canónico
    *  (ver button-map.ts) → mismo pipeline determinístico; el texto sigue de fallback. */
   buttons?: ButtonReply[];
+  /** Resumen ESTRUCTURADO para César cuando se escala (hoy: lead de evento con
+   *  tipo/pax/"desde" ya capturados). El webhook lo anexa a la razón de la alerta/email
+   *  para que no arranque de cero. Es info interna — nunca se le manda al cliente. */
+  ownerSummary?: string;
 }
 
 export interface QuoteFlowEnv extends WorkersAIEnv, PayPalEnv, AvailabilityEnv {
@@ -397,28 +430,50 @@ export async function handleQuoteIncoming(
 
   // ── EVENTOS (Valle de Ángeles) — flujo aparte del de estadías ──────────────
   // El venue de Valle de Ángeles se promociona SOLO para eventos (bodas,
-  // cumpleaños, corporativos — ads "Jacarí eventos", jul-2026). El bot NO cotiza
-  // eventos: junta tipo + fecha aproximada + personas en UNA pregunta y deriva
-  // al equipo (escalación + pausa vía HANDOFF_RULES del webhook). Determinístico
-  // y PRIMERO que todo: "quiero info para una boda" jamás debe caer al cotizador
-  // de noches ni a out_of_scope, y en estado event_inquiry ningún otro handler
-  // (fotos/ubicación/teléfono) debe robarse la respuesta del cliente.
+  // cumpleaños, corporativos — ads "Jacarí eventos", jul-2026). El bot cotiza
+  // eventos con un "DESDE" (piso comunicable — NUNCA un precio cerrado), captura
+  // tipo/personas y deriva al equipo (escalación + pausa vía HANDOFF_RULES del
+  // webhook; César confirma el precio final). Determinístico y PRIMERO que todo:
+  // "quiero info para una boda" jamás debe caer al cotizador de noches ni a
+  // out_of_scope, y en estado event_inquiry ningún otro handler (fotos/ubicación/
+  // teléfono) debe robarse la respuesta del cliente. Regla dura: este flujo solo
+  // tiene intake + handoff — no hay estado de pago para eventos → el bot no puede
+  // cerrar el precio de un evento aunque el LLM quisiera (ver event-pricing.ts).
 
-  // Turno 2: ya preguntamos los 3 datos → sea cual sea su respuesta, derivar al
-  // equipo (el detalle queda en el chat del inbox y en la alerta) y cerrar. Nos
-  // anclamos en el estado Y en la última regla del bot: si el intake fue lo último
-  // que dijimos, esta respuesta es la respuesta al evento aunque una webhook
-  // concurrente haya pisado el estado (si no, se contradecía con out_of_scope). El
-  // `||` corta antes de consultar la DB cuando el estado ya está intacto.
+  // Turno 2: respondió al intake → le damos el "desde" con lo que tengamos (tipo/pax
+  // de este mensaje o del turno 1 persistido) y derivamos al equipo con un resumen
+  // estructurado (César no arranca de cero). Nos anclamos en el estado Y en la última
+  // regla del bot: si el intake fue lo último que dijimos, esta respuesta es la
+  // respuesta al evento aunque una webhook concurrente haya pisado el estado (si no,
+  // se contradecía con out_of_scope). El `||` corta antes de consultar la DB cuando
+  // el estado ya está intacto.
   const eventLastRule =
     existing?.state === "event_inquiry" ? "" : await getLastOutRule(phone, env.DB);
   if (isEventInquiryTurn2(existing?.state, eventLastRule)) {
+    // Combinamos lo que diga AHORA con lo capturado en el turno 1. El tipo/pax de
+    // este mensaje mandan; si no vienen, usamos lo guardado.
+    const type: EventType | null =
+      detectEventType(text) ?? existing?.data.eventType ?? null;
+    const paxRaw = extractEventGuestCount(text) ?? existing?.data.eventGuests ?? null;
+    // pax "mostrable" = dentro de la rate card (1..100). >100 no cabe → el "desde"
+    // cae al editorial por tipo y se deriva igual (el equipo arma algo a medida); el
+    // conteo real igual viaja en el resumen a César.
+    const paxShow =
+      typeof paxRaw === "number" && paxRaw >= 1 && paxRaw <= EVENT_CAPACITY_MAX ? paxRaw : null;
+    const desdeHnl = type ? eventDesdeHnl(type, paxShow) : EVENT_PRICE_FLOOR_HNL;
+    const typeLabel = type ? T.eventTypeLabel(lang, type) : null;
+
     await clearState(phone, env.DB);
     return {
-      reply:           T.eventHandoff(lang),
+      reply: T.eventEstimate(lang, {
+        typeLabel,
+        pax: paxShow,
+        desde: formatEventHnl(desdeHnl),
+      }),
       escalateToOwner: true,
       ruleName:        "event_inquiry_handoff",
       tokensUsed:      0,
+      ownerSummary:    buildEventOwnerSummary(type, paxRaw, desdeHnl),
     };
   }
 
@@ -429,9 +484,25 @@ export async function handleQuoteIncoming(
     isEventInquiry(text) &&
     (mentionsValleDeAngeles(text) || !existing || (!existing.data.property && !existing.data.city))
   ) {
-    await upsertState(phone, "event_inquiry", existing?.data ?? emptyQuoteData(), env.DB);
+    // Capturamos lo que ya venga en este primer mensaje (tipo/personas) y lo
+    // persistimos para el turno 2 — así el "desde" no depende de que lo repita.
+    const type = detectEventType(text);
+    const pax = extractEventGuestCount(text);
+    const prevData = existing?.data ?? emptyQuoteData();
+    await upsertState(
+      phone,
+      "event_inquiry",
+      {
+        ...prevData,
+        eventType:   type ?? prevData.eventType ?? null,
+        eventGuests: pax ?? prevData.eventGuests ?? null,
+      },
+      env.DB,
+    );
     return {
-      reply:           T.eventIntake(lang),
+      // Si ya sabemos el tipo, no lo re-preguntamos (anti-repetición): pedimos solo
+      // fecha + personas. Si no, el intake completo de 3 datos.
+      reply:           type ? T.eventIntakeWithType(lang, T.eventTypeLabel(lang, type)) : T.eventIntake(lang),
       escalateToOwner: false,
       ruleName:        "event_inquiry_intake",
       tokensUsed:      0,
