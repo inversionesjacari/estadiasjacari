@@ -72,16 +72,20 @@ interface PlanRow {
 
 /** Lista el catálogo con el token de catálogo y arma el plan portada-actual→planeada. */
 async function buildPlan(env: Env): Promise<
-  { ok: false; error: string; hint?: string } | { ok: true; plan: PlanRow[]; products: CatalogProduct[] }
+  { ok: false; error: string; hint?: string; envKeys?: string[] } | { ok: true; plan: PlanRow[]; products: CatalogProduct[] }
 > {
   if (!env.CATALOG_ADMIN_TOKEN) {
+    // Diagnóstico: listamos los NOMBRES de las env vars/bindings que la Function
+    // ve (nunca los valores) para cazar un typo de nombre o un scope equivocado.
+    const envKeys = Object.keys(env).sort();
     return {
       ok: false,
-      error: "Falta CATALOG_ADMIN_TOKEN en Cloudflare Pages.",
+      error: "Falta CATALOG_ADMIN_TOKEN en Cloudflare Pages (la Function no la ve).",
+      envKeys,
       hint:
-        "Generá un System User token con permiso 'catalog_management' sobre el catálogo Estadías Jacarí " +
-        "(Meta Business Settings → Usuarios → Usuarios del sistema → Generar token) y seteálo en " +
-        "Cloudflare Pages → estadiasjacari → Settings → Environment variables (Production) como CATALOG_ADMIN_TOKEN. Luego Retry deployment.",
+        "Revisá en la lista `envKeys` de arriba: si no aparece 'CATALOG_ADMIN_TOKEN' exacto, la variable " +
+        "quedó con otro nombre o en el scope Preview en vez de Production. Seteála en Cloudflare Pages → " +
+        "estadiasjacari → Settings → Environment variables → pestaña Production, nombre EXACTO CATALOG_ADMIN_TOKEN, y redeployá.",
     };
   }
   const listed = await listCatalogProducts(
