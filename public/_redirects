@@ -1,0 +1,64 @@
+# Compat del catálogo de WhatsApp (Commerce Manager, catalog_id 4505514079768766).
+# Los productos congelaron URLs .png el 12-jun; la optimización de imágenes
+# (overhaul 6-8 jul) dejó solo .jpg en estas 4 propiedades -> las .png daban 404
+# -> Meta marcaba el producto "Obsoleto" -> error 131009 al mandar la tarjeta.
+# Este 301 hace que las .png viejas resuelvan al .jpg real. Casa Brisa NO va aca
+# (conserva sus .png reales). Generado 2026-07-13 (sesion CATALOGO-INSTR).
+
+/images/villa-b11/01.png  /images/villa-b11/01.jpg  301
+/images/villa-b11/02.png  /images/villa-b11/02.jpg  301
+/images/villa-b11/03.png  /images/villa-b11/03.jpg  301
+/images/villa-b11/04.png  /images/villa-b11/04.jpg  301
+/images/villa-b11/05.png  /images/villa-b11/05.jpg  301
+/images/villa-b11/06.png  /images/villa-b11/06.jpg  301
+/images/villa-b11/07.png  /images/villa-b11/07.jpg  301
+/images/villa-b11/08.png  /images/villa-b11/08.jpg  301
+/images/villa-b11/09.png  /images/villa-b11/09.jpg  301
+/images/villa-b11/10.png  /images/villa-b11/10.jpg  301
+/images/villa-b11/11.png  /images/villa-b11/11.jpg  301
+/images/villa-b11/12.png  /images/villa-b11/12.jpg  301
+/images/villa-b11/13.png  /images/villa-b11/13.jpg  301
+/images/villa-b11/14.png  /images/villa-b11/14.jpg  301
+/images/villa-b11/15.png  /images/villa-b11/15.jpg  301
+/images/centro-morazan/01.png  /images/centro-morazan/01.jpg  301
+/images/centro-morazan/02.png  /images/centro-morazan/02.jpg  301
+/images/centro-morazan/03.png  /images/centro-morazan/03.jpg  301
+/images/centro-morazan/04.png  /images/centro-morazan/04.jpg  301
+/images/centro-morazan/05.png  /images/centro-morazan/05.jpg  301
+/images/centro-morazan/06.png  /images/centro-morazan/06.jpg  301
+/images/centro-morazan/07.png  /images/centro-morazan/07.jpg  301
+/images/centro-morazan/08.png  /images/centro-morazan/08.jpg  301
+/images/centro-morazan/09.png  /images/centro-morazan/09.jpg  301
+/images/centro-morazan/10.png  /images/centro-morazan/10.jpg  301
+/images/centro-morazan/11.png  /images/centro-morazan/11.jpg  301
+/images/casa-marea/01.png  /images/casa-marea/01.jpg  301
+/images/casa-marea/02.png  /images/casa-marea/02.jpg  301
+/images/casa-marea/03.png  /images/casa-marea/03.jpg  301
+/images/casa-marea/04.png  /images/casa-marea/04.jpg  301
+/images/casa-marea/05.png  /images/casa-marea/05.jpg  301
+/images/casa-marea/06.png  /images/casa-marea/06.jpg  301
+/images/casa-marea/07.png  /images/casa-marea/07.jpg  301
+/images/casa-marea/08.png  /images/casa-marea/08.jpg  301
+/images/casa-marea/09.png  /images/casa-marea/09.jpg  301
+/images/casa-marea/10.png  /images/casa-marea/10.jpg  301
+/images/casa-marea/11.png  /images/casa-marea/11.jpg  301
+/images/casa-marea/12.png  /images/casa-marea/12.jpg  301
+/images/casa-marea/13.png  /images/casa-marea/13.jpg  301
+/images/casa-marea/14.png  /images/casa-marea/14.jpg  301
+/images/casa-marea/15.png  /images/casa-marea/15.jpg  301
+/images/casa-marea/16.png  /images/casa-marea/16.jpg  301
+/images/casa-lara-townhouse/01.png  /images/casa-lara-townhouse/01.jpg  301
+/images/casa-lara-townhouse/02.png  /images/casa-lara-townhouse/02.jpg  301
+/images/casa-lara-townhouse/03.png  /images/casa-lara-townhouse/03.jpg  301
+/images/casa-lara-townhouse/04.png  /images/casa-lara-townhouse/04.jpg  301
+/images/casa-lara-townhouse/05.png  /images/casa-lara-townhouse/05.jpg  301
+/images/casa-lara-townhouse/06.png  /images/casa-lara-townhouse/06.jpg  301
+/images/casa-lara-townhouse/07.png  /images/casa-lara-townhouse/07.jpg  301
+/images/casa-lara-townhouse/08.png  /images/casa-lara-townhouse/08.jpg  301
+/images/casa-lara-townhouse/09.png  /images/casa-lara-townhouse/09.jpg  301
+/images/casa-lara-townhouse/10.png  /images/casa-lara-townhouse/10.jpg  301
+/images/casa-lara-townhouse/11.png  /images/casa-lara-townhouse/11.jpg  301
+/images/casa-lara-townhouse/12.png  /images/casa-lara-townhouse/12.jpg  301
+/images/casa-lara-townhouse/13.png  /images/casa-lara-townhouse/13.jpg  301
+/images/casa-lara-townhouse/14.png  /images/casa-lara-townhouse/14.jpg  301
+/images/casa-lara-townhouse/15.png  /images/casa-lara-townhouse/15.jpg  301
