@@ -179,7 +179,7 @@ interface Metrics {
     funnelByProperty?: { slug: string; webViews: number; waInquiries: number; resAirbnb: number; resDirect: number }[];
     outcomes?: { outcome: string; c: number }[];
   };
-  porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; airbnbSync: string }[];
+  porPropiedad?: { slug: string; revenueMonth: number; revenueHnlMonth?: number; reservasMonth: number; occupancyPct: number | null; nightsBooked: number; adrUsd?: number | null; airbnbSync: string }[];
   mes?: { prefix: string; dias: number };
   health: { lastInAt: string | null; lastOutAt: string | null; lastReservationAt: string | null; cronLastAt: string | null; airbnbStatus: "full" | "partial" | "unavailable" | "unknown"; botLlmErrorAt: string | null; botMudoAt: string | null; waFailed24h?: number; ownerAlertOkAt?: string | null; ownerAlertFailAt?: string | null };
   // 📬 Salud de entrega WhatsApp (qué mandó el bot, qué llegó y qué falta).
@@ -1340,6 +1340,12 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
   const occVals = rows.map((r) => r.occupancyPct).filter((p): p is number => p !== null);
   const avgOcc = occVals.length ? Math.round(occVals.reduce((s, p) => s + p, 0) / occVals.length) : null;
   const occHexOf = (pct: number | null) => (pct === null ? HEX.gray : pct >= 70 ? HEX.green : pct >= 35 ? HEX.amber : HEX.red);
+  // ADR promedio del portafolio = ingreso USD total ÷ noches-USD totales (ponderado
+  // por volumen, no promedio simple de ADRs). Referencia para leer cada fila.
+  const adrVals = rows.filter((r) => typeof r.adrUsd === "number" && r.adrUsd! > 0);
+  const portfolioAdr = adrVals.length
+    ? Math.round(adrVals.reduce((s, r) => s + r.adrUsd! * r.reservasMonth, 0) / Math.max(1, adrVals.reduce((s, r) => s + r.reservasMonth, 0)))
+    : null;
   return (
     <>
       <div className="overflow-x-auto">
@@ -1347,7 +1353,8 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
           <thead>
             <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
               <th className="text-left font-medium pb-2">Propiedad</th>
-              <th className="text-left font-medium pb-2 w-[42%]">Ocupación</th>
+              <th className="text-left font-medium pb-2 w-[36%]">Ocupación</th>
+              <th className="text-right font-medium pb-2" title="Average Daily Rate: tarifa media por noche (ingreso USD ÷ noches vendidas). Cruzá ADR bajo + ocupación alta = subpreciada.">ADR</th>
               <th className="text-right font-medium pb-2">Ingresos del mes</th>
               <th className="text-right font-medium pb-2">Reservas</th>
             </tr>
@@ -1376,6 +1383,13 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
                       </div>
                     )}
                   </td>
+                  <td className="py-2 pr-3 text-right font-mono whitespace-nowrap">
+                    {typeof r.adrUsd === "number" && r.adrUsd > 0 ? (
+                      <span className="text-violet-300" title={portfolioAdr ? `Portafolio: $${portfolioAdr}/noche` : undefined}>{fmt$(Math.round(r.adrUsd))}</span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
                   <td className="py-2 text-right font-mono whitespace-nowrap">
                     <div className="text-cyan-300">{fmt$(r.revenueMonth)}</div>
                     {(r.revenueHnlMonth ?? 0) > 0 && <div className="text-[11px] text-emerald-300/80">{`L ${Math.round(r.revenueHnlMonth ?? 0).toLocaleString("en-US")}`}</div>}
@@ -1389,6 +1403,7 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
             <tr className="border-t border-white/10">
               <td className="pt-2 font-semibold text-slate-200">Total</td>
               <td className="pt-2 text-[11px] text-slate-400">{avgOcc === null ? "—" : `prom. ${avgOcc}%`}</td>
+              <td className="pt-2 pr-3 text-right font-mono text-violet-300/90 whitespace-nowrap">{portfolioAdr ? `$${portfolioAdr}` : "—"}</td>
               <td className="pt-2 text-right font-mono whitespace-nowrap">
                 <div className="font-bold text-cyan-300">{fmt$(totalRev)}</div>
                 {totalHnl > 0 && <div className="text-[11px] text-emerald-300/80">{`L ${Math.round(totalHnl).toLocaleString("en-US")}`}</div>}
@@ -1399,7 +1414,7 @@ function PropertyMetricsTable({ rows, airbnbStatus }: { rows: NonNullable<Metric
         </table>
       </div>
       <p className="text-[10px] text-slate-500 mt-3 leading-relaxed">
-        Ocupación = noches ocupadas del mes ÷ días del mes (reservas directas + Airbnb vía iCal). Ingresos = de reservas con <strong className="text-slate-400">llegada (check-in) este mes</strong> — directo + Airbnb, con USD y HNL (Lempiras) por separado, nunca sumados. Este total cuadra con la tarjeta “Ingresos” de arriba (mismo lente). El paquete Las Gemelas aparece como fila propia para el ingreso; su ocupación se refleja en Casa Brisa y Casa Marea.
+        Ocupación = noches ocupadas del mes ÷ días del mes (reservas directas + Airbnb vía iCal). <strong className="text-violet-300/90">ADR</strong> = tarifa media por noche (ingreso USD ÷ noches vendidas en USD): <strong className="text-slate-400">ADR bajo + ocupación alta = espacio para subir precio</strong>. Ingresos = de reservas con <strong className="text-slate-400">llegada (check-in) este mes</strong> — directo + Airbnb, con USD y HNL (Lempiras) por separado, nunca sumados. Este total cuadra con la tarjeta “Ingresos” de arriba (mismo lente). El paquete Las Gemelas aparece como fila propia para el ingreso; su ocupación se refleja en Casa Brisa y Casa Marea.
         {airbnbStatus !== "full" && <span className="text-amber-400/80"> · ⚠ El iCal de Airbnb no está completo: la ocupación de las propiedades marcadas refleja solo reservas directas.</span>}
       </p>
     </>

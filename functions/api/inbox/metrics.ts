@@ -142,7 +142,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     db.prepare(`SELECT id, phone, issue, severity, detail, suggestion, conv_at FROM bot_qa_findings ORDER BY CASE severity WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, conv_at DESC, id`).all<{ id: number; phone: string; issue: string; severity: string; detail: string; suggestion: string; conv_at: string }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT ran_at, analyzed, found, trigger FROM bot_qa_runs ORDER BY id DESC LIMIT 1`).first<{ ran_at: string; analyzed: number; found: number; trigger: string }>().catch(() => null),
     // Ingresos + conteo por propiedad — reservas con llegada (check_in) en el mes calendario HN.
-    db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COALESCE(SUM(total_hnl),0) AS revenueHnl, COUNT(*) AS reservas FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; revenueHnl: number; reservas: number }>().catch(() => ({ results: [] })),
+    // revNightsUsd = noches SOLO de las reservas que generan USD (Airbnb + directo-USD) →
+    // denominador limpio del ADR (tarifa media por noche). Excluye las noches de reservas
+    // en HNL puro (amount_usd=0) para no diluir el ADR en dólares con noches sin USD.
+    db.prepare(`SELECT property_slug AS slug, COALESCE(SUM(amount_usd),0) AS revenue, COALESCE(SUM(total_hnl),0) AS revenueHnl, COUNT(*) AS reservas, COALESCE(SUM(CASE WHEN amount_usd > 0 THEN CAST(julianday(check_out)-julianday(check_in) AS INT) ELSE 0 END),0) AS revNightsUsd FROM reservations WHERE status IN ('pending','confirmed') AND check_in >= ? AND check_in < ? GROUP BY property_slug`).bind(monthStart, nextMonthStart).all<{ slug: string; revenue: number; revenueHnl: number; reservas: number; revNightsUsd: number }>().catch(() => ({ results: [] })),
     // ── DASHBOARD DE CATEGORÍAS DE FALLO (error analysis) ─────────────────────
     // Dónde falla el bot, agrupado, para arreglar la categoría más grande primero
     // (en vez de reaccionar chat por chat). Todo fail-soft.
@@ -479,9 +482,19 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   );
 
   // Ingresos + conteo por propiedad desde la query D1.
-  const revBySlug = rowsOf<{ slug: string; revenue: number; revenueHnl: number; reservas: number }>(revByProperty);
-  const revMap: Record<string, { revenue: number; revenueHnl: number; reservas: number }> = {};
-  for (const r of revBySlug) revMap[r.slug] = { revenue: r.revenue, revenueHnl: r.revenueHnl, reservas: r.reservas };
+  const revBySlug = rowsOf<{ slug: string; revenue: number; revenueHnl: number; reservas: number; revNightsUsd: number }>(revByProperty);
+  const revMap: Record<string, { revenue: number; revenueHnl: number; reservas: number; revNightsUsd: number }> = {};
+  for (const r of revBySlug) revMap[r.slug] = { revenue: r.revenue, revenueHnl: r.revenueHnl, reservas: r.reservas, revNightsUsd: r.revNightsUsd };
+
+  // ADR (Average Daily Rate) = ingreso USD ÷ noches que generaron ese USD. Es la
+  // palanca de revenue management del canal Airbnb (98% del revenue): cruzarlo con
+  // ocupación dice qué propiedad está subpreciada (rating+ocupación altos, ADR bajo)
+  // vs con problema de producto. null si no hubo noches USD en el mes (evita /0).
+  const adrOf = (slug: string): number | null => {
+    const n = revMap[slug]?.revNightsUsd ?? 0;
+    const rev = revMap[slug]?.revenue ?? 0;
+    return n > 0 ? Math.round((rev / n) * 10) / 10 : null;
+  };
 
   const porPropiedad = propSlugs.map((slug) => ({
     slug,
@@ -490,12 +503,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     reservasMonth: revMap[slug]?.reservas ?? 0,
     occupancyPct: occByProperty[slug]?.pct ?? null,
     nightsBooked: occByProperty[slug]?.nights ?? 0,
+    adrUsd: adrOf(slug),
     airbnbSync: occByProperty[slug]?.sync ?? "unknown",
   }));
   // Slugs con ingreso que NO son de los 6 canónicos (p.ej. paquete gemelas): no esconder plata.
   for (const r of revBySlug) {
     if (!propSlugs.includes(r.slug)) {
-      porPropiedad.push({ slug: r.slug, revenueMonth: Math.round(r.revenue), revenueHnlMonth: Math.round(r.revenueHnl), reservasMonth: r.reservas, occupancyPct: null, nightsBooked: 0, airbnbSync: "n/a" });
+      porPropiedad.push({ slug: r.slug, revenueMonth: Math.round(r.revenue), revenueHnlMonth: Math.round(r.revenueHnl), reservasMonth: r.reservas, occupancyPct: null, nightsBooked: 0, adrUsd: adrOf(r.slug), airbnbSync: "n/a" });
     }
   }
 
