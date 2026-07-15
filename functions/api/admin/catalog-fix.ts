@@ -151,9 +151,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const rl = await checkRateLimit(env, { endpoint: "admin/catalog-fix", ip: getClientIp(request), max: 10, windowSec: 60 });
   if (!rl.allowed) return json({ ok: false, error: `Rate limit: ${rl.currentCount}/60s` }, 429);
 
-  let body: { confirm?: boolean } = {};
+  let body: { confirm?: boolean; force?: boolean } = {};
   try {
-    body = (await request.json()) as { confirm?: boolean };
+    body = (await request.json()) as { confirm?: boolean; force?: boolean };
   } catch { /* body vacío → confirm falso */ }
   if (body.confirm !== true) {
     return json({ ok: false, error: 'Falta {"confirm": true} en el body para aplicar los cambios.' }, 400);
@@ -162,6 +162,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const built = await buildPlan(env);
   if (!built.ok) return json({ mode: "apply", ...built });
 
+  // force=true: re-escribe TODOS (aunque ya tengan la portada correcta) con un
+  // `?v=<ts>` que le fuerza a Meta re-descargar la imagen. Sirve para destrabar
+  // un producto que quedó "obsoleto"/131009 y no re-procesó solo. El query param
+  // es cosmético (el archivo resuelve igual) y se auto-limpia en el próximo apply normal.
+  const force = body.force === true;
+  const bust = force ? `?v=${Date.now()}` : "";
+
   const token = env.CATALOG_ADMIN_TOKEN!;
   const results: Array<{ retailerId: string; ok: boolean; detail: string }> = [];
   for (const row of built.plan) {
@@ -169,15 +176,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       results.push({ retailerId: row.retailerId, ok: false, detail: "no está en el catálogo (skip)" });
       continue;
     }
-    if (!row.needsChange) {
+    if (!force && !row.needsChange) {
       results.push({ retailerId: row.retailerId, ok: true, detail: "ya tenía la portada correcta (skip)" });
       continue;
     }
-    const res = await updateProductImage(row.productItemId, row.plannedImage, token);
+    const imgUrl = `${row.plannedImage}${bust}`;
+    const res = await updateProductImage(row.productItemId, imgUrl, token);
     results.push({
       retailerId: row.retailerId,
       ok: res.ok,
-      detail: res.ok ? `portada → ${row.plannedImage}` : (res.error || "error desconocido"),
+      detail: res.ok ? `portada → ${imgUrl}${force ? " (re-fetch forzado)" : ""}` : (res.error || "error desconocido"),
     });
   }
 
