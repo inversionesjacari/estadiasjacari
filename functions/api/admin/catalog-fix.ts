@@ -36,31 +36,33 @@ interface Env {
 const SITE = "https://estadiasjacari.com";
 const MAX_ADDITIONAL = 10; // límite de Meta: 1 principal + 10 adicionales.
 
-// retailer_id (content ID) → galería. `hero` = portada principal (curada mirando
-// las fotos, McLovin 2026-07-14: villa-b11 05 fachada, casa-marea 10 jardín,
-// casa-brisa 01 fachada, morazan/casa-lara 01). `total` = cantidad de NN.jpg en
-// public/images/<folder> (contiguas 01..total, verificado). La galería = hero +
-// el resto en orden, hasta 10 adicionales. Todas `.jpg` estables (guard test).
-const GALLERY: Record<string, { folder: string; hero: number; total: number }> = {
-  "villa-b11-palma-real": { folder: "villa-b11", hero: 5, total: 15 },
-  "casa-marea": { folder: "casa-marea", hero: 10, total: 16 },
-  "casa-brisa": { folder: "casa-brisa", hero: 1, total: 12 },
-  "centro-morazan": { folder: "centro-morazan", hero: 1, total: 11 },
-  "casa-lara-townhouse": { folder: "casa-lara-townhouse", hero: 1, total: 15 },
+// retailer_id (content ID) → galería CURADA. `order` = números de foto en el orden
+// que se muestran: [0] es la portada principal, el resto la galería (máx 10 extra).
+// Elegidas UNA POR ÁREA (no un corte numérico) mirando las fotos, para no repetir
+// espacios ni dejar áreas afuera. Todas `.jpg` estables (guard test de _redirects).
+//
+// ⚠️ villa-b11 NO tiene fotos de dormitorio en su set (las 15 son fachada/sala/
+// comedor/cocina/baño) → la galería no puede incluir cuartos hasta que se agreguen
+// fotos a public/images/villa-b11/. Orden villa-b11: 05 fachada · 14 sala · 13
+// comedor · 03 cocina · 08 baño · 02 vista general.
+//
+// TODO curar por área el resto igual que villa-b11 (hoy = hero + orden numérico,
+// que puede dejar un cuarto afuera, p.ej. casa-marea el dormitorio es la 16).
+const GALLERY: Record<string, { folder: string; order: number[] }> = {
+  "villa-b11-palma-real": { folder: "villa-b11", order: [5, 14, 13, 3, 8, 2] },
+  "casa-marea": { folder: "casa-marea", order: [10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11] },
+  "casa-brisa": { folder: "casa-brisa", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  "centro-morazan": { folder: "centro-morazan", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  "casa-lara-townhouse": { folder: "casa-lara-townhouse", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
 };
 
 const pad2 = (n: number): string => String(n).padStart(2, "0");
 
-/** Arma {main, additional[]} para una propiedad: portada + galería (máx 10 extra). */
-function galleryFor(cfg: { folder: string; hero: number; total: number }): { main: string; additional: string[] } {
+/** Arma {main, additional[]} desde el orden curado: [0]=portada, resto=galería (máx 10). */
+function galleryFor(cfg: { folder: string; order: number[] }): { main: string; additional: string[] } {
   const url = (n: number) => `${SITE}/images/${cfg.folder}/${pad2(n)}.jpg`;
-  const main = url(cfg.hero);
-  const additional: string[] = [];
-  for (let i = 1; i <= cfg.total && additional.length < MAX_ADDITIONAL; i++) {
-    if (i === cfg.hero) continue; // la principal no se repite en la galería
-    additional.push(url(i));
-  }
-  return { main, additional };
+  const [heroNum, ...rest] = cfg.order;
+  return { main: url(heroNum), additional: rest.slice(0, MAX_ADDITIONAL).map(url) };
 }
 
 function json(body: unknown, status = 200): Response {
