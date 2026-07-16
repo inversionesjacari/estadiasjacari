@@ -38,22 +38,22 @@ const MAX_ADDITIONAL = 10; // límite de Meta: 1 principal + 10 adicionales.
 
 // retailer_id (content ID) → galería CURADA. `order` = números de foto en el orden
 // que se muestran: [0] es la portada principal, el resto la galería (máx 10 extra).
-// Elegidas UNA POR ÁREA (no un corte numérico) mirando las fotos, para no repetir
-// espacios ni dejar áreas afuera. Todas `.jpg` estables (guard test de _redirects).
+// Elegidas UNA POR ÁREA (no un corte numérico) mirando TODAS las fotos, para no
+// repetir espacios ni dejar áreas afuera. Todas `.jpg` estables (guard test).
+// Curado 2026-07-15 (villa-b11 por McLovin; el resto por 4 agentes en paralelo).
 //
-// ⚠️ villa-b11 NO tiene fotos de dormitorio en su set (las 15 son fachada/sala/
-// comedor/cocina/baño) → la galería no puede incluir cuartos hasta que se agreguen
-// fotos a public/images/villa-b11/. Orden villa-b11: 05 fachada · 14 sala · 13
-// comedor · 03 cocina · 08 baño · 02 vista general.
-//
-// TODO curar por área el resto igual que villa-b11 (hoy = hero + orden numérico,
-// que puede dejar un cuarto afuera, p.ej. casa-marea el dormitorio es la 16).
+// Portada elegida por propiedad · huecos de fotos conocidos:
+//   villa-b11 05 fachada — ⚠️ SIN fotos de dormitorio en el set (falta subirlas).
+//   casa-marea 11 fachada (flamboyán) — tiene playa(12) y 5 cuartos; sin piscina.
+//   casa-brisa 01 fachada coral — ⚠️ SIN foto de baño ni de playa en el set.
+//   centro-morazan 01 dormitorio luminoso — sin foto de fachada del edificio.
+//   casa-lara 14 fachada del townhouse — ⚠️ solo medio baño (falta baño completo).
 const GALLERY: Record<string, { folder: string; order: number[] }> = {
   "villa-b11-palma-real": { folder: "villa-b11", order: [5, 14, 13, 3, 8, 2] },
-  "casa-marea": { folder: "casa-marea", order: [10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11] },
-  "casa-brisa": { folder: "casa-brisa", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
-  "centro-morazan": { folder: "centro-morazan", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
-  "casa-lara-townhouse": { folder: "casa-lara-townhouse", order: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  "casa-marea": { folder: "casa-marea", order: [11, 12, 10, 6, 4, 7, 15, 16, 3, 14, 1] },
+  "casa-brisa": { folder: "casa-brisa", order: [1, 3, 2, 9, 10, 8, 6, 7, 5] },
+  "centro-morazan": { folder: "centro-morazan", order: [1, 11, 4, 6, 10, 8, 3] },
+  "casa-lara-townhouse": { folder: "casa-lara-townhouse", order: [14, 6, 4, 9, 1, 8, 12, 5, 11, 10] },
 };
 
 const pad2 = (n: number): string => String(n).padStart(2, "0");
