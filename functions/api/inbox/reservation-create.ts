@@ -57,14 +57,22 @@ export interface OverlapRow {
 /**
  * Reservas activas que se PISAN con [check_in, check_out) — incluyendo el
  * inventario cruzado del combo Las Gemelas ↔ Brisa/Marea (overlapSlugs).
- * Es ADVISORY (la alta manual advierte, no bloquea): si la consulta falla,
- * devuelve [] para que un error acá nunca frene la carga.
+ *
+ * Por defecto es ADVISORY (la alta manual advierte, no bloquea): si la consulta
+ * falla, devuelve [] para que un error acá nunca frene la carga.
+ *
+ * `strict: true` invierte esa semántica: relanza el error en vez de tragarlo.
+ * La reactivación de una reserva cancelada lo usa como GATE anti-doble-booking
+ * (es la ÚNICA barrera: no hay UNIQUE de fechas en el esquema), y ahí un error
+ * de lectura NO debe pasar como "sin solape" — mejor negar la reactivación y
+ * pedir reintentar que re-crear un doble booking en silencio.
  */
 export async function findOverlappingReservations(
   db: D1Database,
   property_slug: string,
   check_in: string,
   check_out: string,
+  opts: { strict?: boolean } = {},
 ): Promise<OverlapRow[]> {
   const slugs = overlapSlugs(property_slug);
   try {
@@ -77,7 +85,8 @@ export async function findOverlappingReservations(
         ORDER BY check_in LIMIT 4`,
     ).bind(...slugs, check_out, check_in).all<OverlapRow>();
     return res.results ?? [];
-  } catch {
+  } catch (err) {
+    if (opts.strict) throw err;
     return [];
   }
 }

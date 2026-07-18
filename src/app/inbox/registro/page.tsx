@@ -9,7 +9,7 @@
 // ("💲 Pago"). Datos en vivo de /api/inbox/reservations-registry.
 //
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { getProperty, properties } from "@/data/properties";
 
 interface Reservation {
@@ -26,6 +26,9 @@ interface Reservation {
   source: string;
   status: string;
   created_at: string;
+  // schema 0045 — rastro de la cancelación (solo en la vista "Canceladas").
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -65,8 +68,13 @@ const PAY_GREEN = "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
 const PAY_AMBER = "text-amber-300 border-amber-500/40 bg-amber-500/10";
 const PAY_ROSE = "text-rose-300 border-rose-500/40 bg-rose-500/10";
 
+const PAY_SLATE = "text-slate-400 border-white/15 bg-white/5";
+
 /** Estado del pago a partir de total/pagado en LPS; si no hay total LPS, cae al status. */
 function paymentBadge(r: Reservation): { text: string; cls: string; saldo: number | null } {
+  // Canceladas/reembolsadas: el estado manda sobre el pago (ya no hay saldo que cobrar).
+  if (r.status === "cancelled") return { text: "Cancelada", cls: PAY_ROSE, saldo: null };
+  if (r.status === "refunded") return { text: "Reembolsada", cls: PAY_SLATE, saldo: null };
   if (r.total_hnl != null) {
     const total = r.total_hnl;
     const paid = r.paid_hnl ?? 0;
@@ -134,24 +142,40 @@ export default function RegistroPage() {
   const [savingPay, setSavingPay] = useState(false);
   const [payError, setPayError] = useState("");
 
+  // La vista "Canceladas" pide el set extendido (?include=cancelled); las demás
+  // traen solo el registro activo (idéntico a antes). Al cambiar el filtro,
+  // fetchData cambia de identidad y el efecto de abajo re-consulta al toque.
+  const wantCancelled = statusFilter === "cancelled" || statusFilter === "refunded";
+  // Guard de secuencia: descarta respuestas obsoletas (el poll viejo o el fetch
+  // del filtro anterior no debe pisar al último). loadedCancelled = para qué modo
+  // corresponde el set en memoria → enmascara el parpadeo mientras no coincide.
+  const reqSeq = useRef(0);
+  const [loadedCancelled, setLoadedCancelled] = useState<boolean | null>(null);
   const fetchData = useCallback(async (): Promise<void> => {
+    const myReq = ++reqSeq.current;
     try {
-      const resp = await fetch("/api/inbox/reservations-registry", { credentials: "include" });
+      const url = wantCancelled
+        ? "/api/inbox/reservations-registry?include=cancelled"
+        : "/api/inbox/reservations-registry";
+      const resp = await fetch(url, { credentials: "include" });
+      if (myReq !== reqSeq.current) return; // llegó una respuesta más nueva
       if (resp.status === 401) {
         setAuthed(false);
         return;
       }
       const data = (await resp.json()) as { ok: boolean; reservations?: Reservation[] };
+      if (myReq !== reqSeq.current) return;
       if (data.ok) {
         setReservations(data.reservations ?? []);
         setAuthed(true);
+        setLoadedCancelled(wantCancelled);
       }
     } catch (err) {
       console.error("registro fetch error", err);
     } finally {
-      setLoading(false);
+      if (myReq === reqSeq.current) setLoading(false);
     }
-  }, []);
+  }, [wantCancelled]);
 
   useEffect(() => {
     fetchData();
@@ -200,7 +224,15 @@ export default function RegistroPage() {
     const q = search.trim().toLowerCase();
     const rows = reservations.filter((r) => {
       if (propFilter && r.property_slug !== propFilter) return false;
-      if (statusFilter && r.status !== statusFilter) return false;
+      // "Canceladas" agrupa cancelled + refunded (el contador del header también
+      // las suma); el resto de filtros es comparación exacta.
+      if (statusFilter) {
+        if (statusFilter === "cancelled") {
+          if (r.status !== "cancelled" && r.status !== "refunded") return false;
+        } else if (r.status !== statusFilter) {
+          return false;
+        }
+      }
       if (q) {
         const hay = `${r.guest_name ?? ""} ${r.guest_phone ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -340,8 +372,75 @@ export default function RegistroPage() {
     }
   }, [payRes, payForm, fetchData]);
 
+  // ── Cancelar / reactivar ────────────────────────────────────────────────────
+  const [cancelRes, setCancelRes] = useState<Reservation | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState("");
+  const [rowBusy, setRowBusy] = useState<Record<number, boolean>>({});
+  const [rowMsg, setRowMsg] = useState<Record<number, string>>({});
+
+  const openCancel = (r: Reservation) => {
+    setCancelRes(r);
+    setCancelReason("");
+    setCancelError("");
+  };
+
+  const submitCancel = useCallback(async (): Promise<void> => {
+    if (!cancelRes) return;
+    setCancelError("");
+    setCancelling(true);
+    try {
+      const resp = await fetch("/api/inbox/reservation-cancel", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: cancelRes.id, action: "cancel", reason: cancelReason.trim() }),
+      });
+      if (resp.status === 401) { setAuthed(false); return; }
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (data.ok) {
+        setCancelRes(null);
+        fetchData();
+      } else {
+        setCancelError(data.error || "No se pudo cancelar.");
+      }
+    } catch {
+      setCancelError("Error de red.");
+    } finally {
+      setCancelling(false);
+    }
+  }, [cancelRes, cancelReason, fetchData]);
+
+  const reactivate = useCallback(async (r: Reservation): Promise<void> => {
+    if (rowBusy[r.id]) return;
+    if (!window.confirm(`¿Reactivar la reserva de ${r.guest_name || "este huésped"}? Volverá a bloquear esas fechas (si ya se ocuparon, no se podrá).`)) return;
+    setRowBusy((s) => ({ ...s, [r.id]: true }));
+    setRowMsg((m) => ({ ...m, [r.id]: "" }));
+    try {
+      const resp = await fetch("/api/inbox/reservation-cancel", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id, action: "restore" }),
+      });
+      if (resp.status === 401) { setAuthed(false); return; }
+      const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (data.ok) {
+        fetchData();
+      } else {
+        setRowMsg((m) => ({ ...m, [r.id]: (data.error || "no se pudo").slice(0, 160) }));
+      }
+    } catch {
+      setRowMsg((m) => ({ ...m, [r.id]: "error de red" }));
+    } finally {
+      setRowBusy((s) => ({ ...s, [r.id]: false }));
+    }
+  }, [rowBusy, fetchData]);
+
   const confirmedCount = reservations.filter((r) => r.status === "confirmed").length;
   const pendingCount = reservations.filter((r) => r.status === "pending").length;
+  const cancelledCount = reservations.filter((r) => r.status === "cancelled" || r.status === "refunded").length;
 
   // Saldo vivo en el modal de pago (para mostrarlo mientras escribe).
   const payTotal = Number(payForm.total_hnl);
@@ -370,7 +469,8 @@ export default function RegistroPage() {
         <div className="min-w-0">
           <h1 className="text-xl font-bold text-white tracking-tight">📋 Registro de reservas</h1>
           <p className="text-[12px] text-slate-400">
-            {reservations.length} en total · {confirmedCount} pagadas · {pendingCount} pendientes
+            {confirmedCount} pagadas · {pendingCount} pendientes
+            {wantCancelled && <span className="text-rose-300/80"> · {cancelledCount} canceladas</span>}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -438,11 +538,12 @@ export default function RegistroPage() {
             <option value="">Todos los estados</option>
             <option value="confirmed">Pagadas</option>
             <option value="pending">Pendientes</option>
+            <option value="cancelled">Canceladas</option>
           </select>
           <span className="text-[12px] text-slate-500 ml-auto">{filtered.length} mostradas</span>
         </div>
 
-        {loading && reservations.length === 0 ? (
+        {(loading && reservations.length === 0) || loadedCancelled !== wantCancelled ? (
           <p className="text-center text-slate-500 py-16">Cargando registro…</p>
         ) : filtered.length === 0 ? (
           <p className="text-center text-slate-500 py-16">
@@ -494,26 +595,60 @@ export default function RegistroPage() {
                       <td className="px-3 py-2 text-slate-400">{sourceLabel(r.source)}</td>
                       <td className="px-3 py-2">
                         <span className={`text-[11px] px-2 py-0.5 rounded-full border ${pay.cls}`}>{pay.text}</span>
+                        {r.status === "cancelled" && (r.cancelled_at || r.cancel_reason) ? (
+                          <div className="text-[10px] text-slate-500 mt-1 max-w-[150px] truncate" title={r.cancel_reason || ""}>
+                            {r.cancelled_at ? (r.cancelled_at ?? "").slice(0, 10) : ""}{r.cancel_reason ? ` · ${r.cancel_reason}` : ""}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-3 py-2 text-slate-500">{(r.created_at ?? "").slice(0, 10)}</td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openPay(r)}
-                            className="text-[11px] text-amber-200 border border-amber-400/40 rounded px-1.5 py-0.5 hover:bg-amber-400/10"
-                            title="Cargar / corregir el pago de esta reserva"
-                          >
-                            💲 Pago
-                          </button>
-                          {phoneDigits ? (
-                            <a
-                              href={`/inbox?c=${phoneDigits}`}
-                              className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10"
-                            >
-                              Chat
-                            </a>
-                          ) : null}
+                          {r.status === "cancelled" ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={Boolean(rowBusy[r.id])}
+                                onClick={() => reactivate(r)}
+                                className="text-[11px] text-emerald-200 border border-emerald-400/40 rounded px-1.5 py-0.5 hover:bg-emerald-400/10 disabled:opacity-50"
+                                title="Reactivar la reserva (vuelve a bloquear esas fechas si siguen libres)"
+                              >
+                                {rowBusy[r.id] ? "…" : "↩ Reactivar"}
+                              </button>
+                              {rowMsg[r.id] ? (
+                                <span className="text-[10px] text-rose-300 max-w-[180px] truncate" title={rowMsg[r.id]}>{rowMsg[r.id]}</span>
+                              ) : null}
+                            </>
+                          ) : r.status === "refunded" ? (
+                            <span className="text-[11px] text-slate-500">—</span>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openPay(r)}
+                                className="text-[11px] text-amber-200 border border-amber-400/40 rounded px-1.5 py-0.5 hover:bg-amber-400/10"
+                                title="Cargar / corregir el pago de esta reserva"
+                              >
+                                💲 Pago
+                              </button>
+                              {phoneDigits ? (
+                                <a
+                                  href={`/inbox?c=${phoneDigits}`}
+                                  className="text-[11px] text-cyan-300 border border-cyan-500/30 rounded px-1.5 py-0.5 hover:bg-cyan-500/10"
+                                >
+                                  Chat
+                                </a>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => openCancel(r)}
+                                className="text-[11px] text-rose-300 border border-rose-500/30 rounded px-1.5 py-0.5 hover:bg-rose-500/10"
+                                title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
+                              >
+                                🚫 Cancelar
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -671,6 +806,80 @@ export default function RegistroPage() {
           </div>
         </div>
       )}
+
+      {/* ── Modal: cancelar reserva (huésped pierde lo pagado, se liberan fechas) ── */}
+      {cancelRes && (() => {
+        const paidL = cancelRes.total_hnl != null ? (cancelRes.paid_hnl ?? 0) : 0;
+        const paypalPaid =
+          cancelRes.total_hnl == null &&
+          cancelRes.status === "confirmed" &&
+          ["website", "whatsapp_bot", "airbnb", "airbnb_ical"].includes(cancelRes.source);
+        // Transferencia/manual sin total cargado: pudo haber un depósito que el
+        // registro no muestra (tr_amount no viaja acá) → no afirmar "no pagó".
+        const maybeDeposit =
+          cancelRes.total_hnl == null &&
+          !paypalPaid &&
+          (cancelRes.source === "whatsapp_transfer" || cancelRes.source === "manual");
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={() => { if (!cancelling) setCancelRes(null); }}
+          >
+            <div
+              className="w-full max-w-sm rounded-2xl border border-rose-500/30 bg-[#0c1322] p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-lg font-bold text-white">🚫 Cancelar reserva</h2>
+              <p className="text-[12px] text-slate-400 mb-3">
+                {cancelRes.guest_name || "Huésped"} · {getProperty(cancelRes.property_slug)?.name ?? cancelRes.property_slug} · {fmtDate(cancelRes.check_in)} → {fmtDate(cancelRes.check_out)}
+              </p>
+
+              <div className="rounded-lg border border-rose-500/20 bg-rose-500/[0.06] px-3 py-2.5 text-[12px] text-slate-300 space-y-1.5">
+                <p>✅ Se <b className="text-emerald-300">liberan las fechas</b> al instante para volver a rentarlas.</p>
+                {paidL > 0 ? (
+                  <p>💰 El huésped <b className="text-rose-300">pierde los {fmtL(paidL)}</b> que pagó (no se reembolsa).</p>
+                ) : paypalPaid ? (
+                  <p>💰 El huésped <b className="text-rose-300">pierde lo que pagó por PayPal</b>. Esto <b>no</b> le devuelve la plata; si querés reembolsar, hacelo desde PayPal.</p>
+                ) : maybeDeposit ? (
+                  <p>💰 Lo que el huésped haya pagado (ej. depósito por transferencia) <b className="text-rose-300">lo pierde</b>, no se reembolsa. Cargá el total con 💲 Pago para ver el monto exacto.</p>
+                ) : (
+                  <p>ℹ️ No hay pago cargado en esta reserva; solo se liberan las fechas.</p>
+                )}
+                <p className="text-slate-500">Deja de recibir avisos y se puede reactivar si fue un error.</p>
+              </div>
+
+              <label className="block text-[12px] text-slate-400 mb-1 mt-4">Motivo <span className="text-slate-500">(opcional)</span></label>
+              <input
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Ej: el huésped canceló, no-show…"
+                className={INPUT_CLS}
+              />
+
+              {cancelError && <p className="text-[12px] text-rose-300 mt-3">{cancelError}</p>}
+
+              <div className="flex gap-2 mt-5">
+                <button
+                  type="button"
+                  onClick={submitCancel}
+                  disabled={cancelling}
+                  className="flex-1 px-3 py-2 rounded-lg text-sm font-semibold border border-rose-500/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25 disabled:opacity-50"
+                >
+                  {cancelling ? "Cancelando…" : "Sí, cancelar y liberar fechas"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCancelRes(null)}
+                  disabled={cancelling}
+                  className="px-3 py-2 rounded-lg text-sm border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-50"
+                >
+                  Volver
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
