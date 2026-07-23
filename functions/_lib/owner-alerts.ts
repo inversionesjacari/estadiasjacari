@@ -61,8 +61,23 @@ export interface OwnerAlertResult {
 }
 
 /**
+ * Meta RECHAZA parámetros de body con salto de línea/tab o 4+ espacios seguidos
+ * (error #132018 "Param text cannot have new-line/tab characters or more than 4
+ * consecutive spaces"). Los leads de EVENTO (detalle multilínea con el mensaje
+ * del cliente) caían JUSTO acá y nunca disparaban la alerta a César/socio — el
+ * subconjunto de mayor plata (bodas 25-65 pax) invisible durante 11 días.
+ *
+ * Colapsa CUALQUIER corrida de espacios en blanco (incluye \n \r \t) a un solo
+ * espacio ANTES de truncar, así ningún parámetro tumba el envío. Función pura.
+ */
+export function sanitizeParam(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+/**
  * Arma los components del template `alerta_jacari`. Función PURA (testeable):
- * 3 parámetros de body (truncados a los límites de Meta) + 1 botón URL dinámico.
+ * 3 parámetros de body (sanitizados + truncados a los límites de Meta) + 1 botón
+ * URL dinámico.
  *
  * Nota del botón: Meta RECHAZA parámetros vacíos (error 131008/132012). Las
  * alertas de sistema (watchdog) no tienen cliente → guestPhone viene "" → se
@@ -73,16 +88,16 @@ export function buildAlertComponents(a: OwnerAlert): unknown[] {
     {
       type: "body",
       parameters: [
-        { type: "text", text: (a.tipo || "—").slice(0, 120) },
-        { type: "text", text: (a.cliente || "—").slice(0, 120) },
-        { type: "text", text: (a.detalle || "—").slice(0, 250) },
+        { type: "text", text: sanitizeParam(a.tipo).slice(0, 120) || "—" },
+        { type: "text", text: sanitizeParam(a.cliente).slice(0, 120) || "—" },
+        { type: "text", text: sanitizeParam(a.detalle).slice(0, 250) || "—" },
       ],
     },
     {
       type: "button",
       sub_type: "url",
       index: "0",
-      parameters: [{ type: "text", text: a.guestPhone || "0" }],
+      parameters: [{ type: "text", text: sanitizeParam(a.guestPhone) || "0" }],
     },
   ];
 }

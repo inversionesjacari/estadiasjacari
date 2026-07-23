@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildAlertComponents } from "../owner-alerts";
+import { buildAlertComponents, sanitizeParam } from "../owner-alerts";
 import { severityPrefix, shouldPingOwner, guestSignalsCritical } from "../whatsapp-escalation";
 
 //
@@ -51,6 +51,43 @@ describe("buildAlertComponents — el payload calza con el template alerta_jacar
       expect(p.text.length).toBeGreaterThan(0);
     }
     expect(comps[1].parameters[0].text).toBe("0"); // /inbox?c=0 → abre el inbox general
+  });
+});
+
+//
+// #132018 (2026-07-23) — "Param text cannot have new-line/tab characters or more
+// than 4 consecutive spaces". 38 alertas de leads de EVENTO (bodas 25-65 pax) NO
+// llegaron a César/socio durante 11 días porque su `detalle` traía saltos de
+// línea. La sanitización pura cierra el hueco: ningún parámetro con \n/\t/espacios
+// puede tumbar el envío.
+//
+describe("sanitizeParam — blinda contra el #132018 de Meta", () => {
+  it("colapsa saltos de línea, tabs y corridas de espacios a un solo espacio + trim", () => {
+    expect(sanitizeParam("boda\n~60 pax\tel bot dijo")).toBe("boda ~60 pax el bot dijo");
+    expect(sanitizeParam("a     b")).toBe("a b");            // 5 espacios → 1
+    expect(sanitizeParam("  \n  hola  \r\n  ")).toBe("hola"); // trim + colapso
+    expect(sanitizeParam("")).toBe("");
+  });
+});
+
+describe("buildAlertComponents — Meta-safe aun con texto multilínea (#132018)", () => {
+  const META_FORBIDDEN = /[\n\r\t]| {2,}/; // salto de línea, CR, tab, o 2+ espacios seguidos
+
+  it("un lead de EVENTO multilínea (el caso REAL que fallaba) queda sin \\n/\\t/espacios dobles", () => {
+    const comps = buildAlertComponents({
+      tipo: "🎉 Lead de EVENTO (Valle de Ángeles)\n· boda · ~60 pax",
+      cliente: "Ana García\t- +504 99881234",
+      detalle: "🎉 Lead de EVENTO\n· tipo: boda\n· ~60 pax\n· el bot le dijo \"desde\"",
+      guestPhone: "50499881234",
+    }) as [BodyComponent, ButtonComponent];
+    for (const p of comps[0].parameters) expect(p.text).not.toMatch(META_FORBIDDEN);
+    expect(comps[1].parameters[0].text).not.toMatch(META_FORBIDDEN);
+  });
+
+  it("params que quedan vacíos TRAS sanitizar caen al placeholder (Meta rechaza vacíos)", () => {
+    const comps = buildAlertComponents({ tipo: "   \n\t  ", cliente: "\n", detalle: "  ", guestPhone: "  " }) as [BodyComponent, ButtonComponent];
+    for (const p of comps[0].parameters) expect(p.text).toBe("—");
+    expect(comps[1].parameters[0].text).toBe("0");
   });
 });
 

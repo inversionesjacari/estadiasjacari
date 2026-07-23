@@ -129,6 +129,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     findings.push({ key: "delivery", issue: delivery.issues.join(" · "), alerted: delivery.alerted });
   }
 
+  const brain = await checkBotBrain(env);
+  if (brain.down) {
+    findings.push({ key: "bot_brain_down", issue: "cerebro LLM caído (bot respondiendo en modo tonto)", alerted: brain.alerted });
+  }
+
   return json({ ok: true, checked: Object.keys(EXPECTED_SCHEDULE), findings, botMudo: botMudo.phones });
 };
 
@@ -345,6 +350,67 @@ async function checkDeliveryHealth(env: Env): Promise<{ issues: string[]; alerte
     console.error("checkDeliveryHealth error:", (err as Error).message);
   }
   return { issues, alerted: alertedAny };
+}
+
+// ── 🧠 Salud del cerebro (LLM) (check 6) ──────────────────────────────────────
+// El apagón de OpenAI del 18-23 jul corrió 5 DÍAS invisible: el bot seguía
+// respondiendo (caía al respaldo tonto), así que ni `bot_mudo` (había "out") ni
+// `delivery_burst` (los envíos salían OK) lo veían. Este chequeo mira las cámaras
+// OPENAI_OK/OPENAI_FAIL de bot_trace: si en la última hora NINGUNA llamada al LLM
+// salió OK y hubo una racha de fallos, el cerebro bueno está caído y el bot
+// contesta en modo degradado → alerta con el motivo EXACTO (billing/quota es lo
+// más común y accionable: recargar OpenAI). Exigir ok=0 evita falsos positivos
+// en la recuperación (cuando ya vuelven algunas OK) y fail>=N evita el hiccup
+// suelto y los períodos tranquilos sin tráfico.
+const BRAIN_WINDOW_MIN = 60;
+const BRAIN_MIN_FAILS = 5;
+
+async function checkBotBrain(env: Env): Promise<{ down: boolean; alerted: boolean }> {
+  try {
+    const counts = await env.DB.prepare(
+      `SELECT
+         SUM(CASE WHEN stage = 'OPENAI_OK'   THEN 1 ELSE 0 END) AS ok,
+         SUM(CASE WHEN stage = 'OPENAI_FAIL' THEN 1 ELSE 0 END) AS fail
+         FROM bot_trace
+        WHERE at >= datetime('now', ?) AND stage IN ('OPENAI_OK', 'OPENAI_FAIL')`,
+    )
+      .bind(`-${BRAIN_WINDOW_MIN} minutes`)
+      .first<{ ok: number | null; fail: number | null }>();
+    const ok = counts?.ok ?? 0;
+    const fail = counts?.fail ?? 0;
+    // Cerebro caído = CERO éxitos y una racha de fallos (no un hiccup suelto, no
+    // una hora tranquila sin llamadas).
+    if (ok > 0 || fail < BRAIN_MIN_FAILS) return { down: false, alerted: false };
+
+    // Motivo exacto del último fallo — quota/billing es lo más común y lo único
+    // que César puede arreglar en 5 min (recargar OpenAI).
+    const last = await env.DB.prepare(
+      `SELECT detail FROM bot_trace WHERE stage = 'OPENAI_FAIL' ORDER BY at DESC LIMIT 1`,
+    ).first<{ detail: string }>();
+    const raw = last?.detail ?? "";
+    const isQuota = /quota|billing|exceeded|insufficient/i.test(raw);
+    const motivo = isQuota
+      ? "Sin saldo/quota en OpenAI: recargá en platform.openai.com (Billing)."
+      : `Motivo: ${raw.slice(0, 120)}`;
+
+    // Latido → semáforo del Bot IA en /inbox/operacion (mismo patrón que bot_mudo).
+    await env.DB.prepare(
+      `INSERT INTO system_heartbeat (key, last_at) VALUES ('bot_brain_down', datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET last_at = datetime('now')`,
+    ).run();
+
+    const alerted = await maybeAlert(
+      env,
+      "bot_brain_down",
+      "🔴 Cerebro del bot caído",
+      "bot_brain",
+      `Las últimas ${fail} llamadas al LLM fallaron y 0 salieron OK (última hora). El bot responde en modo tonto. ${motivo}`,
+    );
+    return { down: true, alerted };
+  } catch (err) {
+    console.error("checkBotBrain error:", (err as Error).message);
+    return { down: false, alerted: false };
+  }
 }
 
 /** Avisa por WhatsApp si no se avisó lo mismo en las últimas ALERT_COOLDOWN_HOURS. */

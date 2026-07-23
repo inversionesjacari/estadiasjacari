@@ -340,6 +340,20 @@ export const T = {
       ? `\n\nSee all the photos here 👇\n${galleryUrl}`
       : `\n\nMirá todas las fotos acá 👇\n${galleryUrl}`,
 
+  // Red de seguridad de fotos (caso Soler/gregorio, 23-jul): cuando el bot quiere
+  // mandar fotos pero NO hay galería que adjuntar, NUNCA prometer "te mando fotos"
+  // a secas — mandar el link. photosViaLink: sabemos la propiedad → su ficha.
+  photosViaLink: (l: Lang, galleryUrl: string): string =>
+    l === "en"
+      ? `Sure! You can see all the photos here 👇\n${galleryUrl}`
+      : `¡Claro! Acá podés ver todas las fotos 👇\n${galleryUrl}`,
+
+  // photosCatalog: no sabemos la propiedad → el catálogo + preguntar cuál.
+  photosCatalog: (l: Lang, catalogUrl: string): string =>
+    l === "en"
+      ? `Sure! Here are all our properties with photos 👇\n${catalogUrl}\n\nWhich one would you like to see more of?`
+      : `¡Claro! Acá están todas nuestras propiedades con fotos 👇\n${catalogUrl}\n\n¿De cuál querés que te muestre más?`,
+
   // Recordatorio del paso de pago tras atender una pregunta (fotos, etc.) cuando
   // el cliente ya estaba eligiendo método. Sin emoji de playa (aplica a toda zona).
   resumePaymentTail: (l: Lang): string =>

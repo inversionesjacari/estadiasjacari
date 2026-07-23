@@ -48,7 +48,7 @@ import {
   buildTransferMessageUSD,
   isUsdRequest,
 } from "./bank-transfer";
-import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl, TELA_CROQUIS_URL } from "./property-photos";
+import { getPropertyPhotos, getBedroomPhotos, getGalleryUrl, getCatalogUrl, TELA_CROQUIS_URL } from "./property-photos";
 import { buildPropertyCard } from "./property-catalog";
 import { T, asLang, stayRangeHuman, type Lang } from "./i18n";
 import { paymentButtons, confirmButtons, type ButtonReply } from "./button-map";
@@ -1573,29 +1573,41 @@ async function gatherQuoteData(
     };
   }
 
-  // ── Pide fotos + sabemos la propiedad → enviar fotos + link a galería ─────
-  if (botResult.intent === "requesting_photos" && mergedData.property) {
+  // ── Pide fotos (intent del LLM) → NUNCA prometer fotos con las manos vacías ──
+  // Regla dura (caso Soler/gregorio, 23-jul, con el cerebro degradado): el prompt
+  // hace que el LLM diga "¡Claro! Te mando algunas fotos 📸" confiando en que el
+  // código adjunte la galería. Si el intent se clasifica como requesting_photos
+  // pero NO hay una propiedad válida en el estado (o esa propiedad no tiene
+  // galería cargada), la promesa se fugaba como texto suelto SIN adjunto → el
+  // cliente esperaba fotos que nunca llegaban, pedía humano y se perdía el lead.
+  // Acá cerramos las tres salidas: con galería → fotos; con propiedad pero sin
+  // galería → link a su ficha; sin propiedad → link al catálogo + preguntar cuál.
+  if (botResult.intent === "requesting_photos") {
+    // La propiedad del estado manda (mergedData ya fusiona extracción del LLM +
+    // estado previo); si el turno la nombra ("fotos de Casa Brisa") y el LLM
+    // degradado no la extrajo, propertySlugFromText la rescata determinísticamente.
+    const photoSlug = mergedData.property ?? propertySlugFromText(text);
     // Pidió específicamente las HABITACIONES → fotos de dormitorios (si hay para esa
     // propiedad; si no —ej. Villa B11— cae a las fotos normales de abajo).
-    const bedroomPhotos = isBedroomPhotoRequest(text) ? getBedroomPhotos(mergedData.property) : [];
-    if (bedroomPhotos.length > 0) {
+    const bedroomPhotos = photoSlug && isBedroomPhotoRequest(text) ? getBedroomPhotos(photoSlug) : [];
+    if (photoSlug && bedroomPhotos.length > 0) {
       await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
       const intro = lang === "en" ? "🛏️ Here are the bedrooms 📸" : "🛏️ Acá te van las habitaciones 📸";
       return {
-        reply:           intro + T.photosGallery(lang, getGalleryUrl(mergedData.property)),
+        reply:           intro + T.photosGallery(lang, getGalleryUrl(photoSlug)),
         images:          bedroomPhotos,
         escalateToOwner: false,
         ruleName:        "bedroom_photos_sent",
         tokensUsed:      botResult.tokensUsed,
       };
     }
-    const photos = getPropertyPhotos(mergedData.property);
-    if (photos.length > 0) {
+    const photos = photoSlug ? getPropertyPhotos(photoSlug) : [];
+    if (photoSlug && photos.length > 0) {
       // Mantener el state con lo que sepamos para seguir el flujo después
       await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
-      const galleryUrl = getGalleryUrl(mergedData.property);
+      const galleryUrl = getGalleryUrl(photoSlug);
       const card =
-        buildPropertyCard(mergedData.property, lang) ||
+        buildPropertyCard(photoSlug, lang) ||
         `${
           botResult.reply && botResult.reply.trim().length > 0
             ? botResult.reply.trim()
@@ -1608,12 +1620,22 @@ async function gatherQuoteData(
       return {
         reply: card,
         images: photos,
-        productCard: { retailerId: mergedData.property, body: pcBody },
+        productCard: { retailerId: photoSlug, body: pcBody },
         escalateToOwner: false,
         ruleName: "photos_sent",
         tokensUsed: botResult.tokensUsed,
       };
     }
+    // SIN galería que adjuntar → link (jamás el "te mando fotos" a secas).
+    await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
+    return {
+      reply: photoSlug
+        ? T.photosViaLink(lang, getGalleryUrl(photoSlug))
+        : T.photosCatalog(lang, getCatalogUrl()),
+      escalateToOwner: false,
+      ruleName: photoSlug ? "photos_link_fallback" : "photos_catalog_fallback",
+      tokensUsed: botResult.tokensUsed,
+    };
   }
 
   // ── ¿Tenemos todo para cotizar? ───────────────────────────────────────────

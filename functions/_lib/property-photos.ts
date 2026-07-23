@@ -76,6 +76,12 @@ export function getGalleryUrl(slug: string): string {
   return `${SITE_BASE}/propiedades/${slug}`;
 }
 
+/** Link al catálogo completo (todas las propiedades con fotos). Fallback cuando
+ *  el cliente pide fotos pero aún no sabemos de qué propiedad. */
+export function getCatalogUrl(): string {
+  return `${SITE_BASE}/propiedades`;
+}
+
 /**
  * Croquis del complejo Honduras Shores Plantation (Tela) con la propiedad circulada en
  * rojo y el Mar Caribe al sur. Se manda cuando un lead pregunta qué tan cerca del mar
