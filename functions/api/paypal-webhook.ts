@@ -32,6 +32,10 @@ import { clearState as clearConversationState, getState as getConversationState 
 import { handleWaCapture } from "../_lib/paypal-wa-capture";
 import { asLang, type Lang } from "../_lib/i18n";
 import { notifyOwners } from "../_lib/owner-alerts";
+// Guard de monto (temporadas): recalcular server-side lo que DEBIÓ cobrarse.
+import { buildQuote } from "../_lib/quote-builder";
+import { buildPricingMap } from "../_lib/kb-store";
+import type { PropertySlug } from "../_lib/quote-extractor";
 
 //
 // POST /api/paypal-webhook
@@ -626,6 +630,49 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           .run();
 
         const inserted = result.meta?.changes ?? 0;
+
+        // ── Guard server-side del MONTO (Semana Morazánica / temporadas) ────
+        // El checkout web arma la orden EN EL NAVEGADOR y este webhook guardaba
+        // `amount_usd` tal cual — sin validar. Con tarifas de temporada eso es
+        // explotable (pagar tarifa base en fechas de feriado). Acá se recalcula
+        // el TOTAL esperado con buildQuote (fuente de verdad, temporada incluida)
+        // y si lo pagado quedó CORTO — tolerancia 7% por el TC del día que usa el
+        // widget — se marca `amount_flagged=1` (schema 0035) y se avisa a los
+        // dueños. AVISA, NO BLOQUEA (política de la casa): la reserva queda y un
+        // humano decide. Fail-open: un error acá jamás rompe el cobro.
+        if (inserted > 0) {
+          try {
+            const pricingMap = await buildPricingMap(env.DB);
+            const expected = await buildQuote(
+              // guests=1: el custom_id web no trae huéspedes; el guard compara
+              // PLATA (totales), y los totales no dependen del cupo. Un slug
+              // desconocido hace que buildQuote devuelva null → no se flaggea.
+              { property: propertySlug as PropertySlug, checkIn, checkOut, guests: 1 },
+              env.DB,
+              pricingMap,
+            );
+            const expectedUsd = expected?.totalUSD ?? 0;
+            if (expectedUsd > 0 && amountUsd > 0 && amountUsd < expectedUsd * 0.93) {
+              await env.DB.prepare(
+                `UPDATE reservations SET amount_flagged = 1 WHERE paypal_order_id = ?`,
+              ).bind(orderId).run();
+              await notifyOwners(env, {
+                tipo: "⚠️ Pago web MENOR al esperado",
+                cliente: `${guestName || "?"} · ${guestPhone || recipientEmail || "?"}`,
+                detalle:
+                  `${propertySlug} ${checkIn}→${checkOut}: pagó USD ${amountUsd.toFixed(2)}, ` +
+                  `esperado ~USD ${expectedUsd.toFixed(2)} (temporada incluida). ` +
+                  `Reserva marcada amount_flagged — verificá antes del check-in.`,
+                guestPhone: guestPhone || "",
+              });
+            }
+          } catch (guardErr) {
+            console.error(
+              "Guard de monto falló (fail-open, la reserva sigue):",
+              (guardErr as Error).message,
+            );
+          }
+        }
 
         // ── Notificación email (Fase 3.5) ──────────────────────────────────
         // Idempotencia: solo enviamos si la fila acaba de insertarse Y aún
