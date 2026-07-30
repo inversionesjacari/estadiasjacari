@@ -27,6 +27,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
 
 interface Env {
   DB: D1Database;
@@ -82,6 +83,9 @@ function conversationsQuery(whereExtra: string, limitClause: string): string {
                 ROW_NUMBER() OVER (PARTITION BY m.from_phone ORDER BY m.created_at DESC) AS rn
            FROM whatsapp_messages m
           WHERE m.direction = 'in'
+            -- Modo propietario: los chats de los dueños con el copiloto no son
+            -- leads — fuera de la lista del inbox (feed, búsqueda y pendientes).
+            AND m.from_phone NOT IN (${OWNER_PHONES_SQL})
        )
        SELECT lm.phone,
               lm.body AS last_message,

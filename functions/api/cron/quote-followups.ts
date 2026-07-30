@@ -34,6 +34,7 @@ import { T } from "../../_lib/i18n";
 import { withCronMonitor } from "../../_lib/cron-monitor";
 import { TERMINAL_RULES } from "../../_lib/detectors";
 import { globalBotPausedSince } from "../../_lib/bot-pause";
+import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
 
 interface Env extends AvailabilityEnv {
   DB: D1Database;
@@ -206,6 +207,7 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
           AND updated_at >= datetime('now', '-24 hours')
           AND expires_at > datetime('now')
           AND phone NOT IN (SELECT phone FROM bot_pauses)
+          AND phone NOT IN (${OWNER_PHONES_SQL})
         LIMIT 20`,
     ).all<StateRow>();
     rows = res.results ?? [];
@@ -344,6 +346,7 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
           AND updated_at >= datetime('now','-24 hours')
           AND expires_at > datetime('now')
           AND phone NOT IN (SELECT phone FROM bot_pauses)
+          AND phone NOT IN (${OWNER_PHONES_SQL})
         LIMIT 20`,
     ).all<StateRow>();
 
@@ -469,6 +472,7 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
             AND updated_at <= datetime('now','-28 hours')
             AND expires_at > datetime('now')
             AND phone NOT IN (SELECT phone FROM bot_pauses)
+          AND phone NOT IN (${OWNER_PHONES_SQL})
           LIMIT 20`,
       ).all<StateRow>();
 

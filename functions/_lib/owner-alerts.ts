@@ -22,13 +22,13 @@
 //
 
 import { fetchWithTimeout, TIMEOUT } from "./fetch";
+// Fuente única de "quiénes son los dueños" (también reconoce sus mensajes
+// entrantes en el modo propietario — ver owner-copilot.ts).
+import { OWNER_PHONES } from "./owner-copilot";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v25.0";
 const TEMPLATE_NAME = "alerta_jacari";
 const TEMPLATE_LANG = "es";
-
-// Quiénes reciben los avisos (E.164 sin '+'): César + socio.
-const OWNER_PHONES = ["50497649035", "50498035697"];
 
 export interface OwnerAlertEnv {
   WHATSAPP_ACCESS_TOKEN?: string;

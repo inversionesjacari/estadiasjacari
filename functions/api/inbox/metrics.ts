@@ -15,6 +15,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
 import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
 import { isNotInterested } from "../../_lib/detectors";
 import { metaCodeLabel, parseWaFailTrace } from "../../_lib/delivery-policy";
@@ -98,7 +99,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     // Totales de mensajes por rango (hoy / 7d / 30d)
     db.prepare(`SELECT SUM(CASE WHEN created_at >= ${HN_DAY_START} THEN 1 ELSE 0 END) AS today, SUM(CASE WHEN created_at >= datetime('now','-7 days') THEN 1 ELSE 0 END) AS week, SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS month FROM whatsapp_messages`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     // Conversaciones únicas (teléfonos distintos que escribieron) por rango
-    db.prepare(`SELECT COUNT(DISTINCT CASE WHEN created_at >= ${HN_DAY_START} THEN from_phone END) AS today, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-7 days') THEN from_phone END) AS week, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-30 days') THEN from_phone END) AS month FROM whatsapp_messages WHERE direction='in'`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
+    db.prepare(`SELECT COUNT(DISTINCT CASE WHEN created_at >= ${HN_DAY_START} THEN from_phone END) AS today, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-7 days') THEN from_phone END) AS week, COUNT(DISTINCT CASE WHEN created_at >= datetime('now','-30 days') THEN from_phone END) AS month FROM whatsapp_messages WHERE direction='in' AND from_phone NOT IN (${OWNER_PHONES_SQL})`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     db.prepare(`SELECT state, COUNT(*) AS c FROM conversation_state WHERE expires_at > datetime('now') GROUP BY state`).all<{ state: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT SUM(CASE WHEN created_at >= ${HN_DAY_START} THEN 1 ELSE 0 END) AS today, SUM(CASE WHEN created_at >= datetime('now','-7 days') THEN 1 ELSE 0 END) AS week, SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS month FROM reservations WHERE status IN ('pending','confirmed')`).first<{ today: number; week: number; month: number }>().catch(() => ({ today: 0, week: 0, month: 0 })),
     db.prepare(`SELECT property_slug AS slug, COUNT(*) AS c FROM reservations WHERE status IN ('pending','confirmed') AND created_at >= datetime('now','-30 days') GROUP BY property_slug ORDER BY c DESC`).all<{ slug: string; c: number }>().catch(() => ({ results: [] })),
@@ -118,7 +119,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         SUM(CASE WHEN direction='out' AND matched_rule='bot_failed' THEN 1 ELSE 0 END) AS fails,
         SUM(CASE WHEN direction='out' AND escalated=1 THEN 1 ELSE 0 END) AS escalations,
         SUM(CASE WHEN direction='out' AND COALESCE(matched_rule,'') NOT IN ('manual_inbox','bot_failed') AND escalated=0 THEN 1 ELSE 0 END) AS botReplies
-      FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days')`).first<{ inbound: number; manual: number; fails: number; escalations: number; botReplies: number }>().catch(() => ({ inbound: 0, manual: 0, fails: 0, escalations: 0, botReplies: 0 })),
+      FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') AND from_phone NOT IN (${OWNER_PHONES_SQL}) AND to_phone NOT IN (${OWNER_PHONES_SQL})`).first<{ inbound: number; manual: number; fails: number; escalations: number; botReplies: number }>().catch(() => ({ inbound: 0, manual: 0, fails: 0, escalations: 0, botReplies: 0 })),
     // Tendencia: mensajes por día HN (últimos 7 días)
     db.prepare(`SELECT date(created_at,'-6 hours') AS day, COUNT(*) AS c FROM whatsapp_messages WHERE created_at >= datetime('now','-7 days') GROUP BY day ORDER BY day`).all<{ day: string; c: number }>().catch(() => ({ results: [] })),
     // Feed: últimos mensajes + reservas
@@ -170,7 +171,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     .prepare(`
       WITH first_in AS (
         SELECT from_phone AS phone, MIN(created_at) AS first_at
-        FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone
+        FROM whatsapp_messages WHERE direction='in' AND from_phone NOT IN (${OWNER_PHONES_SQL}) GROUP BY from_phone
       ),
       cohort AS (SELECT phone FROM first_in WHERE first_at >= datetime('now','-30 days')),
       quoted AS (SELECT DISTINCT to_phone AS phone FROM whatsapp_messages WHERE direction='out' AND matched_rule='quote_provided'),
@@ -190,7 +191,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     .prepare(`
       WITH first_in AS (
         SELECT from_phone AS phone, MIN(created_at) AS first_at
-        FROM whatsapp_messages WHERE direction='in' GROUP BY from_phone
+        FROM whatsapp_messages WHERE direction='in' AND from_phone NOT IN (${OWNER_PHONES_SQL}) GROUP BY from_phone
         HAVING MIN(created_at) >= datetime('now','-30 days')
       )
       SELECT
@@ -281,7 +282,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // reservas cargadas a mano desde el inbox). Es el payoff de la pauta/atención.
   const DIRECT_SRC = "('website','whatsapp_bot','whatsapp_transfer','manual')";
   const [mkContacts, mkWeb, mkSources, mkTopProps, mkDirectResv, mkDirectByProp, mkAirbnbStays, mkLeadsByAd] = await Promise.all([
-    db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ c: number }>().catch(() => ({ c: 0 })),
+    db.prepare(`SELECT COUNT(DISTINCT from_phone) AS c FROM whatsapp_messages WHERE direction='in' AND from_phone NOT IN (${OWNER_PHONES_SQL}) AND created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ c: number }>().catch(() => ({ c: 0 })),
     db.prepare(`SELECT COUNT(*) AS views, COUNT(DISTINCT visitor) AS uniques FROM page_views WHERE created_at >= ? AND created_at < ?`).bind(monthStartUtc, nextMonthStartUtc).first<{ views: number; uniques: number }>().catch(() => ({ views: 0, uniques: 0 })),
     db.prepare(`SELECT COALESCE(NULLIF(utm_source,''), NULLIF(referrer,''), '(directo)') AS referrer, COUNT(*) AS c FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY 1 ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ referrer: string; c: number }>().catch(() => ({ results: [] })),
     db.prepare(`SELECT path, COUNT(*) AS c FROM page_views WHERE path LIKE '/propiedades/%' AND created_at >= ? AND created_at < ? GROUP BY path ORDER BY c DESC LIMIT 8`).bind(monthStartUtc, nextMonthStartUtc).all<{ path: string; c: number }>().catch(() => ({ results: [] })),
