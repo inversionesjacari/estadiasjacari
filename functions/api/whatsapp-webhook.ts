@@ -1147,12 +1147,34 @@ async function handleMediaMessage(
   // El media ya quedó guardado (visible en el inbox). NADA del pipeline de
   // huéspedes debe correr: ni el ack "una persona del equipo te atiende", ni el
   // lector de comprobantes (los dueños tienen conversation_state viejo de
-  // pruebas que podría dispararlo), ni la escalación por email. Las notas de
-  // voz de dueños se conectan al copiloto en B6; mientras, una línea honesta.
+  // pruebas que podría dispararlo), ni la escalación por email.
+  // Nota de voz → se transcribe y alimenta al copiloto como si fuera texto
+  // (mismo Whisper del flujo de leads); otros tipos → línea honesta.
   if (isOwnerPhone(fromE164)) {
+    if (rawType === "audio" && mediaId) {
+      const tr = await transcribeVoiceNote(mediaId, env);
+      if (tr.ok && tr.text.trim()) {
+        // Dejar la transcripción visible en el inbox/historial (patrón B6 leads).
+        try {
+          await env.DB.prepare(
+            `UPDATE whatsapp_messages SET body = ? WHERE meta_message_id = ? AND direction = 'in'`,
+          ).bind(`🎤 ${tr.text}`, msg.id).run();
+        } catch { /* best-effort */ }
+        await handleOwnerIncoming(
+          fromE164,
+          env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown",
+          tr.text,
+          inserted.meta?.last_row_id ?? 0,
+          env,
+        );
+        return;
+      }
+      await sendTextMessage(fromE164, "No pude transcribir tu nota de voz 🙏 — mandámelo por texto.", env);
+      return;
+    }
     await sendTextMessage(
       fromE164,
-      `Recibí tu ${MEDIA_LABELS[mediaType] ?? "archivo"} 🔒 El copiloto por ahora entiende texto (las notas de voz vienen en la próxima actualización).`,
+      `Recibí tu ${MEDIA_LABELS[mediaType] ?? "archivo"} 🔒 El copiloto entiende texto y notas de voz.`,
       env,
     );
     return;
