@@ -20,7 +20,9 @@
 import type { PropertySlug, City } from "./quote-extractor";
 import type { BotIntent } from "./conversational-bot";
 
-const VALID_PROPERTIES: PropertySlug[] = [
+// Exportadas: el copiloto de dueños (owner-copilot.ts) valida contra las MISMAS
+// listas — una sola fuente de slugs válidos.
+export const VALID_PROPERTIES: PropertySlug[] = [
   "villa-b11-palma-real",
   "casa-brisa",
   "casa-marea",
@@ -30,7 +32,7 @@ const VALID_PROPERTIES: PropertySlug[] = [
   "las-gemelas-tela",
 ];
 
-const VALID_CITIES: City[] = ["La Ceiba", "Tela", "Tegucigalpa"];
+export const VALID_CITIES: City[] = ["La Ceiba", "Tela", "Tegucigalpa"];
 
 const VALID_INTENTS: BotIntent[] = [
   "providing_data",
@@ -43,7 +45,7 @@ const VALID_INTENTS: BotIntent[] = [
   "unknown",
 ];
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Campos del output del modelo ya sanitizados (inválido → null / default seguro). */
 export interface BotFields {

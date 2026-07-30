@@ -39,6 +39,8 @@ import { pauseBot, isBotPaused } from "../_lib/bot-pause";
 import { getState } from "../_lib/quote-state";
 import { processTransferReceipt } from "../_lib/receipt";
 import { checkRateLimit } from "../_lib/rate-limit";
+// MODO PROPIETARIO: los dueños hablan con el copiloto interno, no con el bot de ventas.
+import { isOwnerPhone, handleOwnerCopilot } from "../_lib/owner-copilot";
 
 // Máximo de mensajes por número que DISPARAN al bot (LLM/visión/escalación) por
 // minuto. El mensaje entrante SIEMPRE se guarda en el inbox — esto solo frena la
@@ -511,6 +513,17 @@ async function processIncomingMessage(
     return;
   }
 
+  // ── MODO PROPIETARIO: César/Eduardo escriben al bot → copiloto interno ─────
+  // Va ANTES de isBotPaused a propósito: el copiloto responde a los dueños
+  // aunque el bot esté pausado (individual o global). Mantiene el rate limit
+  // (protege de bucles). No escala, no pausa, no toca conversation_state, y
+  // las métricas/inbox/followups ya excluyen estos números (owner-copilot.ts).
+  if (isOwnerPhone(fromE164)) {
+    if (await isBotRateLimited(fromE164, env)) return;
+    await handleOwnerIncoming(fromE164, toE164, bodyText, inserted.meta?.last_row_id ?? 0, env);
+    return;
+  }
+
   // ── Bot pausado (handoff a humano) → NO auto-respondemos ───────────────────
   // El mensaje entrante ya quedó guardado arriba, así que aparece en el inbox
   // para que lo atienda un humano. El bot se reactiva a mano con "Reactivar bot".
@@ -946,6 +959,92 @@ async function processIncomingMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MODO PROPIETARIO — el copiloto responde a los dueños (César/Eduardo)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Atiende un mensaje de TEXTO de un dueño: copiloto interno en vez del bot de
+ * ventas. Sin escalación, sin pausa, sin conversation_state. El error se le
+ * dice al dueño con franqueza (a un dueño no se le oculta la falla técnica).
+ */
+async function handleOwnerIncoming(
+  fromE164: string,
+  toE164: string,
+  bodyText: string,
+  currentMsgId: number,
+  env: Env,
+): Promise<void> {
+  // "Última palabra gana": si el dueño mandó 3 líneas seguidas, responde solo
+  // el webhook del mensaje más nuevo (mismo patrón que el flujo de leads).
+  try {
+    const newer = await env.DB.prepare(
+      `SELECT COUNT(*) AS c FROM whatsapp_messages
+        WHERE from_phone = ? AND direction = 'in' AND id > ?`,
+    ).bind(fromE164, currentMsgId).first<{ c: number }>();
+    if ((newer?.c ?? 0) > 0) return;
+  } catch { /* si el chequeo falla, seguimos */ }
+
+  let result;
+  try {
+    result = await handleOwnerCopilot(fromE164, bodyText, todayHn(), env);
+  } catch (err) {
+    try {
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'OWNER_COPILOT_THREW', ?)`)
+        .bind(fromE164, (err as Error).message.slice(0, 300)).run();
+    } catch { /* best-effort */ }
+    result = {
+      replies: [{ text: `El copiloto falló: ${(err as Error).message.slice(0, 120)}. Reintentá o revisá bot_trace.` }],
+      traceAction: "threw",
+    };
+  }
+
+  // Cámara: qué acción ejecutó el copiloto (diagnóstico en /inbox/operacion).
+  try {
+    await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'OWNER_COPILOT', ?)`)
+      .bind(fromE164, `${result.traceAction} :: ${bodyText.slice(0, 120)}`).run();
+  } catch { /* best-effort */ }
+
+  for (const r of result.replies) {
+    const sendResult = await sendTextMessage(fromE164, r.text, env, r.previewUrl ?? false);
+    try {
+      await env.DB.prepare(
+        `INSERT INTO whatsapp_messages
+           (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+         VALUES (?, 'out', ?, ?, ?, 'owner_copilot', 0, ?)`,
+      ).bind(
+        sendResult.messageId ?? null,
+        toE164,
+        fromE164,
+        sendResult.ok ? r.text : `[FAILED] ${r.text}\n\nERROR: ${sendResult.error}`,
+        sendResult.ok ? "sent" : "failed",
+      ).run();
+    } catch (logErr) {
+      console.error("Error guardando respuesta del copiloto:", (logErr as Error).message);
+    }
+    if (r.images && r.images.length > 0) {
+      for (const imageUrl of r.images) {
+        const imgResult = await sendImageMessage(fromE164, imageUrl, env);
+        try {
+          await env.DB.prepare(
+            `INSERT INTO whatsapp_messages
+               (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status, media_type, media_url, media_mime)
+             VALUES (?, 'out', ?, ?, '', 'owner_copilot', 0, ?, 'image', ?, 'image/jpeg')`,
+          ).bind(
+            imgResult.messageId ?? null,
+            toE164,
+            fromE164,
+            imgResult.ok ? "sent" : "failed",
+            imageUrl,
+          ).run();
+        } catch (logErr) {
+          console.error("Error guardando foto del copiloto:", (logErr as Error).message);
+        }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Mensajes no-texto (audio, imagen, sticker, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1043,6 +1142,21 @@ async function handleMediaMessage(
     .bind(msg.id, fromE164, env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown", body, mediaType, mediaId, mediaMime, filename)
     .run();
   if ((inserted.meta?.changes ?? 0) === 0) return; // ya procesado
+
+  // ── MODO PROPIETARIO: media de un dueño ────────────────────────────────────
+  // El media ya quedó guardado (visible en el inbox). NADA del pipeline de
+  // huéspedes debe correr: ni el ack "una persona del equipo te atiende", ni el
+  // lector de comprobantes (los dueños tienen conversation_state viejo de
+  // pruebas que podría dispararlo), ni la escalación por email. Las notas de
+  // voz de dueños se conectan al copiloto en B6; mientras, una línea honesta.
+  if (isOwnerPhone(fromE164)) {
+    await sendTextMessage(
+      fromE164,
+      `Recibí tu ${MEDIA_LABELS[mediaType] ?? "archivo"} 🔒 El copiloto por ahora entiende texto (las notas de voz vienen en la próxima actualización).`,
+      env,
+    );
+    return;
+  }
 
   // Si un humano ya tomó la conversación (bot en pausa), no respondemos ni
   // escalamos de nuevo: César ya lo está viendo y ahora puede ver el archivo.

@@ -1,15 +1,42 @@
 /// <reference types="@cloudflare/workers-types" />
 //
 // owner-copilot.ts — MODO PROPIETARIO: cuando César o Eduardo le escriben al
-// bot, no son leads — son los dueños. Este módulo es la fuente ÚNICA de
+// bot, no son leads — son los dueños. Este módulo es (1) la fuente ÚNICA de
 // "quiénes son los dueños" para todo el lado inbound (webhook, métricas,
-// followups) y — desde B3 — el copiloto interno que les responde.
+// followups) y (2) el COPILOTO interno que les responde: cotizaciones/fichas/
+// fotos listas para REENVIAR a huéspedes, e info operativa que un huésped
+// jamás vería (marcada "🔒 interno").
+//
+// Arquitectura (plan 2026-07-25): el LLM solo CLASIFICA y extrae (action +
+// campos); las MANOS son un dispatcher determinístico que ejecuta con las
+// herramientas reales (buildQuote, availability, D1). Regla de la casa que acá
+// también manda: el LLM JAMÁS tiene la última palabra sobre plata.
 //
 // owner-alerts.ts importa OWNER_PHONES de acá (destinatarios de alertas =
 // dueños reconocidos en la entrada; una sola lista, cero drift).
 //
+// Memoria multi-turno: getConversationHistory (whatsapp_messages). El copiloto
+// NUNCA lee ni escribe conversation_state → cero followups, cero embudo.
+//
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 //
+
+import type { PropertySlug } from "./quote-extractor";
+import { normalizePhone, isValidE164 } from "./phone";
+import { VALID_PROPERTIES, ISO_DATE } from "./llm-schema";
+import { buildQuote, formatQuoteMessage, PROPERTY_PRICING } from "./quote-builder";
+import { buildPricingMap, buildKnowledgeBaseText } from "./kb-store";
+import { checkRangeAvailable, checkGemelasAvailable, type AvailabilityEnv } from "./availability";
+import { buildPropertyCard } from "./property-catalog";
+import { getPropertyPhotos, getGalleryUrl, getCatalogUrl } from "./property-photos";
+import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
+import { callOpenAIJson } from "./openai";
+import { callWorkersAIJson, type AIMessage, type WorkersAIEnv } from "./workers-ai";
+import { getConversationHistory, fechaEnPalabras } from "./conversational-bot";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identidad
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** Dueños de Estadías Jacarí (E.164 sin '+'): César + Eduardo. Confirmados por
  *  César el 2026-07-25 para el modo propietario. */
@@ -25,3 +52,489 @@ export function isOwnerPhone(phone: string | null | undefined): boolean {
 /** Literal SQL para `NOT IN (...)` en queries de métricas/followups. Seguro de
  *  interpolar: constantes de módulo, jamás input de usuario. */
 export const OWNER_PHONES_SQL = OWNER_PHONES.map((p) => `'${p}'`).join(",");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Esquema del LLM (el cerebro solo clasifica/extrae)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CopilotAction =
+  | "quote"           // cotización completa reenviable
+  | "property_card"   // ficha de la propiedad
+  | "photos"          // fotos + link a galería
+  | "payment_link"    // link PayPal para el HUÉSPED (B5)
+  | "transfer_info"   // datos de transferencia con monto (B5)
+  | "availability"    // disponibilidad con detalle interno
+  | "ops_today"       // llegadas/salidas hoy y mañana
+  | "ops_month"       // reservas del mes
+  | "kb_answer"       // respuesta libre desde la KB (sin plata)
+  | "clarify";        // falta un dato → preguntar
+
+const VALID_ACTIONS: CopilotAction[] = [
+  "quote", "property_card", "photos", "payment_link", "transfer_info",
+  "availability", "ops_today", "ops_month", "kb_answer", "clarify",
+];
+
+export interface CopilotFields {
+  action: CopilotAction;
+  property: PropertySlug | null;
+  checkIn: string | null;
+  checkOut: string | null;
+  guests: number | null;
+  adults: number | null;
+  children: number | null;
+  /** Monto USD explícito para payment_link (0 < x ≤ 10000). */
+  amountUsd: number | null;
+  /** Monto HNL explícito para transfer_info (0 < x ≤ 500000). */
+  amountHnl: number | null;
+  /** Teléfono del CLIENTE (E.164 normalizado) para payment_link. */
+  guestPhone: string | null;
+  /** Solo lo usan kb_answer / clarify. */
+  reply: string | null;
+}
+
+const EMPTY_COPILOT_FIELDS: CopilotFields = {
+  action: "clarify",
+  property: null,
+  checkIn: null,
+  checkOut: null,
+  guests: null,
+  adults: null,
+  children: null,
+  amountUsd: null,
+  amountHnl: null,
+  guestPhone: null,
+  reply: null,
+};
+
+/** Valida y sanitiza el JSON del LLM del copiloto. Nunca throws. Acción
+ *  desconocida → clarify; campos inválidos → null (anotados en problems). */
+export function validateCopilotOutput(raw: unknown): { ok: boolean; problems: string[]; fields: CopilotFields } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, problems: ["output no es objeto JSON"], fields: { ...EMPTY_COPILOT_FIELDS } };
+  }
+  const d = raw as Record<string, unknown>;
+  const problems: string[] = [];
+
+  const action: CopilotAction = VALID_ACTIONS.includes(d.action as CopilotAction)
+    ? (d.action as CopilotAction)
+    : "clarify";
+  if (d.action != null && action === "clarify" && d.action !== "clarify") {
+    problems.push(`action desconocida: ${String(d.action).slice(0, 40)}`);
+  }
+
+  const property =
+    typeof d.property === "string" && VALID_PROPERTIES.includes(d.property as PropertySlug)
+      ? (d.property as PropertySlug)
+      : null;
+  if (d.property != null && property === null) problems.push(`property inválida: ${String(d.property).slice(0, 60)}`);
+
+  const iso = (v: unknown): string | null => (typeof v === "string" && ISO_DATE.test(v) ? v : null);
+  const checkIn = iso(d.checkIn);
+  const checkOut = iso(d.checkOut);
+  if (d.checkIn != null && !checkIn) problems.push("checkIn no-ISO");
+  if (d.checkOut != null && !checkOut) problems.push("checkOut no-ISO");
+
+  const num = (v: unknown, min: number, max: number): number | null =>
+    typeof v === "number" && Number.isFinite(v) && v > min && v <= max ? v : null;
+  const guests = num(d.guests, 0, 30) != null ? Math.round(d.guests as number) : null;
+  const adults = num(d.adults, 0, 30) != null ? Math.round(d.adults as number) : null;
+  const children = num(d.children, -1, 30) != null ? Math.round(d.children as number) : null;
+  const amountUsd = num(d.amountUsd, 0, 10_000);
+  const amountHnl = num(d.amountHnl, 0, 500_000);
+
+  // guestPhone: normalizar a E.164; basura → null (el gate de payment_link exige válido).
+  let guestPhone: string | null = null;
+  if (typeof d.guestPhone === "string" && d.guestPhone.trim()) {
+    const norm = normalizePhone(d.guestPhone);
+    if (norm.e164 && isValidE164(norm.e164)) guestPhone = norm.e164;
+    else problems.push(`guestPhone inválido: ${String(d.guestPhone).slice(0, 30)}`);
+  }
+
+  const reply = typeof d.reply === "string" && d.reply.trim().length > 0 ? d.reply.trim() : null;
+
+  return {
+    ok: true,
+    problems,
+    fields: { action, property, checkIn, checkOut, guests, adults, children, amountUsd, amountHnl, guestPhone, reply },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prompt del copiloto
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function buildCopilotSystemPrompt(todayIso: string, kbText: string): string {
+  return `Sos el ASISTENTE INTERNO de los dueños de Estadías Jacarí (César y Eduardo).
+El que escribe es un DUEÑO del negocio, NO un huésped. Jamás lo saludes como bot de
+ventas, jamás le vendas, jamás le pidas "confirmar la reserva".
+
+HOY es ${fechaEnPalabras(todayIso)} (${todayIso}, zona GMT-6 Honduras).
+
+Tu trabajo: clasificar QUÉ necesita el dueño y extraer los datos, en JSON. El
+sistema (no vos) ejecuta el cálculo con el cotizador y la base real.
+
+ACCIONES (campo "action"):
+- "quote": pide cotizar una estadía (propiedad + fechas + personas). El sistema
+  arma el mensaje EXACTO que se le manda al huésped.
+- "property_card": pide la ficha/info de una propiedad para reenviar.
+- "photos": pide fotos de una propiedad.
+- "payment_link": pide un LINK DE PAGO PayPal para un cliente. Necesita
+  propiedad+fechas+personas Y el teléfono del CLIENTE (guestPhone). Si falta
+  cualquiera → action "clarify" pidiéndolo.
+- "transfer_info": pide los datos de la cuenta bancaria / transferencia. Si dio
+  un monto, extraelo (amountHnl o amountUsd).
+- "availability": pregunta si una propiedad está libre en unas fechas (respuesta
+  interna con detalle, no para reenviar).
+- "ops_today": pregunta quién llega/sale hoy o mañana.
+- "ops_month": pregunta por las reservas del mes.
+- "kb_answer": pregunta general que se responde con la base de conocimiento de
+  abajo (amenidades, políticas, direcciones, cómo funciona algo). Poné la
+  respuesta en "reply", concisa y lista para reenviar si aplica.
+- "clarify": falta un dato para ejecutar lo pedido. Poné la pregunta en "reply".
+
+REGLA DE ORO (repetida a propósito): NUNCA digas vos un precio, total, depósito
+ni monto. Si la consulta involucra plata → action quote/payment_link/
+transfer_info y el sistema calcula. Tu "reply" solo se usa en kb_answer y
+clarify, y ahí NO puede haber montos inventados.
+
+Valle de Ángeles es un VENUE DE EVENTOS: jamás se cotiza por noche. Si piden
+cotizarlo → kb_answer explicando que eventos se cotizan aparte según tipo/fecha/
+personas ("desde", sin precio cerrado).
+
+El historial trae los turnos previos: completá campos con lo ya dicho (si ayer
+dijo "Casa Brisa" y hoy dice "del 2 al 6 de octubre", la propiedad sigue siendo
+casa-brisa). Slugs válidos: ${VALID_PROPERTIES.join(", ")}.
+
+Fechas SIEMPRE en ISO YYYY-MM-DD futuras (si dice "el 2 de octubre", es el
+próximo 2 de octubre). Respondé SOLO el JSON:
+{"action": "...", "property": null, "checkIn": null, "checkOut": null,
+ "guests": null, "adults": null, "children": null, "amountUsd": null,
+ "amountHnl": null, "guestPhone": null, "reply": null}
+
+── BASE DE CONOCIMIENTO (la misma que usa el bot de ventas) ──
+${kbText}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Formatters puros (testeables)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OpsReservationRow {
+  property_slug: string;
+  guest_name: string | null;
+  guest_phone: string | null;
+  check_in: string;
+  check_out: string;
+  status: string;
+  source: string;
+  total_hnl: number | null;
+  paid_hnl: number | null;
+  amount_usd: number | null;
+}
+
+function propName(slug: string): string {
+  return PROPERTY_PRICING[slug as PropertySlug]?.name ?? slug;
+}
+
+function fmtGuest(r: OpsReservationRow): string {
+  const who = r.guest_name?.trim() || "(sin nombre)";
+  const tel = r.guest_phone ? ` · ${r.guest_phone}` : "";
+  const src = r.source === "airbnb" || r.source === "airbnb_ical" ? " · Airbnb" : "";
+  return `${who}${tel}${src}`;
+}
+
+/** Llegadas y salidas de hoy y mañana — SIEMPRE interno (PII de huéspedes). */
+export function formatOpsToday(rows: OpsReservationRow[], todayIso: string, tomorrowIso: string): string {
+  const arrToday = rows.filter((r) => r.check_in === todayIso);
+  const arrTomorrow = rows.filter((r) => r.check_in === tomorrowIso);
+  const depToday = rows.filter((r) => r.check_out === todayIso);
+  const depTomorrow = rows.filter((r) => r.check_out === tomorrowIso);
+  const block = (title: string, list: OpsReservationRow[], dateField: "check_in" | "check_out") =>
+    list.length === 0
+      ? `${title}: nadie`
+      : `${title}:\n` +
+        list
+          .map((r) => `  • ${propName(r.property_slug)} — ${fmtGuest(r)} (${dateField === "check_in" ? `sale ${r.check_out}` : `llegó ${r.check_in}`}${r.status === "pending" ? " · ⚠️ PENDING" : ""})`)
+          .join("\n");
+  return [
+    `🔒 interno · Operación de hoy (${todayIso}) y mañana:`,
+    block("🛬 Llegan HOY", arrToday, "check_in"),
+    block("🛫 Salen HOY", depToday, "check_out"),
+    block("🛬 Llegan MAÑANA", arrTomorrow, "check_in"),
+    block("🛫 Salen MAÑANA", depTomorrow, "check_out"),
+  ].join("\n\n");
+}
+
+/** Reservas con llegada en el mes — SIEMPRE interno. */
+export function formatOpsMonth(rows: OpsReservationRow[], monthLabel: string): string {
+  if (rows.length === 0) return `🔒 interno · ${monthLabel}: sin reservas con llegada este mes.`;
+  const byProp = new Map<string, OpsReservationRow[]>();
+  for (const r of rows) {
+    const list = byProp.get(r.property_slug) ?? [];
+    list.push(r);
+    byProp.set(r.property_slug, list);
+  }
+  const lines: string[] = [`🔒 interno · ${monthLabel}: ${rows.length} reserva${rows.length === 1 ? "" : "s"} con llegada en el mes.`];
+  for (const [slug, list] of byProp) {
+    lines.push(
+      `\n*${propName(slug)}* (${list.length}):\n` +
+        list
+          .map((r) => `  • ${r.check_in}→${r.check_out} — ${fmtGuest(r)}${r.status === "pending" ? " · ⚠️ PENDING" : ""}`)
+          .join("\n"),
+    );
+  }
+  return lines.join("\n");
+}
+
+/** Red anti-precio para kb_answer: si el texto del LLM trae montos, se marca.
+ *  Ojo: \b no existe antes de "$" (no es carácter de palabra) → grupo aparte. */
+export function replyHasMoney(reply: string): boolean {
+  return /(\b(HNL|L\.?|USD)|\$)\s?\d/i.test(reply);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// El copiloto
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CopilotReply {
+  text: string;
+  images?: string[];
+  previewUrl?: boolean;
+}
+
+export interface CopilotResult {
+  replies: CopilotReply[];
+  traceAction: string;
+}
+
+export type CopilotEnv = WorkersAIEnv & AvailabilityEnv & { DB: D1Database };
+
+function isoAddDays(iso: string, days: number): string {
+  const t = new Date(iso + "T00:00:00Z").getTime() + days * 86_400_000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+const MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+/** Entrada principal del copiloto: mensaje del dueño → replies listas para mandar. */
+export async function handleOwnerCopilot(
+  phone: string,
+  text: string,
+  todayIso: string,
+  env: CopilotEnv,
+): Promise<CopilotResult> {
+  // 1. Cerebro: clasificar + extraer (historial de whatsapp_messages = memoria).
+  const [kbText, history] = await Promise.all([
+    buildKnowledgeBaseText(env.DB),
+    getConversationHistory(phone, env.DB, 12),
+  ]);
+  const messages: AIMessage[] = [
+    { role: "system", content: buildCopilotSystemPrompt(todayIso, kbText) },
+    ...history,
+    { role: "user", content: text.slice(0, 1000) },
+  ];
+  let llm = await callOpenAIJson<Record<string, unknown>>(messages, env, { temperature: 0.1, maxTokens: 500 });
+  if (!llm.ok) {
+    llm = await callWorkersAIJson<Record<string, unknown>>(messages, env, { temperature: 0.1, maxTokens: 500 });
+  }
+  if (!llm.ok || !llm.data) {
+    // A un dueño se le dice la verdad técnica — jamás silencio, jamás escalación.
+    return {
+      replies: [{ text: `El copiloto no pudo pensar (LLM caído: ${(llm.error ?? "sin detalle").slice(0, 120)}). Reintentá en unos minutos.` }],
+      traceAction: "llm_down",
+    };
+  }
+  const { fields, problems } = validateCopilotOutput(llm.data);
+
+  // 2. Manos: dispatcher determinístico.
+  const result = await dispatchCopilotAction(fields, text, todayIso, env);
+  if (problems.length > 0) result.traceAction += ` [schema: ${problems.join("; ").slice(0, 120)}]`;
+  return result;
+}
+
+/** Exportada para tests: las MANOS del copiloto (el LLM solo clasifica). */
+export async function dispatchCopilotAction(
+  f: CopilotFields,
+  rawText: string,
+  todayIso: string,
+  env: CopilotEnv,
+): Promise<CopilotResult> {
+  switch (f.action) {
+    // ── Cotización reenviable ────────────────────────────────────────────────
+    case "quote": {
+      const missing: string[] = [];
+      if (!f.property) missing.push("la propiedad");
+      if (!f.checkIn || !f.checkOut) missing.push("las fechas (llegada y salida)");
+      if (!f.guests && !f.adults) missing.push("cuántas personas");
+      if (missing.length > 0) {
+        return {
+          replies: [{ text: `Para cotizar me falta ${missing.join(" y ")}.` }],
+          traceAction: "quote_clarify",
+        };
+      }
+      const guests = f.guests ?? (f.adults ?? 0) + (f.children ?? 0);
+      const pricingMap = await buildPricingMap(env.DB);
+      const quote = await buildQuote(
+        { property: f.property!, checkIn: f.checkIn!, checkOut: f.checkOut!, guests, adults: f.adults, children: f.children },
+        env.DB,
+        pricingMap,
+      );
+      if (!quote) {
+        return { replies: [{ text: "No pude armar la cotización (propiedad desconocida para el cotizador)." }], traceAction: "quote_fail" };
+      }
+      // Disponibilidad real (Airbnb iCal + D1) — el mismo par que usa el bot.
+      const avail = f.property === "las-gemelas-tela"
+        ? await checkGemelasAvailable(f.checkIn!, f.checkOut!, env)
+        : await checkRangeAvailable(f.property!, f.checkIn!, f.checkOut!, env);
+      const airbnbBusy = avail.verified && !avail.available;
+
+      const forwardable = formatQuoteMessage(
+        quote,
+        { property: f.property!, checkIn: f.checkIn!, checkOut: f.checkOut!, guests, adults: f.adults, children: f.children },
+        "es",
+      );
+      const internalBits: string[] = [];
+      if (airbnbBusy) {
+        internalBits.push(`⛔ OJO: Airbnb marca OCUPADO (${avail.conflictDates.slice(0, 4).join(", ")}${avail.conflictDates.length > 4 ? "…" : ""}) — NO reenvíes esta cotización sin liberar las fechas.`);
+      } else if (!avail.verified) {
+        internalBits.push("⚠️ No pude verificar el iCal de Airbnb ahora — confirmá el calendario antes de cerrar.");
+      } else if (quote.available) {
+        internalBits.push("✅ Verificado libre en Airbnb + D1.");
+      }
+      if (quote.minNightsRequired) internalBits.push(`La estadía viola el mínimo de ${quote.minNightsRequired} noches (${quote.seasonName}).`);
+      if (quote.exceedsCapacity) internalBits.push(`El grupo supera el cupo (${quote.capacity}).`);
+      if ((quote.seasonNights ?? 0) > 0 && quote.available) internalBits.push(`Incluye ${quote.seasonNights} noche(s) de ${quote.seasonName} a HNL ${quote.seasonRateHNL?.toLocaleString("es-HN")}.`);
+      return {
+        replies: [
+          { text: forwardable },
+          { text: `🔒 interno: ${internalBits.join(" ")}\nDepósito 50%: HNL ${quote.depositHNL.toLocaleString("es-HN")} (≈ USD ${quote.depositUSD.toFixed(2)}).` },
+        ],
+        traceAction: airbnbBusy ? "quote_airbnb_busy" : "quote_ok",
+      };
+    }
+
+    // ── Ficha / fotos ────────────────────────────────────────────────────────
+    case "property_card": {
+      if (!f.property) {
+        return { replies: [{ text: `¿De cuál propiedad? Catálogo completo: ${getCatalogUrl()}`, previewUrl: false }], traceAction: "card_clarify" };
+      }
+      const card = buildPropertyCard(f.property, "es");
+      return {
+        replies: [{ text: card || `Ficha: ${getGalleryUrl(f.property)}`, previewUrl: true }],
+        traceAction: "card_ok",
+      };
+    }
+    case "photos": {
+      if (!f.property) {
+        return { replies: [{ text: `¿De cuál propiedad querés fotos? Catálogo: ${getCatalogUrl()}` }], traceAction: "photos_clarify" };
+      }
+      const photos = getPropertyPhotos(f.property);
+      if (photos.length === 0) {
+        return { replies: [{ text: `No tengo galería cargada de esa propiedad — su ficha: ${getGalleryUrl(f.property)}`, previewUrl: true }], traceAction: "photos_link" };
+      }
+      return {
+        replies: [{ text: `📸 ${propName(f.property)} — galería completa: ${getGalleryUrl(f.property)}`, images: photos }],
+        traceAction: "photos_ok",
+      };
+    }
+
+    // ── Disponibilidad con detalle interno ───────────────────────────────────
+    case "availability": {
+      if (!f.property || !f.checkIn || !f.checkOut) {
+        return { replies: [{ text: "Decime propiedad y fechas (llegada/salida) y te digo si está libre." }], traceAction: "avail_clarify" };
+      }
+      const avail = f.property === "las-gemelas-tela"
+        ? await checkGemelasAvailable(f.checkIn, f.checkOut, env)
+        : await checkRangeAvailable(f.property, f.checkIn, f.checkOut, env);
+      // ¿Quién ocupa? (solo dueños ven esto)
+      let occupants = "";
+      try {
+        const blockSlugs = overlapSlugs(f.property);
+        const rows = await env.DB.prepare(
+          `SELECT property_slug, guest_name, guest_phone, check_in, check_out, status, source
+             FROM reservations
+            WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
+              AND status IN ('confirmed','pending')
+              AND NOT (check_out <= ? OR check_in >= ?)
+            ORDER BY check_in LIMIT 6`,
+        ).bind(...blockSlugs, f.checkIn, f.checkOut).all<OpsReservationRow>();
+        const list = rows.results ?? [];
+        if (list.length > 0) {
+          occupants = "\nEn D1 pisan esas fechas:\n" + list.map((r) => `  • ${propName(r.property_slug)} ${r.check_in}→${r.check_out} — ${fmtGuest(r)} (${r.status})`).join("\n");
+        }
+      } catch { /* best-effort */ }
+      const verdict = !avail.verified
+        ? `⚠️ No pude leer el iCal de Airbnb — esto es solo D1.`
+        : avail.available
+          ? `✅ LIBRE del ${f.checkIn} al ${f.checkOut}.`
+          : `⛔ OCUPADO (${avail.conflictDates.slice(0, 5).join(", ")}${avail.conflictDates.length > 5 ? "…" : ""}).`;
+      return {
+        replies: [{ text: `🔒 interno · ${propName(f.property)}: ${verdict}${occupants}` }],
+        traceAction: "avail_ok",
+      };
+    }
+
+    // ── Operación ────────────────────────────────────────────────────────────
+    case "ops_today": {
+      const tomorrow = isoAddDays(todayIso, 1);
+      try {
+        const rows = await env.DB.prepare(
+          `SELECT property_slug, guest_name, guest_phone, check_in, check_out, status, source, total_hnl, paid_hnl, amount_usd
+             FROM reservations
+            WHERE status IN ('confirmed','pending')
+              AND (check_in IN (?1, ?2) OR check_out IN (?1, ?2))
+            ORDER BY check_in`,
+        ).bind(todayIso, tomorrow).all<OpsReservationRow>();
+        return {
+          replies: [{ text: formatOpsToday(rows.results ?? [], todayIso, tomorrow) }],
+          traceAction: "ops_today_ok",
+        };
+      } catch (err) {
+        return { replies: [{ text: `No pude leer las reservas: ${(err as Error).message.slice(0, 100)}` }], traceAction: "ops_today_fail" };
+      }
+    }
+    case "ops_month": {
+      const monthStart = todayIso.slice(0, 7) + "-01";
+      const [y, m] = todayIso.split("-").map(Number);
+      const nextMonthStart = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+      const label = `${MONTHS_ES[m - 1]} ${y}`;
+      try {
+        const rows = await env.DB.prepare(
+          `SELECT property_slug, guest_name, guest_phone, check_in, check_out, status, source, total_hnl, paid_hnl, amount_usd
+             FROM reservations
+            WHERE status IN ('confirmed','pending') AND check_in >= ? AND check_in < ?
+            ORDER BY property_slug, check_in`,
+        ).bind(monthStart, nextMonthStart).all<OpsReservationRow>();
+        return {
+          replies: [{ text: formatOpsMonth(rows.results ?? [], label) }],
+          traceAction: "ops_month_ok",
+        };
+      } catch (err) {
+        return { replies: [{ text: `No pude leer las reservas: ${(err as Error).message.slice(0, 100)}` }], traceAction: "ops_month_fail" };
+      }
+    }
+
+    // ── Plata (B5 — gates duros; se implementan con revisión adversaria) ─────
+    case "payment_link":
+    case "transfer_info":
+      return {
+        replies: [{ text: "Los pagos del copiloto (link PayPal / datos de transferencia) se encienden en la siguiente actualización — ya casi. Mientras, pedímela como cotización y usá el flujo normal." }],
+        traceAction: `${f.action}_not_yet`,
+      };
+
+    // ── KB / clarify ─────────────────────────────────────────────────────────
+    case "kb_answer": {
+      const reply = f.reply ?? "¿Me repetís la pregunta?";
+      const guard = replyHasMoney(reply)
+        ? "\n\n🔒 interno: este texto trae montos salidos de la KB, no del cotizador — verificá antes de reenviar."
+        : "";
+      return { replies: [{ text: reply + guard }], traceAction: "kb_answer" };
+    }
+    case "clarify":
+    default:
+      return {
+        replies: [{ text: f.reply ?? "¿Qué necesitás? Puedo cotizar, pasar fichas/fotos, ver disponibilidad, o decirte quién llega hoy y cómo va el mes." }],
+        traceAction: "clarify",
+      };
+  }
+}
