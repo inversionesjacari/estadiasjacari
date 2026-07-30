@@ -14,6 +14,9 @@ import {
 } from "date-fns";
 import "react-day-picker/style.css";
 import { waUrl, waMessage } from "@/lib/whatsapp";
+// Temporadas (Semana Morazánica): MISMA fuente de verdad que el bot — módulo
+// puro compartido; el total se arma noche a noche y el mínimo gatea el botón.
+import { computeStayHNL, requiredMinNights } from "../../functions/_lib/seasonal-pricing";
 import { trackEvent } from "@/lib/analytics";
 
 const PAYPAL_CLIENT_ID =
@@ -273,17 +276,41 @@ export default function BookingWidget({
 
   // Precio USD derivado: HNL / TC del día. Si el TC no cargó, fallback al
   // valor hardcoded en properties.ts (pricePerNightUSD, cleaningFeeUSD).
-  const effectivePricePerNightUSD = exchangeRate
-    ? pricePerNightHNL / exchangeRate
-    : pricePerNightUSD;
   const effectiveCleaningFeeUSD = exchangeRate
     ? cleaningFeeHNL / exchangeRate
     : cleaningFeeUSD;
 
-  const nightsTotalUSD = nights > 0 ? nights * effectivePricePerNightUSD : 0;
-  const grandTotalUSD = nights > 0 ? nightsTotalUSD + effectiveCleaningFeeUSD : 0;
-  const nightsTotalHNL = nights > 0 ? nights * pricePerNightHNL : 0;
+  // ── Temporada (Semana Morazánica): total noche a noche + estadía mínima ────
+  const checkInIsoSel = range?.from ? format(range.from, "yyyy-MM-dd") : null;
+  const checkOutIsoSel = range?.to ? format(range.to, "yyyy-MM-dd") : null;
+  const seasonalStay = useMemo(
+    () =>
+      checkInIsoSel && checkOutIsoSel
+        ? computeStayHNL(propertySlug, checkInIsoSel, checkOutIsoSel, pricePerNightHNL)
+        : null,
+    [checkInIsoSel, checkOutIsoSel, propertySlug, pricePerNightHNL],
+  );
+  const seasonMinReq = useMemo(
+    () =>
+      checkInIsoSel && checkOutIsoSel
+        ? requiredMinNights(propertySlug, checkInIsoSel, checkOutIsoSel)
+        : null,
+    [checkInIsoSel, checkOutIsoSel, propertySlug],
+  );
+  /** El rango toca la temporada pero no llega al mínimo de noches → no se puede reservar. */
+  const belowSeasonMin = nights > 0 && seasonMinReq != null && nights < seasonMinReq.minNights;
+
+  const nightsTotalHNL =
+    nights > 0 ? (seasonalStay?.nightsTotalHNL ?? nights * pricePerNightHNL) : 0;
   const grandTotalHNL = nights > 0 ? nightsTotalHNL + cleaningFeeHNL : 0;
+  // USD del total mixto: TC del día; sin TC, proporcional al TC implícito del hardcode.
+  const nightsTotalUSD =
+    nights > 0
+      ? exchangeRate
+        ? nightsTotalHNL / exchangeRate
+        : nightsTotalHNL * (pricePerNightUSD / pricePerNightHNL)
+      : 0;
+  const grandTotalUSD = nights > 0 ? nightsTotalUSD + effectiveCleaningFeeUSD : 0;
 
   // Detecta si el rango seleccionado pisa una fecha bloqueada en medio.
   // react-day-picker previene clicks directos en disabled, pero un rango
@@ -646,18 +673,64 @@ export default function BookingWidget({
           </div>
         )}
 
+        {/* Aviso de estadía mínima de temporada (Semana Morazánica) */}
+        {belowSeasonMin && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800">
+            🇭🇳 Para la <strong>{seasonMinReq!.seasonName}</strong> esta
+            propiedad requiere una estadía mínima de{" "}
+            <strong>{seasonMinReq!.minNights} noches</strong>. Ajusta tus fechas
+            para continuar.
+          </div>
+        )}
+
         {/* Resumen de precio */}
         {nights > 0 && !rangeHasBlockedDateInside && (
           <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">
-                L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
-                {nights === 1 ? "noche" : "noches"}
-              </span>
-              <span className="font-medium">
-                L. {nightsTotalHNL.toLocaleString()}
-              </span>
-            </div>
+            {seasonalStay && seasonalStay.seasonNights > 0 ? (
+              <>
+                {seasonalStay.baseNights > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">
+                      L. {pricePerNightHNL.toLocaleString()} ×{" "}
+                      {seasonalStay.baseNights}{" "}
+                      {seasonalStay.baseNights === 1 ? "noche" : "noches"}
+                    </span>
+                    <span className="font-medium">
+                      L.{" "}
+                      {(
+                        seasonalStay.baseNights * pricePerNightHNL
+                      ).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span className="text-gray-600">
+                    L. {seasonalStay.seasonRateHNL!.toLocaleString()} ×{" "}
+                    {seasonalStay.seasonNights}{" "}
+                    {seasonalStay.seasonNights === 1 ? "noche" : "noches"}{" "}
+                    <span className="text-amber-700">
+                      ({seasonalStay.seasonName})
+                    </span>
+                  </span>
+                  <span className="font-medium">
+                    L.{" "}
+                    {(
+                      seasonalStay.seasonNights * seasonalStay.seasonRateHNL!
+                    ).toLocaleString()}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div className="flex justify-between">
+                <span className="text-gray-600">
+                  L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
+                  {nights === 1 ? "noche" : "noches"}
+                </span>
+                <span className="font-medium">
+                  L. {nightsTotalHNL.toLocaleString()}
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-gray-600">Costo de limpieza (único)</span>
               <span className="font-medium">
@@ -760,12 +833,14 @@ export default function BookingWidget({
             </div>
             <button
               onClick={handleProceed}
-              disabled={nights <= 0 || rangeHasBlockedDateInside}
+              disabled={nights <= 0 || rangeHasBlockedDateInside || belowSeasonMin}
               className="w-full bg-accent text-white py-3 rounded-xl font-semibold text-sm hover:brightness-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {nights > 0 && !rangeHasBlockedDateInside
-                ? "Continuar →"
-                : "Selecciona las fechas"}
+              {belowSeasonMin
+                ? `Mínimo ${seasonMinReq!.minNights} noches en estas fechas`
+                : nights > 0 && !rangeHasBlockedDateInside
+                  ? "Continuar →"
+                  : "Selecciona las fechas"}
             </button>
 
             {/* Nota única sobre el cobro */}
@@ -829,15 +904,51 @@ export default function BookingWidget({
               <p className="text-xs text-gray-500 uppercase tracking-wide font-medium mb-2">
                 Desglose
               </p>
-              <div className="flex justify-between">
-                <span className="text-gray-600">
-                  L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
-                  {nights === 1 ? "noche" : "noches"}
-                </span>
-                <span className="font-medium">
-                  L. {nightsTotalHNL.toLocaleString()}
-                </span>
-              </div>
+              {seasonalStay && seasonalStay.seasonNights > 0 ? (
+                <>
+                  {seasonalStay.baseNights > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">
+                        L. {pricePerNightHNL.toLocaleString()} ×{" "}
+                        {seasonalStay.baseNights}{" "}
+                        {seasonalStay.baseNights === 1 ? "noche" : "noches"}
+                      </span>
+                      <span className="font-medium">
+                        L.{" "}
+                        {(
+                          seasonalStay.baseNights * pricePerNightHNL
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">
+                      L. {seasonalStay.seasonRateHNL!.toLocaleString()} ×{" "}
+                      {seasonalStay.seasonNights}{" "}
+                      {seasonalStay.seasonNights === 1 ? "noche" : "noches"}{" "}
+                      <span className="text-amber-700">
+                        ({seasonalStay.seasonName})
+                      </span>
+                    </span>
+                    <span className="font-medium">
+                      L.{" "}
+                      {(
+                        seasonalStay.seasonNights * seasonalStay.seasonRateHNL!
+                      ).toLocaleString()}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">
+                    L. {pricePerNightHNL.toLocaleString()} × {nights}{" "}
+                    {nights === 1 ? "noche" : "noches"}
+                  </span>
+                  <span className="font-medium">
+                    L. {nightsTotalHNL.toLocaleString()}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-gray-600">Costo de limpieza (único)</span>
                 <span className="font-medium">
