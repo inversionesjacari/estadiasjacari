@@ -378,18 +378,48 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
             );
           }
 
-          // Mensaje al huésped por WhatsApp (best-effort, nunca falla el webhook)
+          // Mensaje al huésped por WhatsApp (best-effort, nunca falla el webhook).
+          // ⚠️ Revisión adversaria 25-jul (C1): sendTextMessage NO rechaza — resuelve
+          // {ok:false}. Si el cliente JAMÁS escribió al bot (típico con links del
+          // copiloto de dueños), la ventana de 24h de Meta no existe y el texto libre
+          // muere con 131047 — antes ese fallo era INVISIBLE. Ahora: se loguea el
+          // saliente (aparece en el inbox con su ⚠) y se alerta a los dueños para que
+          // le reenvíen la confirmación al cliente por otro canal.
           if (wa.guestMessage && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+            const guestMsgText = wa.guestMessage;
             sideEffects.push(
-              sendTextMessage(
-                waOrigin.phone,
-                wa.guestMessage,
-                env as { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
-              ).catch((waErr) => {
-                console.error(
-                  "WA-origin: error enviando confirmación WhatsApp:",
-                  (waErr as Error).message,
+              (async () => {
+                const sendRes = await sendTextMessage(
+                  waOrigin.phone,
+                  guestMsgText,
+                  env as { WHATSAPP_ACCESS_TOKEN: string; WHATSAPP_PHONE_NUMBER_ID: string },
                 );
+                try {
+                  await env.DB.prepare(
+                    `INSERT INTO whatsapp_messages
+                       (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
+                     VALUES (?, 'out', ?, ?, ?, 'paypal_wa_confirmation', 0, ?)`,
+                  ).bind(
+                    sendRes.messageId ?? null,
+                    env.WHATSAPP_PHONE_NUMBER_ID ?? "unknown",
+                    waOrigin.phone,
+                    sendRes.ok ? guestMsgText : `[FAILED] ${guestMsgText}\n\nERROR: ${sendRes.error}`,
+                    sendRes.ok ? "sent" : "failed",
+                  ).run();
+                } catch { /* best-effort */ }
+                if (!sendRes.ok) {
+                  await notifyOwners(
+                    { WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID, DB: env.DB },
+                    {
+                      tipo: "🔴 Confirmación de pago NO llegó al cliente",
+                      cliente: waOrigin.phone,
+                      detalle: `Pagó ${waOrigin.propertySlug} ${waOrigin.checkIn}→${waOrigin.checkOut} pero el WhatsApp de confirmación FALLÓ (${(sendRes.error ?? "").slice(0, 120)}). Probable ventana de Meta cerrada (cliente que nunca escribió al bot) — mandale la confirmación vos.`,
+                      guestPhone: waOrigin.phone,
+                    },
+                  ).catch(() => { /* best-effort */ });
+                }
+              })().catch((waErr) => {
+                console.error("WA-origin: error enviando confirmación WhatsApp:", (waErr as Error).message);
               }),
             );
           }
@@ -457,6 +487,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           });
         }
         // ── Fin branch WhatsApp — sigue flow del website ──────────────────
+
+        // ⚠️ Revisión adversaria 25-jul (C3): un custom_id "wa:" que NO pasó el
+        // parse estricto de arriba JAMÁS debe caer a la rama website — sus partes
+        // desalineadas ("wa:<phone>" como slug, el slug como check_in) crearían
+        // una reserva corrupta 'confirmed' con plata capturada. Se rechaza con
+        // registro para diagnóstico (el pago queda en PayPal, un humano decide).
+        if (customId.startsWith("wa:")) {
+          return logAndReturn(400, {
+            paypalEventId: webhookEvent.id,
+            eventType,
+            orderId,
+            verificationStatus: "SUCCESS",
+            errorMessage: `custom_id wa: malformado — rechazado (no se procesa como website): "${customId.slice(0, 120)}"`,
+          });
+        }
 
         const parts = customId.split("|");
         // Formato esperado: slug|checkIn|checkOut|email|phone (5 partes).

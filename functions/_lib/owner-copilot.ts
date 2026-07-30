@@ -33,6 +33,9 @@ import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 import { callOpenAIJson } from "./openai";
 import { callWorkersAIJson, type AIMessage, type WorkersAIEnv } from "./workers-ai";
 import { getConversationHistory, fechaEnPalabras } from "./conversational-bot";
+import { createPayPalOrder, type PayPalEnv } from "./paypal-checkout";
+import { buildTransferMessageHNL, buildTransferMessageUSD } from "./bank-transfer";
+import { T } from "./i18n";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Identidad
@@ -136,9 +139,15 @@ export function validateCopilotOutput(raw: unknown): { ok: boolean; problems: st
 
   const num = (v: unknown, min: number, max: number): number | null =>
     typeof v === "number" && Number.isFinite(v) && v > min && v <= max ? v : null;
-  const guests = num(d.guests, 0, 30) != null ? Math.round(d.guests as number) : null;
-  const adults = num(d.adults, 0, 30) != null ? Math.round(d.adults as number) : null;
-  const children = num(d.children, -1, 30) != null ? Math.round(d.children as number) : null;
+  // Redondear ANTES de validar el rango (adversaria C3: guests=0.4 pasaba el
+  // ">0" y redondeaba a 0 después — un 0 rompe el custom_id de PayPal).
+  const count = (v: unknown, min: number, max: number): number | null => {
+    const r = typeof v === "number" && Number.isFinite(v) ? Math.round(v) : NaN;
+    return Number.isFinite(r) && r > min && r <= max ? r : null;
+  };
+  const guests = count(d.guests, 0, 30);
+  const adults = count(d.adults, 0, 30);
+  const children = count(d.children, -1, 30);
   const amountUsd = num(d.amountUsd, 0, 10_000);
   const amountHnl = num(d.amountHnl, 0, 500_000);
 
@@ -307,7 +316,7 @@ export interface CopilotResult {
   traceAction: string;
 }
 
-export type CopilotEnv = WorkersAIEnv & AvailabilityEnv & { DB: D1Database };
+export type CopilotEnv = WorkersAIEnv & AvailabilityEnv & PayPalEnv & { DB: D1Database };
 
 function isoAddDays(iso: string, days: number): string {
   const t = new Date(iso + "T00:00:00Z").getTime() + days * 86_400_000;
@@ -514,13 +523,145 @@ export async function dispatchCopilotAction(
       }
     }
 
-    // ── Plata (B5 — gates duros; se implementan con revisión adversaria) ─────
-    case "payment_link":
-    case "transfer_info":
+    // ── Plata: link de pago PayPal para el HUÉSPED ───────────────────────────
+    // Gates DUROS en código (no en el prompt): sin teléfono del cliente válido
+    // y ≠ dueños, createPayPalOrder NO se llama. El custom_id wa:<phone>|… es
+    // lo que hace que la reserva y la confirmación post-pago le lleguen al
+    // CLIENTE (paypal-wa-capture: anti-solape atómico + estado pending con el
+    // depósito — no depende de conversation_state, verificado 25-jul).
+    case "payment_link": {
+      // HNL presente → rechazo SIEMPRE, aunque el LLM haya "ayudado" llenando
+      // también amountUsd con una conversión propia (adversaria C4: el LLM
+      // jamás tiene la última palabra sobre plata — un TC inventado es plata).
+      if (f.amountHnl != null) {
+        return {
+          replies: [{ text: "PayPal cobra en DÓLARES (no acepta HNL). Decime el monto en USD explícito, o pedime la cotización y uso el depósito del 50% que calcula el sistema." }],
+          traceAction: "paylink_hnl_rejected",
+        };
+      }
+      const missing: string[] = [];
+      if (!f.property) missing.push("la propiedad");
+      if (!f.checkIn || !f.checkOut) missing.push("las fechas");
+      if (!f.guests && !f.adults) missing.push("cuántas personas");
+      if (!f.guestPhone) missing.push("el TELÉFONO del cliente (para que la confirmación le llegue a él, no a vos)");
+      if (missing.length > 0) {
+        return {
+          replies: [{ text: `Para el link de pago me falta ${missing.join(", ")}.` }],
+          traceAction: "paylink_clarify",
+        };
+      }
+      if (isOwnerPhone(f.guestPhone)) {
+        return {
+          replies: [{ text: "Ese es TU número (o el de Eduardo) — necesito el del CLIENTE: la reserva y la confirmación de pago se atribuyen a ese teléfono." }],
+          traceAction: "paylink_owner_phone_rejected",
+        };
+      }
+      const guests = f.guests ?? (f.adults ?? 0) + (f.children ?? 0);
+      const pricingMap = await buildPricingMap(env.DB);
+      const quote = await buildQuote(
+        { property: f.property!, checkIn: f.checkIn!, checkOut: f.checkOut!, guests, adults: f.adults, children: f.children },
+        env.DB,
+        pricingMap,
+      );
+      if (!quote) {
+        return { replies: [{ text: "No pude cotizar esa propiedad — sin cotización no genero link." }], traceAction: "paylink_quote_fail" };
+      }
+      if (!quote.available) {
+        const why = quote.minNightsRequired
+          ? `viola el mínimo de ${quote.minNightsRequired} noches (${quote.seasonName})`
+          : quote.exceedsCapacity
+            ? `el grupo supera el cupo (${quote.capacity})`
+            : "las fechas figuran OCUPADAS en D1";
+        return {
+          replies: [{ text: `🔒 interno: NO generé el link — ${why}. Cobrar fechas inválidas es plata que después hay que devolver.` }],
+          traceAction: "paylink_blocked_unavailable",
+        };
+      }
+      // Airbnb también (el mismo doble chequeo del flujo de leads).
+      const avail = f.property === "las-gemelas-tela"
+        ? await checkGemelasAvailable(f.checkIn!, f.checkOut!, env)
+        : await checkRangeAvailable(f.property!, f.checkIn!, f.checkOut!, env);
+      if (avail.verified && !avail.available) {
+        return {
+          replies: [{ text: `🔒 interno: NO generé el link — Airbnb marca OCUPADO (${avail.conflictDates.slice(0, 4).join(", ")}). Liberá el calendario primero.` }],
+          traceAction: "paylink_blocked_airbnb",
+        };
+      }
+      const amountUsd = f.amountUsd ?? quote.depositUSD;
+      const order = await createPayPalOrder(
+        {
+          amountUsd,
+          propertySlug: f.property!,
+          propertyName: quote.propertyName,
+          checkIn: f.checkIn!,
+          checkOut: f.checkOut!,
+          guests,
+          guestPhone: f.guestPhone!, // ← el CLIENTE (gate de arriba lo garantiza)
+        },
+        env,
+      );
+      if (!order.ok || !order.approvalUrl) {
+        return {
+          replies: [{ text: `PayPal no me dio el link: ${(order.error ?? "sin detalle").slice(0, 150)}` }],
+          traceAction: "paylink_paypal_fail",
+        };
+      }
+      // Reenviable: si el monto es el depósito estándar, el MISMO mensaje que
+      // manda el bot (T.paypalLink); monto custom → texto simple sin "50%".
+      const isStandardDeposit = f.amountUsd == null || Math.abs(amountUsd - quote.depositUSD) < 0.01;
+      const forwardable = isStandardDeposit
+        ? T.paypalLink(
+            "es",
+            quote.depositHNL.toLocaleString("es-HN"),
+            quote.depositUSD.toFixed(2),
+            order.approvalUrl,
+            quote.balanceHNL.toLocaleString("es-HN"),
+          )
+        : `¡Listo! El pago es de USD ${amountUsd.toFixed(2)}. Podés pagar acá:\n\n👉 ${order.approvalUrl}\n\nApenas se acredite te llega la confirmación automática ✅`;
+      const internal =
+        `🔒 interno: link para el cliente ${f.guestPhone} · ${quote.propertyName} ${f.checkIn}→${f.checkOut} · USD ${amountUsd.toFixed(2)}` +
+        (isStandardDeposit ? ` (depósito 50% estándar).` : ` (monto CUSTOM — el depósito estándar sería USD ${quote.depositUSD.toFixed(2)}).`) +
+        ` Cuando pague: reserva pending + confirmación automática al cliente por WhatsApp y correo.` +
+        ` ⚠️ Si el cliente NUNCA le ha escrito al bot, el WhatsApp puede no llegarle (ventana de Meta) — si falla te llega alerta para que se la reenvíes vos.` +
+        (!avail.verified ? " ⚠️ iCal de Airbnb no verificado — chequeá el calendario." : "");
       return {
-        replies: [{ text: "Los pagos del copiloto (link PayPal / datos de transferencia) se encienden en la siguiente actualización — ya casi. Mientras, pedímela como cotización y usá el flujo normal." }],
-        traceAction: `${f.action}_not_yet`,
+        replies: [{ text: forwardable }, { text: internal }],
+        traceAction: "paylink_ok",
       };
+    }
+
+    // ── Plata: datos de transferencia con monto ──────────────────────────────
+    case "transfer_info": {
+      if (f.amountHnl != null) {
+        return { replies: [{ text: buildTransferMessageHNL(f.amountHnl, "es") }], traceAction: "transfer_hnl_ok" };
+      }
+      if (f.amountUsd != null) {
+        return { replies: [{ text: buildTransferMessageUSD(f.amountUsd, "es") }], traceAction: "transfer_usd_ok" };
+      }
+      // Sin monto explícito pero con datos de estadía → depósito del cotizador.
+      if (f.property && f.checkIn && f.checkOut && (f.guests || f.adults)) {
+        const guests = f.guests ?? (f.adults ?? 0) + (f.children ?? 0);
+        const pricingMap = await buildPricingMap(env.DB);
+        const quote = await buildQuote(
+          { property: f.property, checkIn: f.checkIn, checkOut: f.checkOut, guests, adults: f.adults, children: f.children },
+          env.DB,
+          pricingMap,
+        );
+        if (quote && quote.available) {
+          return {
+            replies: [
+              { text: buildTransferMessageHNL(quote.depositHNL, "es") },
+              { text: `🔒 interno: depósito 50% de ${quote.propertyName} ${f.checkIn}→${f.checkOut} (total HNL ${quote.totalHNL.toLocaleString("es-HN")}).` },
+            ],
+            traceAction: "transfer_quote_ok",
+          };
+        }
+      }
+      return {
+        replies: [{ text: "¿De cuánto es la transferencia? Decime el monto (HNL o USD), o pasame propiedad+fechas+personas y uso el depósito del 50%." }],
+        traceAction: "transfer_clarify",
+      };
+    }
 
     // ── KB / clarify ─────────────────────────────────────────────────────────
     case "kb_answer": {

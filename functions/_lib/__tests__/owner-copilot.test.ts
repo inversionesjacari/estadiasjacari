@@ -1,4 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Spy sobre PayPal: la garantía central de B5 es que sin un teléfono de CLIENTE
+// válido (≠ dueños), createPayPalOrder NUNCA se llama — se verifica con el mock.
+vi.mock("../paypal-checkout", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../paypal-checkout")>();
+  return {
+    ...mod,
+    createPayPalOrder: vi.fn(async () => ({ ok: true, orderId: "TEST-ORDER", approvalUrl: "https://paypal.test/pay/TEST" })),
+  };
+});
+import { createPayPalOrder } from "../paypal-checkout";
+
 import {
   OWNER_PHONES,
   isOwnerPhone,
@@ -79,6 +91,10 @@ describe("validateCopilotOutput — el LLM solo clasifica, y hasta eso se valida
     expect(r.fields.amountHnl).toBeNull();
     expect(validateCopilotOutput({ action: "payment_link", amountUsd: 99999 }).fields.amountUsd).toBeNull();
   });
+  it("guests fraccionario se redondea ANTES de validar: 0.4 → null, jamás 0 (adversaria C3)", () => {
+    expect(validateCopilotOutput({ action: "quote", guests: 0.4 }).fields.guests).toBeNull();
+    expect(validateCopilotOutput({ action: "quote", guests: 3.6 }).fields.guests).toBe(4);
+  });
   it("guestPhone basura → null; guestPhone válido → normalizado E.164", () => {
     expect(validateCopilotOutput({ action: "payment_link", guestPhone: "no es un tel" }).fields.guestPhone).toBeNull();
     const ok = validateCopilotOutput({ action: "payment_link", guestPhone: "+504 9988-1234" });
@@ -116,11 +132,10 @@ describe("dispatchCopilotAction — pide lo que falta sin quemar LLM", () => {
     const r = await dispatchCopilotAction(fields({ action: "availability", property: "casa-brisa" }), "libre?", "2026-07-25", FAKE_ENV);
     expect(r.traceAction).toBe("avail_clarify");
   });
-  it("payment_link/transfer_info todavía apagados en B4 → aviso honesto, jamás plata a medias", async () => {
+  it("payment_link sin NINGÚN dato → clarify que enumera todo (incl. teléfono del cliente)", async () => {
     const pl = await dispatchCopilotAction(fields({ action: "payment_link" }), "link", "2026-07-25", FAKE_ENV);
-    expect(pl.traceAction).toBe("payment_link_not_yet");
-    const ti = await dispatchCopilotAction(fields({ action: "transfer_info" }), "cuenta", "2026-07-25", FAKE_ENV);
-    expect(ti.traceAction).toBe("transfer_info_not_yet");
+    expect(pl.traceAction).toBe("paylink_clarify");
+    expect(pl.replies[0].text).toContain("TELÉFONO del cliente");
   });
   it("kb_answer con montos → nota interna de verificación (el LLM no manda en plata)", async () => {
     const r = await dispatchCopilotAction(
@@ -179,6 +194,129 @@ describe("formatOpsToday — llegadas/salidas hoy y mañana (🔒 interno)", () 
     const out = formatOpsToday([], "2026-07-25", "2026-07-26");
     expect(out).toContain("Llegan HOY: nadie");
     expect(out).toContain("Salen MAÑANA: nadie");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// B5 — Acciones de PLATA (payment_link / transfer_info)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** D1 falso: sin reservas (cnt 0), kb_properties vacía (fallback hardcode). */
+function fakeDb(conflictCnt = 0): unknown {
+  const stmt = {
+    bind(..._args: unknown[]) { return stmt; },
+    async first() { return { cnt: conflictCnt }; },
+    async all() { return { results: [] }; },
+    async run() { return { meta: {} }; },
+  };
+  return { prepare: () => stmt };
+}
+
+const PAY_FIELDS: Partial<CopilotFields> = {
+  action: "payment_link",
+  property: "casa-brisa",
+  checkIn: "2026-08-15",
+  checkOut: "2026-08-17",
+  guests: 4,
+  guestPhone: "50499881234",
+};
+
+describe("payment_link — gates DUROS antes de tocar PayPal", () => {
+  beforeEach(() => vi.mocked(createPayPalOrder).mockClear());
+
+  it("SIN guestPhone → clarify pidiendo el teléfono del cliente y PayPal NUNCA se llama", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields({ ...PAY_FIELDS, guestPhone: null }), "link", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_clarify");
+    expect(r.replies[0].text).toContain("TELÉFONO del cliente");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("guestPhone = un DUEÑO → rechazo (la reserva se atribuiría al dueño) y PayPal no se llama", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields({ ...PAY_FIELDS, guestPhone: "50497649035" }), "link", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_owner_phone_rejected");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("monto en HNL → rechazo con explicación (PayPal solo USD), sin llamar a PayPal", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields({ ...PAY_FIELDS, amountHnl: 5000 }), "link", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_hnl_rejected");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("HNL + un USD 'convertido' por el LLM → rechazo IGUAL (adversaria C4: el LLM no convierte plata)", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields({ ...PAY_FIELDS, amountHnl: 2500, amountUsd: 100 }), "cobrale 2500 lempiras", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_hnl_rejected");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("fechas OCUPADAS en D1 → NO se genera link (plata que habría que devolver)", async () => {
+    const env = { DB: fakeDb(1) } as unknown as CopilotEnv; // conflicto
+    const r = await dispatchCopilotAction(fields(PAY_FIELDS), "link", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_blocked_unavailable");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("mínimo de temporada violado → NO se genera link (Villa B11, 2 noches en morazánica)", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(
+      fields({ ...PAY_FIELDS, property: "villa-b11-palma-real", checkIn: "2026-10-02", checkOut: "2026-10-04" }),
+      "link", "2026-07-25", env,
+    );
+    expect(r.traceAction).toBe("paylink_blocked_unavailable");
+    expect(r.replies[0].text).toContain("mínimo de 4 noches");
+    expect(createPayPalOrder).not.toHaveBeenCalled();
+  });
+
+  it("HAPPY: todo válido → link generado, atribuido al CLIENTE, monto = depósito 50% del cotizador", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields(PAY_FIELDS), "link", "2026-07-25", env);
+    expect(r.traceAction).toBe("paylink_ok");
+    expect(createPayPalOrder).toHaveBeenCalledTimes(1);
+    const arg = vi.mocked(createPayPalOrder).mock.calls[0][0];
+    expect(arg.guestPhone).toBe("50499881234"); // el CLIENTE, jamás el dueño
+    // Casa Brisa 2 noches: totalUSD = 2×90+14 = 194 → depósito = ceil(194/2) = 97
+    expect(arg.amountUsd).toBe(97);
+    expect(r.replies[0].text).toContain("https://paypal.test/pay/TEST"); // reenviable
+    expect(r.replies[1].text).toContain("🔒 interno");
+    expect(r.replies[1].text).toContain("50499881234");
+  });
+
+  it("monto CUSTOM explícito → se usa ese y el interno avisa el estándar", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(fields({ ...PAY_FIELDS, amountUsd: 150 }), "link", "2026-07-25", env);
+    expect(vi.mocked(createPayPalOrder).mock.calls[0][0].amountUsd).toBe(150);
+    expect(r.replies[1].text).toContain("CUSTOM");
+  });
+});
+
+describe("transfer_info — datos bancarios con monto", () => {
+  it("monto HNL explícito → mensaje de transferencia con ese monto", async () => {
+    const r = await dispatchCopilotAction(fields({ action: "transfer_info", amountHnl: 4700 }), "cuenta", "2026-07-25", FAKE_ENV);
+    expect(r.traceAction).toBe("transfer_hnl_ok");
+    expect(r.replies[0].text).toContain("4,700");
+  });
+  it("monto USD explícito → cuenta en dólares", async () => {
+    const r = await dispatchCopilotAction(fields({ action: "transfer_info", amountUsd: 97 }), "cuenta usd", "2026-07-25", FAKE_ENV);
+    expect(r.traceAction).toBe("transfer_usd_ok");
+  });
+  it("con estadía completa → depósito 50% del cotizador + nota interna", async () => {
+    const env = { DB: fakeDb() } as unknown as CopilotEnv;
+    const r = await dispatchCopilotAction(
+      fields({ action: "transfer_info", property: "casa-brisa", checkIn: "2026-08-15", checkOut: "2026-08-17", guests: 4 }),
+      "transferencia", "2026-07-25", env,
+    );
+    expect(r.traceAction).toBe("transfer_quote_ok");
+    // Casa Brisa 2 noches: total 5,350 → depósito 2,675
+    expect(r.replies[0].text).toContain("2,675");
+    expect(r.replies[1].text).toContain("🔒 interno");
+  });
+  it("sin monto ni estadía → clarify", async () => {
+    const r = await dispatchCopilotAction(fields({ action: "transfer_info" }), "cuenta", "2026-07-25", FAKE_ENV);
+    expect(r.traceAction).toBe("transfer_clarify");
   });
 });
 
