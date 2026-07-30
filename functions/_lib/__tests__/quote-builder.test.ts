@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildQuote,
+  formatQuoteMessage,
   computeDayPassHNL,
   addDayPass,
   applyVillaB11PackagePrice,
@@ -125,5 +126,107 @@ describe("buildQuote — cruce del combo Las Gemelas en el conflicto D1", () => 
     expect(q!.available).toBe(true);
     expect(calls[0].binds).toContain("las-gemelas-tela");
     expect(calls[0].binds).not.toContain("casa-marea");
+  });
+});
+
+//
+// SEMANA MORAZÁNICA (pedido de César, 2026-07-25): tarifa especial + estadía
+// mínima, precio MIXTO noche a noche. Estos tests fijan la integración completa
+// en buildQuote/formatQuoteMessage — camino de plata, cero tolerancia a drift.
+//
+describe("buildQuote — Semana Morazánica (2-11 oct 2026)", () => {
+  it("estadía completa en ventana (Centro Morazán 2→5 oct): 3×3,000 + limpieza, mínimo 3 CUMPLIDO", async () => {
+    const { db } = makeConflictDb(0);
+    const q = await buildQuote({ property: "centro-morazan", guests: 4, checkIn: "2026-10-02", checkOut: "2026-10-05" }, db);
+    expect(q!.available).toBe(true);
+    expect(q!.totalHNL).toBe(3 * 3000 + 400); // 9,400
+    expect(q!.pricePerNightHNL).toBe(3000);   // toda la estadía en temporada → el desglose simple usa la tarifa especial
+    expect(q!.seasonName).toBe("Semana Morazánica");
+    // USD proporcional al TC implícito de la propiedad (2100 HNL = 80 USD)
+    expect(q!.pricePerNightUSD).toBe(Math.round(3000 * (80 / 2100))); // 114
+    expect(q!.totalUSD).toBe(3 * 114 + 16); // 358
+  });
+
+  it("VIOLA el mínimo (Centro Morazán 2→4 oct, 2 noches < 3): no disponible + minNightsRequired", async () => {
+    const { db } = makeConflictDb(0);
+    const q = await buildQuote({ property: "centro-morazan", guests: 4, checkIn: "2026-10-02", checkOut: "2026-10-04" }, db);
+    expect(q!.available).toBe(false);
+    expect(q!.minNightsRequired).toBe(3);
+    expect(q!.exceedsCapacity).toBe(false);
+    const msg = formatQuoteMessage(q!, { property: "centro-morazan", guests: 4, checkIn: "2026-10-02", checkOut: "2026-10-04" });
+    expect(msg).toContain("Semana Morazánica");
+    expect(msg).toContain("mínima de 3 noches");
+    expect(msg).not.toContain("no está disponible"); // NO es el mensaje de fechas ocupadas
+  });
+
+  it("estadía MIXTA (Casa Brisa 30-sep→4-oct): 2 base + 2 temporada, mínimo 4 cumplido, desglose de dos líneas", async () => {
+    const { db } = makeConflictDb(0);
+    const input = { property: "casa-brisa" as const, guests: 4, checkIn: "2026-09-30", checkOut: "2026-10-04" };
+    const q = await buildQuote(input, db);
+    expect(q!.available).toBe(true);
+    expect(q!.baseNights).toBe(2);
+    expect(q!.seasonNights).toBe(2);
+    expect(q!.totalHNL).toBe(2 * 2500 + 2 * 3900 + 350); // 13,150
+    expect(q!.pricePerNightHNL).toBe(2500); // mixta → el campo simple queda en base; el mensaje desglosa
+    const msg = formatQuoteMessage(q!, input);
+    expect(msg).toContain("2 noches × HNL 2,500");
+    expect(msg).toContain("2 noches × HNL 3,900 (Semana Morazánica)");
+    expect(msg).toContain("*Total: HNL 13,150*");
+  });
+
+  it("mixta que VIOLA el mínimo (Casa Brisa 1→3 oct: 2 noches, toca la ventana) → rechazo con mínimo 4", async () => {
+    const { db } = makeConflictDb(0);
+    const q = await buildQuote({ property: "casa-brisa", guests: 4, checkIn: "2026-10-01", checkOut: "2026-10-03" }, db);
+    expect(q!.available).toBe(false);
+    expect(q!.minNightsRequired).toBe(4);
+  });
+
+  it("Las Gemelas 2→6 oct: 4×7,800 + 700, disponible", async () => {
+    const { db } = makeConflictDb(0);
+    const q = await buildQuote({ property: "las-gemelas-tela", guests: 10, checkIn: "2026-10-02", checkOut: "2026-10-06" }, db);
+    expect(q!.available).toBe(true);
+    expect(q!.totalHNL).toBe(4 * 7800 + 700); // 31,900
+  });
+
+  it("propiedad SIN temporada (La Florida 2→4 oct): tarifa normal, sin mínimo", async () => {
+    const { db } = makeConflictDb(0);
+    const q = await buildQuote({ property: "la-florida", guests: 2, checkIn: "2026-10-02", checkOut: "2026-10-04" }, db);
+    expect(q!.available).toBe(true);
+    expect(q!.totalHNL).toBe(2 * 650 + 350);
+    expect(q!.minNightsRequired).toBeUndefined();
+    expect(q!.seasonName).toBeNull();
+  });
+
+  it("fechas OCUPADAS + mínimo violado → el mensaje de ocupado GANA (minNightsRequired ausente)", async () => {
+    const { db } = makeConflictDb(1); // conflicto en D1
+    const q = await buildQuote({ property: "centro-morazan", guests: 4, checkIn: "2026-10-02", checkOut: "2026-10-04" }, db);
+    expect(q!.available).toBe(false);
+    expect(q!.minNightsRequired).toBeUndefined(); // el rechazo se explica por conflicto, no por mínimo
+  });
+
+  it("fuera de la ventana NADA cambia (Casa Brisa agosto: 2×2,500 + 350)", async () => {
+    const { db } = makeConflictDb(0);
+    const input = { property: "casa-brisa" as const, guests: 4, checkIn: "2026-08-15", checkOut: "2026-08-17" };
+    const q = await buildQuote(input, db);
+    expect(q!.totalHNL).toBe(5350);
+    const msg = formatQuoteMessage(q!, input);
+    expect(msg).toContain("2 noches × HNL 2,500 = HNL 5,000"); // desglose simple intacto
+    expect(msg).not.toContain("Morazánica");
+  });
+});
+
+describe("paquete Villa B11 vs Semana Morazánica — el precio fijo NO burla la temporada", () => {
+  it("2 noches DENTRO de la ventana: el paquete L.5,400 NO aplica (queda la cotización de temporada)", () => {
+    const q = baseQuote({ propertyName: "Villa B11 — Palma Real", totalHNL: 8150 });
+    const out = applyVillaB11PackagePrice(q, "2026-10-02", "2026-10-04");
+    expect(out.totalHNL).toBe(8150); // sin tocar
+  });
+  it("2 noches FUERA de la ventana: el paquete aplica normal", () => {
+    const out = applyVillaB11PackagePrice(baseQuote(), "2026-08-15", "2026-08-17");
+    expect(out.totalHNL).toBe(VILLA_B11_PACKAGE_TOTAL_HNL);
+  });
+  it("sin fechas (compatibilidad con llamadas viejas): aplica como siempre", () => {
+    const out = applyVillaB11PackagePrice(baseQuote());
+    expect(out.totalHNL).toBe(VILLA_B11_PACKAGE_TOTAL_HNL);
   });
 });

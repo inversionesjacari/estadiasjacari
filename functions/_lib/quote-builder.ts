@@ -17,6 +17,7 @@ import type { PropertySlug, City } from "./quote-extractor";
 import type { Lang } from "./i18n";
 import { capacityFit } from "./party-size";
 import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
+import { computeStayHNL, requiredMinNights } from "./seasonal-pricing";
 
 /** Precios + capacidad por propiedad — single source of truth para el bot. */
 export interface PropertyPricing {
@@ -144,6 +145,17 @@ export interface QuoteOutput {
   dayPassIsWeekend?: boolean;
   dayPassAdults?: number;
   dayPassChildren?: number;
+  // ── Temporada (Semana Morazánica etc., ver seasonal-pricing.ts) ────────────
+  /** Si !available por estadía mínima de temporada: el mínimo exigido. */
+  minNightsRequired?: number;
+  /** Nombre de la temporada que toca la estadía (null/undefined si ninguna). */
+  seasonName?: string | null;
+  /** Noches a tarifa base / a tarifa de temporada (para el desglose mixto). */
+  baseNights?: number;
+  seasonNights?: number;
+  /** Tarifa de temporada aplicada, si alguna noche cayó en ventana. */
+  seasonRateHNL?: number;
+  seasonRateUSD?: number;
 }
 
 /** Calcula la cantidad de noches entre dos fechas YYYY-MM-DD (inclusive→exclusive). */
@@ -228,27 +240,50 @@ export async function buildQuote(
     console.error("Error checking availability:", (err as Error).message);
   }
 
-  const totalHNL = nights * pricing.pricePerNightHNL + pricing.cleaningFeeHNL;
+  // ── Temporada (Semana Morazánica etc.): precio MIXTO noche a noche + mínimo ──
+  // Cada noche se cobra según su fecha; el USD de temporada se deriva del TC
+  // implícito de la propiedad (baseUSD/baseHNL) — nunca un TC inventado.
+  const stay = computeStayHNL(input.property, input.checkIn, input.checkOut, pricing.pricePerNightHNL);
+  const seasonRateUSD =
+    stay.seasonRateHNL != null
+      ? Math.round(stay.seasonRateHNL * (pricing.pricePerNightUSD / pricing.pricePerNightHNL))
+      : null;
+  const minReq = requiredMinNights(input.property, input.checkIn, input.checkOut);
+  const belowMinNights = minReq != null && nights < minReq.minNights;
+
+  const totalHNL = stay.nightsTotalHNL + pricing.cleaningFeeHNL;
   const depositHNL = Math.ceil(totalHNL / 2);
   const balanceHNL = totalHNL - depositHNL;
-  const totalUSD = nights * pricing.pricePerNightUSD + pricing.cleaningFeeUSD;
+  const totalUSD =
+    stay.baseNights * pricing.pricePerNightUSD +
+    stay.seasonNights * (seasonRateUSD ?? 0) +
+    pricing.cleaningFeeUSD;
   const depositUSD = Math.ceil(totalUSD / 2);
   const balanceUSD = totalUSD - depositUSD;
 
+  // Estadía COMPLETA dentro de la ventana → el "precio por noche" del output es
+  // el de temporada (el desglose simple del mensaje queda correcto). Mixta → se
+  // mantiene la base y formatQuoteMessage usa el desglose de dos líneas.
+  const allSeason = stay.seasonNights === nights && nights > 0;
+  const outPricePerNightHNL = allSeason ? (stay.seasonRateHNL ?? pricing.pricePerNightHNL) : pricing.pricePerNightHNL;
+  const outPricePerNightUSD = allSeason ? (seasonRateUSD ?? pricing.pricePerNightUSD) : pricing.pricePerNightUSD;
+
   return {
-    available: !hasConflict && !exceedsCapacity,
+    available: !hasConflict && !exceedsCapacity && !belowMinNights,
     reason: hasConflict
       ? conflictReason
       : exceedsCapacity
         ? `La propiedad tiene capacidad máxima para ${pricing.capacity} huéspedes y solicitaste ${input.guests}.`
-        : undefined,
+        : belowMinNights
+          ? `Estadía mínima de ${minReq!.minNights} noches en ${minReq!.seasonName}.`
+          : undefined,
     nights,
-    pricePerNightHNL: pricing.pricePerNightHNL,
+    pricePerNightHNL: outPricePerNightHNL,
     cleaningFeeHNL: pricing.cleaningFeeHNL,
     totalHNL,
     depositHNL,
     balanceHNL,
-    pricePerNightUSD: pricing.pricePerNightUSD,
+    pricePerNightUSD: outPricePerNightUSD,
     cleaningFeeUSD: pricing.cleaningFeeUSD,
     totalUSD,
     depositUSD,
@@ -258,6 +293,15 @@ export async function buildQuote(
     capacity: pricing.capacity,
     exceedsCapacity,
     sharedBeds,
+    // Solo se reporta el mínimo si el rechazo NO es por fechas ocupadas: con
+    // conflicto, el mensaje correcto es "ocupado" (sugerir 4 noches en fechas
+    // tomadas sería un callejón sin salida para el huésped).
+    minNightsRequired: belowMinNights && !hasConflict ? minReq!.minNights : undefined,
+    seasonName: stay.seasonName,
+    baseNights: stay.baseNights,
+    seasonNights: stay.seasonNights,
+    seasonRateHNL: stay.seasonRateHNL ?? undefined,
+    seasonRateUSD: seasonRateUSD ?? undefined,
   };
 }
 
@@ -321,8 +365,18 @@ export function addDayPass(quote: QuoteOutput, party: DayPassParty): QuoteOutput
 export const VILLA_B11_PACKAGE_TOTAL_HNL = 5400;
 const VILLA_B11_PACKAGE_TOTAL_USD = Math.round(VILLA_B11_PACKAGE_TOTAL_HNL / LODGING_HNL_PER_USD);
 
-export function applyVillaB11PackagePrice(quote: QuoteOutput): QuoteOutput {
+export function applyVillaB11PackagePrice(
+  quote: QuoteOutput,
+  checkIn?: string | null,
+  checkOut?: string | null,
+): QuoteOutput {
   if (!quote.available || quote.nights !== 2) return quote;
+  // El paquete dura 2 noches; en ventana de temporada (Semana Morazánica, mín 4)
+  // no puede aplicar — y su precio fijo L.5,400 tampoco debe pisar la tarifa de
+  // temporada. Con fechas que tocan la ventana, se cotiza normal (de temporada).
+  if (checkIn && checkOut && requiredMinNights("villa-b11-palma-real", checkIn, checkOut) !== null) {
+    return quote;
+  }
   const totalHNL = VILLA_B11_PACKAGE_TOTAL_HNL;
   const totalUSD = VILLA_B11_PACKAGE_TOTAL_USD;
   const depositHNL = Math.ceil(totalHNL / 2);
@@ -378,6 +432,25 @@ export function formatQuoteMessage(
       : `\n\n👍 Los ${kidsSharing} niño${kidsSharing === 1 ? "" : "s"} comparten cama con ustedes, así entran en el cupo de ${q.capacity}.`
     : "";
 
+  // ── Desglose de noches: simple, o MIXTO si la estadía cruza una temporada ──
+  // Mixta (noches base + noches de temporada) → dos líneas con cada tarifa.
+  // Completa en temporada → línea simple (pricePerNightHNL ya ES el de temporada)
+  // con la etiqueta de la temporada para que el huésped entienda el precio.
+  const isMixedSeason = (q.seasonNights ?? 0) > 0 && (q.baseNights ?? 0) > 0 && q.seasonRateHNL != null;
+  const allSeasonLabel =
+    (q.seasonNights ?? 0) > 0 && (q.baseNights ?? 0) === 0 && q.seasonName
+      ? lang === "en"
+        ? ` (${q.seasonName} rate)`
+        : ` (tarifa ${q.seasonName})`
+      : "";
+  const nightsBreakdown = isMixedSeason
+    ? lang === "en"
+      ? `${q.baseNights} night${q.baseNights === 1 ? "" : "s"} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.baseNights! * q.pricePerNightHNL)}\n${q.seasonNights} night${q.seasonNights === 1 ? "" : "s"} × ${fmtHnl(q.seasonRateHNL!)} (${q.seasonName}) = ${fmtHnl(q.seasonNights! * q.seasonRateHNL!)}`
+      : `${q.baseNights} noche${q.baseNights === 1 ? "" : "s"} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.baseNights! * q.pricePerNightHNL)}\n${q.seasonNights} noche${q.seasonNights === 1 ? "" : "s"} × ${fmtHnl(q.seasonRateHNL!)} (${q.seasonName}) = ${fmtHnl(q.seasonNights! * q.seasonRateHNL!)}`
+    : lang === "en"
+      ? `${q.nights} night${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)}${allSeasonLabel} = ${fmtHnl(q.nights * q.pricePerNightHNL)}`
+      : `${q.nights} noche${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)}${allSeasonLabel} = ${fmtHnl(q.nights * q.pricePerNightHNL)}`;
+
   // Día pass (paquete "Friends Trip") — línea extra entre limpieza y total.
   const dayPassLine = q.dayPassHNL
     ? lang === "en"
@@ -402,6 +475,11 @@ That's already our largest option (both twin houses together). Any chance the gr
 
 Would you like another property with more capacity? We have options for up to 6 guests, or for larger groups we can rent Casa Brisa + Casa Marea together (up to 12).`;
       }
+      if (q.minNightsRequired) {
+        return `Those dates fall during *${q.seasonName}* 🇭🇳 — ${q.propertyName} requires a minimum stay of ${q.minNightsRequired} nights then (you asked for ${q.nights}).
+
+Want me to quote ${q.minNightsRequired} nights for you?`;
+      }
       return `Unfortunately, ${q.propertyName} isn't available from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")}. 😔
 
 Would you like to try other dates or another property?`;
@@ -409,7 +487,7 @@ Would you like to try other dates or another property?`;
     return `Available! ✅ ${q.propertyName} from ${fmtDate(input.checkIn, "en")} to ${fmtDate(input.checkOut, "en")} (${q.nights} night${q.nights > 1 ? "s" : ""}).${sharedBedsNote}
 
 💰 *Quote:*
-${q.nights} night${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
+${nightsBreakdown}
 Cleaning: ${fmtHnl(q.cleaningFeeHNL)}
 ${dayPassLine}*Total: ${fmtHnl(q.totalHNL)}*
 
@@ -432,6 +510,11 @@ Esa ya es nuestra opción más grande (las dos casas gemelas juntas). ¿Habría 
 
 ¿Te interesa otra de nuestras propiedades con mayor capacidad? Tenemos opciones para hasta 6 huéspedes, o si son más, podemos rentarte Casa Brisa + Casa Marea juntas (hasta 12).`;
     }
+    if (q.minNightsRequired) {
+      return `Para esas fechas cae la *${q.seasonName}* 🇭🇳 y ${q.propertyName} pide una estadía mínima de ${q.minNightsRequired} noches (tu estadía es de ${q.nights}).
+
+¿Querés que te cotice ${q.minNightsRequired} noches?`;
+    }
     return `Lamentablemente, ${q.propertyName} no está disponible del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)}. 😔
 
 ¿Te interesa cambiar las fechas o probar otra de nuestras propiedades?`;
@@ -440,7 +523,7 @@ Esa ya es nuestra opción más grande (las dos casas gemelas juntas). ¿Habría 
   return `¡Disponible! ✅ ${q.propertyName} del ${fmtDate(input.checkIn)} al ${fmtDate(input.checkOut)} (${q.nights} noche${q.nights > 1 ? "s" : ""}).${sharedBedsNote}
 
 💰 *Cotización:*
-${q.nights} noche${q.nights > 1 ? "s" : ""} × ${fmtHnl(q.pricePerNightHNL)} = ${fmtHnl(q.nights * q.pricePerNightHNL)}
+${nightsBreakdown}
 Limpieza: ${fmtHnl(q.cleaningFeeHNL)}
 ${dayPassLine}*Total: ${fmtHnl(q.totalHNL)}*
 

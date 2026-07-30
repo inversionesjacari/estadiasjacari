@@ -204,7 +204,9 @@ function applyPackagePricing(quote: QuoteOutput | null, data: QuoteData): QuoteO
     });
   }
   if (data.packageType === "family_pack" || data.packageType === "love_trip") {
-    return applyVillaB11PackagePrice(quote);
+    // Con fechas que tocan una temporada (Semana Morazánica), el precio fijo del
+    // paquete NO aplica — el guard interno deja la cotización de temporada.
+    return applyVillaB11PackagePrice(quote, data.checkIn, data.checkOut);
   }
   return quote;
 }
@@ -1716,8 +1718,10 @@ async function gatherQuoteData(
     // En vez de solo "no disponible del X al Y", buscamos en el calendario y
     // ofrecemos la ventana libre más cercana + otros fines de semana (pedido de
     // César). exceedsCapacity NO entra: ahí el problema es el CUPO, no la fecha, y
-    // formatQuoteMessage tiene su mensaje de capacidad dedicado.
-    if (!quote.available && !quote.exceedsCapacity) {
+    // formatQuoteMessage tiene su mensaje de capacidad dedicado. minNightsRequired
+    // TAMPOCO entra: las fechas están LIBRES pero la temporada exige más noches —
+    // sugerir "otras fechas" confundiría; formatQuoteMessage explica el mínimo.
+    if (!quote.available && !quote.exceedsCapacity && !quote.minNightsRequired) {
       await upsertState(phone, "awaiting_quote_data", mergedData, env.DB);
       return {
         reply: await buildUnavailableReply(
@@ -1760,7 +1764,11 @@ async function gatherQuoteData(
     return {
       reply,
       escalateToOwner: escalateUnverified,
-      ruleName:        quote.available ? "quote_provided" : "quote_unavailable",
+      ruleName: quote.available
+        ? "quote_provided"
+        : quote.minNightsRequired
+          ? "quote_min_nights"
+          : "quote_unavailable",
       tokensUsed:      botResult.tokensUsed,
       // Solo cuando la cotización SÍ está disponible (estado quote_provided): ofrecer
       // [✅ Reservar] [📅 Cambiar fechas]. Si no está disponible, sin botones.
