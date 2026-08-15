@@ -15,6 +15,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { redactMoney } from "../../_lib/inbox-roles";
 
 interface Env {
   DB: D1Database;
@@ -63,7 +64,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     for (let i = 0; i < selects.length; i++) {
       try {
         const rows = await env.DB.prepare(selects[i]).all();
-        return json({ ok: true, reservations: rows.results ?? [] });
+        // Empleado (rol staff): la planilla viaja SIN montos, con `pay_state`
+        // para que igual sepa si esa reserva está pagada o falta cobrar.
+        return json({
+          ok: true,
+          reservations: redactMoney((rows.results ?? []) as Record<string, unknown>[], auth.session),
+        });
       } catch (err) {
         if (i === selects.length - 1 || !/no such column/i.test((err as Error).message)) throw err;
       }

@@ -93,9 +93,18 @@ interface MessagesResponse {
   messages?: Message[];
   error?: string;
 }
+/** Rol de quien entró. "owner" = César/Eduardo (todo). "staff" = empleado (sin plata). */
+type InboxRole = "owner" | "staff";
 interface LoginResponse {
   ok: boolean;
   error?: string;
+  role?: InboxRole;
+  user?: string;
+}
+interface SessionResponse {
+  ok: boolean;
+  role?: InboxRole;
+  user?: string;
 }
 interface SendResponse {
   ok: boolean;
@@ -678,6 +687,11 @@ function PendientesColumn({
 
 export default function InboxPage() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  // Quién está adentro. Lo dice el servidor (/api/inbox/session), no el navegador:
+  // acá solo decide QUÉ SE MUESTRA. El candado real está en los endpoints.
+  const [role, setRole] = useState<InboxRole | null>(null);
+  const [userName, setUserName] = useState<string | null>(null);
+  const isStaff = role === "staff";
   const [loginError, setLoginError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
@@ -879,6 +893,28 @@ export default function InboxPage() {
       setLoadingConv(false);
     }
   }, []);
+
+  // ── Quién soy ────────────────────────────────────────────────────────────
+  // Cuando la sesión ya venía viva (cookie de 30 días, o el link de la alerta de
+  // WhatsApp) no pasamos por el login, así que el rol se pregunta acá. Mientras
+  // no responda, `role` es null y la UI no muestra nada de plata — falla del lado
+  // prudente. Ante error de red se asume staff por la misma razón.
+  useEffect(() => {
+    if (authenticated !== true) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/inbox/session", { credentials: "include" });
+        const data = (await resp.json()) as SessionResponse;
+        if (cancelled) return;
+        setRole(data.ok && data.role ? data.role : "staff");
+        setUserName(data.user ?? null);
+      } catch {
+        if (!cancelled) setRole("staff");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [authenticated]);
 
   // Fusiona conversaciones nuevas (de "cargar más" o de una búsqueda server-side)
   // con las que ya están en pantalla, sin duplicar por teléfono y ordenadas por
@@ -1267,6 +1303,10 @@ export default function InboxPage() {
       });
       const data = (await resp.json()) as LoginResponse;
       if (data.ok) {
+        // El login ya dice el rol → la pantalla se pinta bien de una, sin
+        // esperar a /api/inbox/session (que igual corre por el efecto de arriba).
+        setRole(data.role ?? "staff");
+        setUserName(data.user ?? null);
         setAuthenticated(true);
         fetchConversations();
       } else {
@@ -1280,6 +1320,8 @@ export default function InboxPage() {
   async function handleLogout(): Promise<void> {
     await fetch("/api/inbox/logout", { method: "POST", credentials: "include" });
     setAuthenticated(false);
+    setRole(null);
+    setUserName(null);
     setConversations([]);
     setMessages([]);
     setSelectedPhone(null);
@@ -1464,25 +1506,42 @@ export default function InboxPage() {
       <header className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="font-display text-xl text-primary dark:text-slate-100 leading-tight">Inbox</h1>
-          <p className="hidden sm:block text-xs text-muted dark:text-slate-400">Estadías Jacarí · WhatsApp manual</p>
+          <p className="hidden sm:block text-xs text-muted dark:text-slate-400">
+            Estadías Jacarí · WhatsApp manual{userName ? ` · ${userName}` : ""}
+          </p>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-3 text-sm">
           {/* Interruptor GENERAL del bot: apaga/enciende TODO el bot de un botón.
-              Rojo pulsante cuando está apagado para que nadie lo olvide puesto. */}
-          <button
-            type="button"
-            onClick={toggleGlobalBot}
-            disabled={botGlobalPaused === null || botGlobalBusy}
-            className={
-              botGlobalPaused
-                ? "px-2.5 py-1.5 rounded-lg font-bold text-white bg-red-600 hover:bg-red-700 animate-pulse whitespace-nowrap"
-                : "px-2.5 py-1.5 rounded-lg font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-slate-800 whitespace-nowrap disabled:opacity-40"
-            }
-            aria-label={botGlobalPaused ? "Encender el bot" : "Apagar el bot entero"}
-            title={botGlobalPaused ? "El bot está APAGADO para todos — tocá para encenderlo" : "Bot encendido — tocá para apagarlo ENTERO (atender a mano)"}
-          >
-            {botGlobalPaused === null ? "🤖 …" : botGlobalPaused ? "🔴 BOT APAGADO" : "🤖 ON"}
-          </button>
+              Rojo pulsante cuando está apagado para que nadie lo olvide puesto.
+              Solo el dueño: apagarlo deja a TODOS los clientes sin respuesta
+              automática. El empleado sí pausa el bot conversación por conversación.
+              Cuando está apagado se muestra igual (en gris, sin acción) para que
+              el empleado entienda por qué el bot no contesta. */}
+          {isStaff ? (
+            botGlobalPaused ? (
+              <span
+                className="px-2.5 py-1.5 rounded-lg font-bold text-white bg-red-600 animate-pulse whitespace-nowrap"
+                title="El bot está apagado para todos. Solo el dueño puede encenderlo."
+              >
+                🔴 BOT APAGADO
+              </span>
+            ) : null
+          ) : (
+            <button
+              type="button"
+              onClick={toggleGlobalBot}
+              disabled={botGlobalPaused === null || botGlobalBusy}
+              className={
+                botGlobalPaused
+                  ? "px-2.5 py-1.5 rounded-lg font-bold text-white bg-red-600 hover:bg-red-700 animate-pulse whitespace-nowrap"
+                  : "px-2.5 py-1.5 rounded-lg font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-slate-800 whitespace-nowrap disabled:opacity-40"
+              }
+              aria-label={botGlobalPaused ? "Encender el bot" : "Apagar el bot entero"}
+              title={botGlobalPaused ? "El bot está APAGADO para todos — tocá para encenderlo" : "Bot encendido — tocá para apagarlo ENTERO (atender a mano)"}
+            >
+              {botGlobalPaused === null ? "🤖 …" : botGlobalPaused ? "🔴 BOT APAGADO" : "🤖 ON"}
+            </button>
+          )}
           {/* Pendientes — solo en celular (en escritorio está la columna fija a la derecha) */}
           <button
             type="button"
@@ -1557,12 +1616,17 @@ export default function InboxPage() {
           >
             📅 Reservas
           </a>
-          <a
-            href="/inbox/operacion"
-            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
-          >
-            🛰️ Centro de control
-          </a>
+          {/* Centro de control = ingresos del mes. Solo dueño (el endpoint
+              /api/inbox/metrics ya devuelve 403 al empleado; esto evita el
+              botón que lleva a una pantalla vacía). */}
+          {!isStaff && (
+            <a
+              href="/inbox/operacion"
+              className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+            >
+              🛰️ Centro de control
+            </a>
+          )}
           <a
             href="/inbox/conocimiento"
             className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
@@ -1604,7 +1668,9 @@ export default function InboxPage() {
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1">
                   <a href="/inbox/reservas" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📅 Reservas</a>
-                  <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
+                  {!isStaff && (
+                    <a href="/inbox/operacion" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🛰️ Centro de control</a>
+                  )}
                   <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
                   <a href="/inbox/registro" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📋 Registro</a>
                   <button type="button" onClick={handleLogout} className="block w-full text-left px-4 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-gray-50 dark:hover:bg-slate-700 border-t border-gray-100 dark:border-slate-700">Salir</button>

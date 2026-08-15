@@ -145,10 +145,17 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const guest_count = Number.isFinite(guestCountNum) && guestCountNum > 0 ? Math.round(guestCountNum) : null;
 
   // Montos en Lempiras: total = precio de la estadía; paid = lo pagado hasta ahora.
+  //
+  // ROL STAFF: el empleado SÍ puede dar de alta la reserva (es cerrar la venta),
+  // pero NO carga plata — se ignoran los montos que mande, la reserva entra como
+  // 'pending' y César le pone el pago desde /inbox/registro. Se ignoran en vez de
+  // rechazar el alta: la reserva —el dato que se pierde si no se guarda ya— queda
+  // registrada igual.
+  const isStaff = auth.session?.role === "staff";
   const totalNum = Number(body.total_hnl);
-  const total_hnl = Number.isFinite(totalNum) && totalNum > 0 ? totalNum : null;
+  const total_hnl = !isStaff && Number.isFinite(totalNum) && totalNum > 0 ? totalNum : null;
   const paidNum = Number(body.paid_hnl);
-  const paid_hnl = Number.isFinite(paidNum) && paidNum >= 0 ? paidNum : 0;
+  const paid_hnl = !isStaff && Number.isFinite(paidNum) && paidNum >= 0 ? paidNum : 0;
   if (total_hnl !== null && paid_hnl > total_hnl) {
     return json({ ok: false, error: "El pagado no puede ser mayor al total." }, 400);
   }

@@ -345,6 +345,9 @@ function useCountUp(target: number): number {
 
 export default function OperacionPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  // 403 = sesión válida pero rol staff. Es DISTINTO de 401: no hay que
+  // desloguear a nadie ni pedir contraseña, solo decir que esto no es para él.
+  const [forbidden, setForbidden] = useState(false);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [pulse, setPulse] = useState(false);
   const [clock, setClock] = useState("");
@@ -357,6 +360,7 @@ export default function OperacionPage() {
     try {
       const res = await fetch(`/api/inbox/metrics${month ? `?month=${month}` : ""}`);
       if (res.status === 401) { setAuthed(false); return; }
+      if (res.status === 403) { setForbidden(true); return; }
       const data = (await res.json()) as Metrics & { ok: boolean };
       if (data.ok) {
         setAuthed(true);
@@ -416,6 +420,19 @@ export default function OperacionPage() {
     return () => { if (timer.current) clearInterval(timer.current); clearInterval(c); };
   }, [load]);
 
+  if (forbidden) {
+    return (
+      <div className="min-h-screen bg-[#070b16] flex items-center justify-center px-4">
+        <div className="w-full max-w-sm bg-white/5 backdrop-blur border border-white/10 rounded-2xl p-8 text-center">
+          <h1 className="font-display text-2xl text-white mb-2">Sección del dueño</h1>
+          <p className="text-slate-400 text-sm mb-6">
+            El Centro de control muestra los ingresos del negocio. Tu trabajo está en el inbox y en Reservas.
+          </p>
+          <a href="/inbox" className="inline-block bg-cyan-500 text-slate-900 font-semibold px-5 py-2.5 rounded-lg hover:bg-cyan-400 transition">← Volver al inbox</a>
+        </div>
+      </div>
+    );
+  }
   if (authed === false) {
     return (
       <div className="min-h-screen bg-[#070b16] flex items-center justify-center px-4">

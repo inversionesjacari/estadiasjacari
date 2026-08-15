@@ -5,10 +5,13 @@
 // Actualiza el pago (en Lempiras) de una reserva existente: total y pagado.
 // Sirve para corregir/cargar el pago de una reserva que ya está en el registro
 // (ej. la que el bot creó con depósito). Recalcula el estado: pagado completo
-// → confirmed; falta saldo → pending. Protegido con la cookie del inbox.
+// → confirmed; falta saldo → pending.
+//
+// SOLO DUEÑO (requireOwner): es el libro de plata. El empleado no carga ni
+// corrige pagos; si le llega un comprobante, lo escala a César.
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { requireOwner } from "../../_lib/inbox-auth";
 
 interface Env {
   DB: D1Database;
@@ -23,7 +26,7 @@ function json(data: unknown, status = 200): Response {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   let body: Record<string, unknown>;

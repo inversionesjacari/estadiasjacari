@@ -3,8 +3,13 @@
 // GET /api/inbox/metrics
 //
 // Métricas de operación en tiempo real para el Centro de Control (/inbox/operacion).
-// Solo lectura sobre D1 (+ un check cacheado de Airbnb). Protegido con la cookie
-// de sesión del inbox.
+// Solo lectura sobre D1 (+ un check cacheado de Airbnb).
+//
+// SOLO DUEÑO (requireOwner): esta respuesta trae los INGRESOS del mes (revenueMonth,
+// revenueByOrigin, PayPal). No se redacta campo por campo a propósito — el objeto
+// es grande y mezcla plata con operación en cada rama; un filtro parcial se
+// desactualiza en la próxima métrica que se agregue. El empleado ve 403 y el
+// Centro de control ni le aparece en el menú.
 //
 // Etapa 1: mensajes, conversaciones, embudo, reservas.
 // Etapa 2: salud de sistemas, feed de actividad, tendencia 7 días, salud del bot.
@@ -14,7 +19,7 @@
 // (UTC-6). "Semana"/"mes" = ventanas relativas (7 / 30 días).
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { requireOwner } from "../../_lib/inbox-auth";
 import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
 import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
 import { isNotInterested } from "../../_lib/detectors";
@@ -61,7 +66,7 @@ interface FeedResvRow {
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   const db = env.DB;

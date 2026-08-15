@@ -18,6 +18,15 @@
 // botones son para adelantar/reenviar a mano y para las 'pending' que el cron
 // no toca. Lee /api/inbox/reservations-confirmed cada 30s. Cookie del inbox.
 //
+// CHATVIVO (César, 2026-07-16): "enviado" dejó de significar "Meta lo aceptó".
+// Cada chip refleja la ENTREGA real (✓ aceptado / ✓✓ entregado / ✓✓ leído / ⚠
+// falló — incluso el fallo ASÍNCRONO que antes quedaba verde), el motivo exacto
+// del fallo sale en hover (title) y con un TAP (la PWA no tiene hover), y cada
+// envío registrado linkea 💬 al hilo en vivo del inbox con su destinatario REAL
+// (huésped o STAFF — el deep-link /inbox?c= abre números que nunca escribieron
+// y el chat se refresca solo cada 10 s). ⏰ "no salió a su hora" ya no se
+// disfraza de "pendiente".
+//
 
 import { useEffect, useState, useCallback } from "react";
 import { getProperty } from "@/data/properties";
@@ -33,6 +42,9 @@ interface Reservation {
   amount_usd: number | null;
   total_hnl?: number | null;
   paid_hnl?: number | null;
+  /** Solo con rol staff: estado del pago SIN montos (lo calcula el servidor en
+   *  _lib/inbox-roles.ts, que ya borró total/pagado antes de mandar la fila). */
+  pay_state?: "paid" | "deposit" | "unpaid" | "verify" | "cancelled" | "refunded";
   source: string;
   status: string;
   created_at: string;
@@ -62,6 +74,20 @@ interface Reservation {
   tr_expected_hnl: number | null;
   tr_currency: string | null;
   tr_decision: string | null;
+  // CHATVIVO: entrega real por envío (whatsapp_messages vía wa-log). Puede faltar
+  // (API vieja / query falló) → el dashboard cae a las columnas wa_* de siempre.
+  wa?: WaEntry[];
+}
+
+// Un envío real registrado: destinatario (huésped o STAFF), entrega que reporta
+// Meta (sent→delivered→read→failed) y, si falló, el motivo YA legible + el crudo.
+interface WaEntry {
+  rule: string;
+  to: string; // E.164 sin '+' → link directo /inbox?c=<to> al hilo en vivo
+  status: string | null;
+  at: string;
+  reason: string | null;
+  detail: string | null;
 }
 
 type TemplateName =
@@ -83,27 +109,32 @@ interface Touchpoint {
   sentKey: keyof Reservation;
   errorKey: keyof Reservation;
   template: TemplateName | null;
+  /** matched_rule con el que wa-log registró este envío (null = email, sin hilo WA). */
+  waRule: string | null;
   side: "arrival" | "departure";
   offsetDays: number; // relativo a check_in (arrival) o check_out (departure)
   time: string; // etiqueta de hora HN
+  /** Hora HN (decimal) a la que el cron dispara — para detectar "no salió" el MISMO día. */
+  fireHour?: number;
   when: string; // "víspera" | "día" | "salida" | "respaldo"
   auto: boolean;
   needsPhone?: boolean; // va al huésped → sin # no se puede
   heldByPayment?: boolean; // solo sale con pago TOTAL (instrucciones)
+  toGuest?: boolean; // destinatario = huésped → link al chat aun sin envío registrado
 }
 
 const ARRIVAL_TOUCHPOINTS: Touchpoint[] = [
-  { key: "instr_email", icon: "📧", label: "Instrucciones", sentKey: "checkin_reminder_sent_at", errorKey: "checkin_reminder_error", template: null, side: "arrival", offsetDays: -1, time: "6:00 pm", when: "víspera", auto: true, heldByPayment: true },
-  { key: "instr_pdf", icon: "📱", label: "PDF instrucciones", sentKey: "whatsapp_sent_at", errorKey: "whatsapp_error", template: null, side: "arrival", offsetDays: -1, time: "6:00 pm", when: "víspera", auto: true, needsPhone: true, heldByPayment: true },
-  { key: "eve_clean", icon: "🧹", label: "Limpieza · víspera", sentKey: "wa_eve_cleaning_sent_at", errorKey: "wa_eve_cleaning_error", template: "limpieza_aviso_entrada", side: "arrival", offsetDays: -1, time: "6:05 pm", when: "víspera", auto: true },
-  { key: "security", icon: "🛡️", label: "Seguridad", sentKey: "wa_arrival_security_sent_at", errorKey: "wa_arrival_security_error", template: "checkin_dia_seguridad", side: "arrival", offsetDays: 0, time: "7:00 am", when: "día", auto: true },
-  { key: "guest_arr", icon: "👋", label: "Bienvenida huésped", sentKey: "wa_arrival_guest_sent_at", errorKey: "wa_arrival_guest_error", template: "checkin_dia_huesped", side: "arrival", offsetDays: 0, time: "10:00 am", when: "día", auto: true, needsPhone: true },
-  { key: "day_clean", icon: "🧹", label: "Limpieza · día", sentKey: "wa_arrival_cleaning_sent_at", errorKey: "wa_arrival_cleaning_error", template: "checkin_dia_limpieza", side: "arrival", offsetDays: 0, time: "", when: "respaldo", auto: false },
+  { key: "instr_email", icon: "📧", label: "Instrucciones", sentKey: "checkin_reminder_sent_at", errorKey: "checkin_reminder_error", template: null, waRule: null, side: "arrival", offsetDays: -1, time: "6:00 pm", fireHour: 18, when: "víspera", auto: true, heldByPayment: true },
+  { key: "instr_pdf", icon: "📱", label: "PDF instrucciones", sentKey: "whatsapp_sent_at", errorKey: "whatsapp_error", template: null, waRule: "checkin_reminder", side: "arrival", offsetDays: -1, time: "6:00 pm", fireHour: 18, when: "víspera", auto: true, needsPhone: true, heldByPayment: true, toGuest: true },
+  { key: "eve_clean", icon: "🧹", label: "Limpieza · víspera", sentKey: "wa_eve_cleaning_sent_at", errorKey: "wa_eve_cleaning_error", template: "limpieza_aviso_entrada", waRule: "tpl_limpieza_aviso_entrada", side: "arrival", offsetDays: -1, time: "6:05 pm", fireHour: 18.1, when: "víspera", auto: true },
+  { key: "security", icon: "🛡️", label: "Seguridad", sentKey: "wa_arrival_security_sent_at", errorKey: "wa_arrival_security_error", template: "checkin_dia_seguridad", waRule: "tpl_checkin_dia_seguridad", side: "arrival", offsetDays: 0, time: "7:00 am", fireHour: 7, when: "día", auto: true },
+  { key: "guest_arr", icon: "👋", label: "Bienvenida huésped", sentKey: "wa_arrival_guest_sent_at", errorKey: "wa_arrival_guest_error", template: "checkin_dia_huesped", waRule: "tpl_checkin_dia_huesped", side: "arrival", offsetDays: 0, time: "10:00 am", fireHour: 10, when: "día", auto: true, needsPhone: true, toGuest: true },
+  { key: "day_clean", icon: "🧹", label: "Limpieza · día", sentKey: "wa_arrival_cleaning_sent_at", errorKey: "wa_arrival_cleaning_error", template: "checkin_dia_limpieza", waRule: "tpl_checkin_dia_limpieza", side: "arrival", offsetDays: 0, time: "", when: "respaldo", auto: false },
 ];
 
 const DEPARTURE_TOUCHPOINTS: Touchpoint[] = [
-  { key: "guest_dep", icon: "👋", label: "Despedida huésped", sentKey: "wa_departure_guest_sent_at", errorKey: "wa_departure_guest_error", template: "checkout_dia_huesped", side: "departure", offsetDays: 0, time: "10:00 am", when: "salida", auto: true, needsPhone: true },
-  { key: "dep_clean", icon: "🧹", label: "Limpieza · salida", sentKey: "wa_departure_cleaning_sent_at", errorKey: "wa_departure_cleaning_error", template: "checkout_dia_limpieza", side: "departure", offsetDays: 0, time: "11:30 am", when: "salida", auto: true },
+  { key: "guest_dep", icon: "👋", label: "Despedida huésped", sentKey: "wa_departure_guest_sent_at", errorKey: "wa_departure_guest_error", template: "checkout_dia_huesped", waRule: "tpl_checkout_dia_huesped", side: "departure", offsetDays: 0, time: "10:00 am", fireHour: 10, when: "salida", auto: true, needsPhone: true, toGuest: true },
+  { key: "dep_clean", icon: "🧹", label: "Limpieza · salida", sentKey: "wa_departure_cleaning_sent_at", errorKey: "wa_departure_cleaning_error", template: "checkout_dia_limpieza", waRule: "tpl_checkout_dia_limpieza", side: "departure", offsetDays: 0, time: "11:30 am", fireHour: 11.5, when: "salida", auto: true },
 ];
 
 const ALL_TOUCHPOINTS = [...ARRIVAL_TOUCHPOINTS, ...DEPARTURE_TOUCHPOINTS];
@@ -164,6 +195,34 @@ function daysUntil(iso: string): number {
   return Math.round((target - today) / 86400000);
 }
 
+/** Hora decimal ACTUAL en Honduras (UTC-6 fijo, sin DST). Ej.: 14.5 = 2:30 pm. */
+function hnHourNow(): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Tegucigalpa",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(new Date());
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return (h === 24 ? 0 : h) + m / 60;
+}
+
+/** "YYYY-MM-DD HH:MM:SS" (sqlite, UTC) o ISO → epoch ms. null si no parsea. */
+function parseUtcMs(ts: string | null | undefined): number | null {
+  if (!ts) return null;
+  const iso = ts.includes("T") ? ts : ts.replace(" ", "T");
+  const ms = Date.parse(/[Z+]/.test(iso.slice(10)) ? iso : `${iso}Z`);
+  return isNaN(ms) ? null : ms;
+}
+
+/** Dígitos para el deep-link /inbox?c= — número local HN de 8 dígitos gana su 504
+ *  (si no, el hilo real —que Meta guarda en E.164— no matchea y el chat sale vacío). */
+function phoneDigitsE164(raw: string): string {
+  const d = raw.replace(/\D/g, "");
+  return d.length === 8 ? `504${d}` : d;
+}
+
 /** Timestamp de envío → hora HONDURAS legible ("12 jul, 6:02 p. m."). */
 function fmtSentAtHn(ts: string): string {
   const iso = ts.includes("T") ? ts : ts.replace(" ", "T");
@@ -199,6 +258,24 @@ interface PayInfo {
  * (Mismo criterio que /inbox/registro para no contradecirse.)
  */
 function paymentInfo(r: Reservation): PayInfo {
+  // Rol staff: los montos ni llegaron, así que NO se puede re-derivar el estado
+  // acá (una reserva pagada por transferencia se leería como "por verificar").
+  // El servidor ya lo resolvió con los números reales.
+  if (r.pay_state) {
+    const state: PayState =
+      r.pay_state === "paid" ? "paid"
+      : r.pay_state === "deposit" ? "deposit"
+      : r.pay_state === "unpaid" ? "unpaid"
+      : "verify";
+    return {
+      state,
+      total: null,
+      paid: null,
+      saldo: null,
+      needsMoney: state !== "paid",
+      hint: state === "paid" ? undefined : "El cobro lo confirma César",
+    };
+  }
   if (r.total_hnl != null) {
     const total = r.total_hnl;
     const paid = r.paid_hnl ?? 0;
@@ -220,16 +297,52 @@ function paymentInfo(r: Reservation): PayInfo {
 
 // ── Estado por touchpoint ────────────────────────────────────────────────────
 
-type TpLevel = "done" | "failed" | "held" | "nophone" | "imminent" | "scheduled" | "pending";
+type TpLevel = "done" | "failed" | "held" | "nophone" | "imminent" | "scheduled" | "pending" | "overdue";
 
 interface TpState {
   level: TpLevel;
   sentAt?: string;
   error?: string;
+  errorDetail?: string; // el crudo exacto de Meta (tooltip / tap)
   when?: string; // texto de cuándo sale
+  /** Entrega agregada que reporta Meta: la MENOS avanzada entre destinatarios. */
+  delivery?: "sent" | "delivered" | "read";
+  /** Envíos reales registrados (con el teléfono del destinatario → link al chat). */
+  recipients?: WaEntry[];
 }
 
+const DELIVERY_RANK: Record<string, number> = { sent: 1, delivered: 2, read: 3 };
+
 function touchpointState(r: Reservation, tp: Touchpoint, pay: PayInfo): TpState {
+  // 1) La ENTREGA REAL manda (whatsapp_messages vía wamid): detecta el fallo
+  //    asíncrono que las columnas wa_* no ven (Meta acepta y rechaza después).
+  const entries = tp.waRule && r.wa ? r.wa.filter((w) => w.rule === tp.waRule) : [];
+  const okE = entries.filter((e) => e.status !== "failed");
+  const failedE = entries.filter((e) => e.status === "failed");
+  // Un fallo a un destinatario VIEJO (número corregido, contacto de staff rotado)
+  // se considera resuelto si hay un envío OK MÁS NUEVO de la misma regla — si no,
+  // el chip quedaba ⚠ para siempre sin forma de limpiarlo. El >= conserva el caso
+  // batch real (2 contactos, uno ok y uno falla en el mismo segundo → falla gana).
+  const newestOkAt = okE.reduce<string | null>((acc, e) => (!acc || e.at > acc ? e.at : acc), null);
+  const activeFailed = newestOkAt ? failedE.filter((e) => e.at >= newestOkAt) : failedE;
+  if (activeFailed.length > 0) {
+    return {
+      level: "failed",
+      error: activeFailed[0].reason ?? "falló",
+      errorDetail: activeFailed[0].detail ?? undefined,
+      sentAt: activeFailed[0].at,
+      recipients: entries,
+    };
+  }
+  if (okE.length > 0) {
+    const worst = okE.reduce<"sent" | "delivered" | "read">((acc, e) => {
+      const s = e.status && DELIVERY_RANK[e.status] ? (e.status as "sent" | "delivered" | "read") : "sent";
+      return DELIVERY_RANK[s] < DELIVERY_RANK[acc] ? s : acc;
+    }, "read");
+    return { level: "done", sentAt: newestOkAt ?? okE[0].at, delivery: worst, recipients: entries };
+  }
+
+  // 2) Sin registro de envío → columnas de siempre (legacy / email).
   const sentAt = (r[tp.sentKey] as string | null | undefined) ?? null;
   if (sentAt) return { level: "done", sentAt };
   const error = (r[tp.errorKey] as string | null | undefined) ?? null;
@@ -240,7 +353,21 @@ function touchpointState(r: Reservation, tp: Touchpoint, pay: PayInfo): TpState 
   const base = tp.side === "departure" ? r.check_out : r.check_in;
   const fireDate = addDays(base, tp.offsetDays);
   const d = daysUntil(fireDate);
-  if (d < 0) return { level: "pending" }; // pasó su hora y no salió (worker aún inerte, etc.)
+  // "No salió a su hora" por HORA de Honduras, no por día calendario: el aviso de
+  // las 10 am que no salió se marca HOY a las 11 (cuando todavía se puede actuar),
+  // no mañana. +1 h de gracia para no marcar mientras el cron aún puede disparar.
+  const late = d < 0 || (d === 0 && tp.fireHour != null && hnHourNow() >= tp.fireHour + 1);
+  if (late) {
+    // Si el hito pasó ANTES de que la reserva existiera (reserva de último minuto,
+    // víspera ya vencida al confirmarse), no es una falla del cron: no aplicó.
+    const createdMs = parseUtcMs(r.created_at);
+    const [fy, fm, fd] = fireDate.split("-").map(Number);
+    const fireMs = tp.fireHour != null && fy ? Date.UTC(fy, fm - 1, fd) + (tp.fireHour + 6) * 3600000 : null;
+    if (createdMs != null && fireMs != null && fireMs < createdMs) {
+      return { level: "pending", when: "no aplicó — la reserva entró después" };
+    }
+    return { level: "overdue", when: `${tp.when} ${tp.time}`.trim() };
+  }
   const whenTxt = d === 0 ? `hoy ${tp.time}` : d === 1 ? `mañana ${tp.time}` : `${tp.when} · ${tp.time}`;
   return { level: d <= 1 ? "imminent" : "scheduled", when: whenTxt.trim() };
 }
@@ -314,6 +441,18 @@ function analyze(r: Reservation): Analysis {
 
 export default function ReservasPage() {
   const [authed, setAuthed] = useState(true);
+  // Rol empleado: sin botón de cancelar. Los montos ya no le llegan del servidor
+  // (viene `pay_state` en su lugar), así que el resto de la card se adapta sola.
+  const [isStaff, setIsStaff] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/inbox/session", { credentials: "include" });
+        const d = (await r.json()) as { role?: string };
+        setIsStaff(d.role === "staff");
+      } catch { /* el servidor sigue negando lo que no le toca */ }
+    })();
+  }, []);
   const [loading, setLoading] = useState(true);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [propFilter, setPropFilter] = useState<string>("");
@@ -321,6 +460,8 @@ export default function ReservasPage() {
   const [sending, setSending] = useState<Record<string, boolean>>({});
   const [actionMsg, setActionMsg] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [cancelling, setCancelling] = useState<Record<number, boolean>>({});
+  const [cancelMsg, setCancelMsg] = useState<Record<number, string>>({});
 
   const fetchReservations = useCallback(async (): Promise<void> => {
     try {
@@ -352,12 +493,16 @@ export default function ReservasPage() {
   }, [fetchReservations]);
 
   const sendMessage = useCallback(
-    async (id: number, template: TemplateName, alreadySent: boolean, to: string): Promise<void> => {
+    async (id: number, template: TemplateName, alreadySent: boolean, to: string, failedReason?: string | null): Promise<void> => {
       const key = `${id}:${template}`;
       if (sending[key]) return;
-      const confirmMsg = alreadySent
-        ? `Este mensaje ya se envió. ¿Reenviar a ${to}?`
-        : `¿Enviar este WhatsApp ahora a ${to}?`;
+      // Si el último intento FALLÓ, el diálogo lo dice con su motivo — nunca
+      // afirmar "ya se envió" sobre un mensaje que no llegó (revisión 16-jul).
+      const confirmMsg = failedReason
+        ? `El último intento FALLÓ: ${failedReason}\n\n¿Reintentar el envío a ${to}?`
+        : alreadySent
+          ? `Este mensaje ya se envió. ¿Reenviar a ${to}?`
+          : `¿Enviar este WhatsApp ahora a ${to}?`;
       if (!window.confirm(confirmMsg)) return;
       setSending((s) => ({ ...s, [key]: true }));
       setActionMsg((m) => ({ ...m, [key]: "" }));
@@ -452,6 +597,46 @@ export default function ReservasPage() {
     [idBusy, fetchReservations],
   );
 
+  // ── Cancelar reserva (libera fechas, el huésped pierde lo pagado) ──────────
+  const cancelReservation = useCallback(
+    async (r: Reservation): Promise<void> => {
+      if (cancelling[r.id]) return;
+      const pay = paymentInfo(r);
+      const plata =
+        pay.state === "paid"
+          ? "💰 El huésped pierde lo que pagó (no se reembolsa)."
+          : pay.paid && pay.paid > 0
+            ? `💰 El huésped pierde los L ${Math.round(pay.paid).toLocaleString("es-HN")} que pagó (no se reembolsa).`
+            : pay.state === "deposit"
+              ? "💰 El huésped hizo un depósito (por transferencia): lo pierde, no se reembolsa. Definí el total en Registro para el monto exacto."
+              : "ℹ️ No hay pago cargado; solo se liberan las fechas.";
+      const msg = `¿Cancelar la reserva de ${r.guest_name || "este huésped"}?\n\n✅ Se liberan las fechas para volver a rentarlas.\n${plata}\n\nDeja de recibir avisos. Se puede reactivar desde el Registro si fue un error.`;
+      if (!window.confirm(msg)) return;
+      setCancelling((s) => ({ ...s, [r.id]: true }));
+      setCancelMsg((m) => ({ ...m, [r.id]: "" }));
+      try {
+        const resp = await fetch("/api/inbox/reservation-cancel", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: r.id, action: "cancel" }),
+        });
+        if (resp.status === 401) { setAuthed(false); return; }
+        const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (data.ok) {
+          fetchReservations(); // la card desaparece (queda fuera de confirmed/pending)
+        } else {
+          setCancelMsg((m) => ({ ...m, [r.id]: (data.error || "no se pudo cancelar").slice(0, 160) }));
+        }
+      } catch {
+        setCancelMsg((m) => ({ ...m, [r.id]: "error de red" }));
+      } finally {
+        setCancelling((s) => ({ ...s, [r.id]: false }));
+      }
+    },
+    [cancelling, fetchReservations],
+  );
+
   // ── Filtros ──────────────────────────────────────────────────────────────
   const slugsPresent = Array.from(new Set(reservations.map((r) => r.property_slug)));
   const filtered = reservations.filter((r) => {
@@ -474,7 +659,7 @@ export default function ReservasPage() {
 
   const arrivingToday = reservations.filter((r) => daysUntil(r.check_in) === 0).length;
 
-  const shared = { sending, actionMsg, onSend: sendMessage, idBusy, idMsg, onUploadId: uploadId, onRemoveId: removeId };
+  const shared = { sending, actionMsg, onSend: sendMessage, idBusy, idMsg, onUploadId: uploadId, onRemoveId: removeId, cancelling, cancelMsg, onCancel: cancelReservation, isStaff };
 
   if (!authed) {
     return (
@@ -582,7 +767,10 @@ export default function ReservasPage() {
         <p className="text-[11px] text-slate-600 text-center mt-8 leading-relaxed">
           Toda reserva confirmada recibe los avisos en automático: limpieza 6 pm de la víspera, seguridad 7 am,
           huésped 10 am, limpieza de salida 11:30 am. Los botones son para adelantar o reenviar a mano
-          (las pendientes de pago no se automatizan).
+          (las pendientes de pago no se automatizan). En los avisos de WhatsApp: ✓ Meta lo aceptó · ✓✓ entregado ·
+          ✓✓ leído · ⚠ falló (tocá el chip rojo para ver el motivo exacto y reintentar; con mouse, el hover también
+          lo muestra) · ⏰ no salió a su hora (el cron no lo disparó) · 💬 abre el chat en vivo con ese
+          destinatario — también con limpieza y la garita.
         </p>
       </main>
     </div>
@@ -642,6 +830,27 @@ function PaymentPanel({ pay }: { pay: PayInfo }) {
 
 // ── Pill de estado de un touchpoint ──────────────────────────────────────────
 
+/** "✓" aceptado · "✓✓" entregado · "✓✓ leído" — lo que reporta Meta por wamid. */
+function deliveryTicks(d?: "sent" | "delivered" | "read"): string {
+  if (d === "read") return "✓✓ leído";
+  if (d === "delivered") return "✓✓";
+  return "✓";
+}
+
+const DELIVERY_TITLE: Record<string, string> = {
+  sent: "Meta ACEPTÓ el envío (✓). Aún no confirma la entrega al teléfono.",
+  delivered: "ENTREGADO al teléfono del destinatario (✓✓).",
+  read: "LEÍDO por el destinatario (✓✓ azul en WhatsApp).",
+};
+
+/** Etiqueta humana del destinatario según la regla del envío (para los links 💬). */
+function chatRoleOf(rule: string | null): string {
+  if (!rule) return "";
+  if (rule.includes("limpieza")) return "limpieza";
+  if (rule.includes("seguridad")) return "garita";
+  return "";
+}
+
 function TouchpointPill({
   tp,
   st,
@@ -655,12 +864,34 @@ function TouchpointPill({
   r: Reservation;
   busy: boolean;
   msg?: string;
-  onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string) => void;
+  onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string, failedReason?: string | null) => void;
 }) {
+  // Detalle del fallo expandible con un TAP (el hover no existe en la PWA/touch).
+  const [showErr, setShowErr] = useState(false);
   const canSend = tp.template != null;
   const to = tp.template ? recipientOf(tp.template, r.guest_name || "el huésped") : "";
   const clickable = canSend && st.level !== "held";
-  const handle = clickable ? () => onSend(r.id, tp.template!, st.level === "done", to) : undefined;
+  const alreadySent = st.level === "done" || (st.level === "failed" && Boolean(st.sentAt));
+  const failed = st.level === "failed";
+  const doSend = clickable
+    ? () => onSend(r.id, tp.template!, alreadySent, to, failed ? (st.error ?? "motivo desconocido") : undefined)
+    : undefined;
+  // En FALLADO el tap del chip EXPANDE el motivo (target grande, sin riesgo de
+  // reenviar por error a las 3 am); el reintento es un botón explícito adentro.
+  const handle = failed ? () => setShowErr((v) => !v) : doSend;
+
+  // Hilos de WhatsApp para "constatar en vivo": los destinatarios REALES de los
+  // envíos registrados; si aún no hay registro y el mensaje va al huésped, su #.
+  const role = chatRoleOf(tp.waRule);
+  const chatTargets: { phone: string; status: string | null }[] = [];
+  for (const e of st.recipients ?? []) {
+    const digits = phoneDigitsE164(e.to);
+    if (digits && !chatTargets.some((t) => t.phone === digits)) chatTargets.push({ phone: digits, status: e.status });
+  }
+  if (chatTargets.length === 0 && tp.toGuest && r.guest_phone) {
+    const digits = phoneDigitsE164(r.guest_phone);
+    if (digits) chatTargets.push({ phone: digits, status: null });
+  }
 
   // (borde/fondo/texto, contenido principal, subtexto)
   let cls = "border-white/12 bg-white/[0.03] text-slate-400";
@@ -672,13 +903,13 @@ function TouchpointPill({
     case "done":
       cls = "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
       head = `✓ ${tp.icon} ${tp.label}`;
-      sub = st.sentAt ? fmtSentAtHn(st.sentAt) : "enviado";
-      subCls = "text-emerald-400/70";
+      sub = st.sentAt ? `${st.delivery ? `${deliveryTicks(st.delivery)} ` : ""}${fmtSentAtHn(st.sentAt)}` : "enviado";
+      subCls = st.delivery === "sent" ? "text-emerald-400/60" : "text-emerald-400/80";
       break;
     case "failed":
       cls = "border-rose-500/50 bg-rose-500/10 text-rose-300";
       head = `⚠ ${tp.icon} ${tp.label}`;
-      sub = "falló — reintentar";
+      sub = st.error ?? "falló";
       subCls = "text-rose-400/80";
       break;
     case "held":
@@ -703,41 +934,99 @@ function TouchpointPill({
       head = `○ ${tp.icon} ${tp.label}`;
       sub = st.when ?? null;
       break;
+    case "overdue":
+      // Ámbar fuerte, NO rojo: "el cron no lo disparó" es accionable pero no es
+      // un fallo confirmado de Meta — el rojo queda reservado al ⚠ real para que
+      // un billing 131042 no se entierre entre relojitos (revisión 16-jul).
+      cls = "border-amber-500/50 bg-amber-500/[0.09] text-amber-200";
+      head = `⏰ ${tp.icon} ${tp.label}`;
+      sub = clickable ? "no salió — enviar ahora" : "no salió a su hora";
+      subCls = "text-amber-300/80";
+      break;
     case "pending":
       cls = "border-white/12 bg-white/[0.02] text-slate-400";
       head = `${tp.icon} ${tp.label}`;
-      sub = tp.auto ? "pendiente" : "manual";
+      sub = st.when ?? (tp.auto ? "pendiente" : "manual");
       break;
   }
 
+  const failTitle = st.error
+    ? `Razón exacta: ${st.error}${st.errorDetail ? ` — ${st.errorDetail}` : ""} · Tocá el chip para ver el detalle${clickable ? " y reintentar" : ""}`
+    : "";
   const title =
     st.level === "done"
-      ? `Enviado ${st.sentAt ? fmtSentAtHn(st.sentAt) : ""}${clickable ? " — clic para reenviar" : ""}`
+      ? `${st.delivery ? DELIVERY_TITLE[st.delivery] : "Enviado"} ${st.sentAt ? fmtSentAtHn(st.sentAt) : ""}${clickable ? " — clic para reenviar" : ""}`
       : st.level === "failed"
-        ? `Último intento falló: ${st.error} — clic para reintentar`
+        ? failTitle
         : st.level === "held"
           ? "Las instrucciones solo salen con el pago TOTAL (política de la casa)"
-          : clickable
-            ? `${tp.auto ? "Sale solo" : "Envío manual"} — clic para enviar ahora`
-            : tp.icon + " " + tp.label;
+          : st.level === "overdue"
+            ? `Debió salir ${st.when ?? "a su hora"} y no hay registro de envío ni error: el cron no lo disparó (worker inerte o hito apagado).${clickable ? " Clic para enviarlo ahora." : ""}`
+            : clickable
+              ? `${tp.auto ? "Sale solo" : "Envío manual"} — clic para enviar ahora`
+              : tp.icon + " " + tp.label;
 
   return (
     <div className="flex flex-col">
       <button
         type="button"
-        disabled={busy || !clickable}
+        disabled={busy || (!clickable && !failed)}
         onClick={handle}
         title={title}
         className={`text-left px-2.5 py-1 rounded-md text-[11px] font-medium border transition ${cls} ${
-          clickable ? "hover:brightness-125 cursor-pointer" : "cursor-default"
+          clickable || failed ? "hover:brightness-125 cursor-pointer" : "cursor-default"
         } disabled:opacity-60`}
       >
         {busy ? "…" : head}
       </button>
       {msg ? (
         <span className="text-[9px] text-slate-400 mt-0.5 max-w-[130px] truncate" title={msg}>{msg}</span>
-      ) : sub ? (
-        <span className={`text-[9px] mt-0.5 max-w-[130px] truncate ${subCls}`} title={st.error ?? sub}>{sub}</span>
+      ) : null}
+      {sub ? (
+        <span className={`text-[9px] mt-0.5 max-w-[130px] truncate ${subCls}`} title={title}>{sub}</span>
+      ) : null}
+      {showErr && st.error ? (
+        <span className="text-[10px] text-rose-200/90 mt-1 max-w-[240px] whitespace-normal break-words border border-rose-500/30 bg-rose-500/[0.08] rounded p-1.5">
+          {st.error}
+          {st.errorDetail ? <span className="text-rose-300/70"> — {st.errorDetail}</span> : null}
+          <span className="flex gap-2 mt-1.5">
+            {doSend ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={doSend}
+                className="text-[10px] px-1.5 py-1 rounded border border-rose-400/50 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+              >
+                🔄 Reintentar envío
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  void navigator.clipboard?.writeText(`${st.error}${st.errorDetail ? ` — ${st.errorDetail}` : ""}`);
+                } catch { /* clipboard no disponible */ }
+              }}
+              className="text-[10px] px-1.5 py-1 rounded border border-white/20 text-slate-300 hover:bg-white/10"
+            >
+              copiar
+            </button>
+          </span>
+        </span>
+      ) : null}
+      {chatTargets.length > 0 ? (
+        <span className="flex gap-2 mt-1.5 flex-wrap">
+          {chatTargets.map((t) => (
+            <a
+              key={t.phone}
+              href={`/inbox?c=${t.phone}`}
+              title={`Ver el chat en vivo con ${role ? `${role} ` : ""}+${t.phone}${t.status ? ` (${t.status === "failed" ? "falló" : t.status})` : ""}`}
+              className="text-[9px] text-cyan-300/90 hover:text-cyan-200 py-1 -my-1 px-1 -mx-1"
+            >
+              💬 {chatTargets.length > 1 ? `${role || "chat"} …${t.phone.slice(-4)}` : role || "ver chat"}
+            </a>
+          ))}
+        </span>
       ) : null}
     </div>
   );
@@ -748,17 +1037,22 @@ function TouchpointPill({
 interface CardShared {
   sending: Record<string, boolean>;
   actionMsg: Record<string, string>;
-  onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string) => void;
+  onSend: (id: number, template: TemplateName, alreadySent: boolean, to: string, failedReason?: string | null) => void;
   idBusy: Record<number, boolean>;
   idMsg: Record<number, string>;
   onUploadId: (id: number, file: File) => void;
   onRemoveId: (id: number) => void;
+  cancelling: Record<number, boolean>;
+  cancelMsg: Record<number, string>;
+  onCancel: (r: Reservation) => void;
+  /** Rol empleado: sin botón de cancelar (el endpoint también lo niega). */
+  isStaff: boolean;
 }
 
 function CardHeader({ r, a }: { r: Reservation; a: Analysis }) {
   const prop = getProperty(r.property_slug);
   const sm = sourceMeta(r.source);
-  const phoneDigits = r.guest_phone ? r.guest_phone.replace(/\D/g, "") : "";
+  const phoneDigits = r.guest_phone ? phoneDigitsE164(r.guest_phone) : "";
   return (
     <>
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -810,6 +1104,10 @@ function FullCard({
   idMsg,
   onUploadId,
   onRemoveId,
+  cancelling,
+  cancelMsg,
+  onCancel,
+  isStaff,
 }: { r: Reservation; a: Analysis; highlight?: boolean; onCollapse?: () => void } & CardShared) {
   const renderPills = (defs: Touchpoint[]) =>
     defs.map((tp) => {
@@ -872,11 +1170,30 @@ function FullCard({
         </div>
       </div>
 
-      {onCollapse && (
-        <button type="button" onClick={onCollapse} className="mt-3 text-[11px] text-slate-500 hover:text-slate-300">
-          ▴ Ocultar detalle
-        </button>
-      )}
+      {/* Pie: cancelar reserva (libera fechas) + colapsar */}
+      <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          {!isStaff && (
+            <button
+              type="button"
+              disabled={Boolean(cancelling[r.id])}
+              onClick={() => onCancel(r)}
+              className="text-[11px] text-rose-300/90 border border-rose-500/30 rounded px-2 py-1 hover:bg-rose-500/10 disabled:opacity-50"
+              title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
+            >
+              {cancelling[r.id] ? "cancelando…" : "🚫 Cancelar reserva"}
+            </button>
+          )}
+          {cancelMsg[r.id] ? (
+            <span className="text-[10px] text-rose-300 truncate max-w-[160px]" title={cancelMsg[r.id]}>{cancelMsg[r.id]}</span>
+          ) : null}
+        </div>
+        {onCollapse && (
+          <button type="button" onClick={onCollapse} className="text-[11px] text-slate-500 hover:text-slate-300 shrink-0">
+            ▴ Ocultar detalle
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -958,9 +1275,11 @@ function CompactCard({ r, a, onExpand }: { r: Reservation; a: Analysis; onExpand
 
   // Resumen de avisos: prioriza problemas; si no, cuántos programados/enviados.
   const failed = ALL_TOUCHPOINTS.filter((tp) => a.states[tp.key].level === "failed").length;
+  const overdue = ALL_TOUCHPOINTS.filter((tp) => a.states[tp.key].level === "overdue").length;
   const done = ALL_TOUCHPOINTS.filter((tp) => a.states[tp.key].level === "done").length;
   let avisos: { text: string; cls: string };
   if (failed > 0) avisos = { text: `⚠ ${failed} falló`, cls: "text-rose-300" };
+  else if (overdue > 0) avisos = { text: `⏰ ${overdue} no salió`, cls: "text-amber-300" };
   else if (done > 0) avisos = { text: `✓ ${done} enviados`, cls: "text-emerald-300/80" };
   else avisos = { text: "avisos programados", cls: "text-slate-500" };
 

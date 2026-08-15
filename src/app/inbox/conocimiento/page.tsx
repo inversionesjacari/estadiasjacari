@@ -89,6 +89,19 @@ export default function ConocimientoPage() {
   const [replies, setReplies] = useState<QuickReply[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
+  // Rol de quien entró: el empleado LEE la KB (necesita precios y políticas para
+  // cotizar) pero no la guarda. Acá solo se avisa; el candado está en el endpoint.
+  const [isStaff, setIsStaff] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/inbox/session", { credentials: "include" });
+        const d = (await r.json()) as { ok?: boolean; role?: string };
+        setIsStaff(d.role === "staff");
+      } catch { /* si no se sabe, no se avisa nada; el 403 explica al guardar */ }
+    })();
+  }, []);
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
@@ -179,6 +192,12 @@ export default function ConocimientoPage() {
           ← <span className="hidden sm:inline">Volver al </span>inbox
         </a>
       </header>
+
+      {isStaff && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-[13px] text-amber-900">
+          👀 <strong>Modo lectura.</strong> Consultá precios y políticas para cotizar; los cambios los guarda César.
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="bg-white border-b border-gray-200 px-2 sm:px-4">
@@ -278,6 +297,11 @@ async function postKb(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, payload }),
     });
+    // 403 = rol staff. Leer la KB sí puede (necesita precios y políticas para
+    // cotizar); guardarla no. Mensaje explícito para que no parezca una falla.
+    if (res.status === 403) {
+      return { ok: false, error: "Solo el dueño puede guardar cambios acá. Avisale a César qué hay que corregir." };
+    }
     return (await res.json()) as { ok: boolean; error?: string };
   } catch {
     return { ok: false, error: "Error de red" };

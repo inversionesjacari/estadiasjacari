@@ -17,7 +17,11 @@
 // envío falla, la confirmación NO se cae (el huésped queda confirmado igual).
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+// SOLO DUEÑO (requireOwner): confirmar ES la decisión de plata — significa "ya vi
+// el dinero en el banco". El empleado deja la reserva en 'pending' y avisa; César
+// confirma. (Además dispara la entrega de instrucciones al huésped.)
+//
+import { requireOwner } from "../../_lib/inbox-auth";
 import { shouldSendCheckinNow } from "../../_lib/checkin-immediate";
 import { todayHn, hnDatePlusDays } from "../../_lib/dates";
 
@@ -36,7 +40,7 @@ function json(data: unknown, status = 200): Response {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   let id: number;

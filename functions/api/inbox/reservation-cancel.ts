@@ -22,10 +22,14 @@
 // re-crear el doble booking que todo el sistema cuida). Reusa exactamente la
 // misma detección que la alta manual.
 //
+// SOLO DUEÑO (requireOwner): cancelar toca plata del huésped (pierde el depósito
+// / se decide reembolso) y libera fechas ya vendidas. El empleado no cancela;
+// escala a César.
+//
 // Protegido con la cookie de sesión del inbox. Body: { id, action?, reason? }.
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { requireOwner } from "../../_lib/inbox-auth";
 import { findOverlappingReservations, buildOverlapWarning } from "./reservation-create";
 
 interface Env {
@@ -83,7 +87,7 @@ function isRestorableStatus(s: unknown): s is "confirmed" | "pending" {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   let body: Record<string, unknown>;

@@ -9,6 +9,7 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { redactMoney } from "../../_lib/inbox-roles";
 
 interface Env {
   DB: D1Database;
@@ -35,7 +36,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         ORDER BY check_in ASC, created_at DESC
         LIMIT 100`,
     ).all();
-    return json({ ok: true, reservations: rows.results ?? [] });
+    return json({
+      ok: true,
+      reservations: redactMoney((rows.results ?? []) as Record<string, unknown>[], auth.session),
+    });
   } catch (err) {
     return json({ ok: false, error: `D1: ${(err as Error).message}` }, 500);
   }

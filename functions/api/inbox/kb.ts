@@ -14,7 +14,7 @@
 // Todas las queries usan prepared statements con bind → seguras contra injection.
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { requireInboxAuth, requireOwner } from "../../_lib/inbox-auth";
 import { getProperties, getPolicies, getFaqs, getRules } from "../../_lib/kb-store";
 
 interface Env {
@@ -65,7 +65,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST — editar la KB
+// POST — editar la KB (SOLO DUEÑO)
+//
+// Leer la KB sí es del empleado (necesita los precios y las políticas para
+// cotizar). EDITARLA no: acá viven las tarifas y las reglas que el bot le repite
+// a TODOS los clientes; cambiar un número acá cambia lo que se cobra. Si mañana
+// se le quiere dar a Isaías la edición de FAQs, se abre esta sola línea.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface PostBody {
@@ -74,7 +79,7 @@ interface PostBody {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   let body: PostBody;

@@ -2,8 +2,10 @@
 //
 // POST /api/inbox/login
 //
-// Recibe { password }, valida contra INBOX_PASSWORD, devuelve cookie de sesión
-// de 7 días (HttpOnly, Secure, SameSite=Strict). Ver inbox-auth.ts para detalles.
+// Recibe { password } y lo valida contra INBOX_PASSWORD (dueño) o STAFF_PASSWORD
+// (empleado). Devuelve la cookie de sesión con el ROL adentro, más { role, user }
+// en el body para que el front se pinte de una sin pedir /api/inbox/session.
+// Ver inbox-auth.ts para detalles.
 //
 // Rate-limited a 5 intentos por 60s por IP para evitar brute-force.
 //
@@ -14,7 +16,10 @@ import { checkRateLimit, getClientIp } from "../../_lib/rate-limit";
 interface Env {
   DB: D1Database;
   CRON_SECRET?: string;
+  INBOX_SESSION_SECRET?: string;
   INBOX_PASSWORD?: string;
+  STAFF_PASSWORD?: string;
+  STAFF_NAME?: string;
 }
 
 interface LoginRequest {
@@ -62,7 +67,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ ok: false, error: result.error }, 401);
   }
 
-  return new Response(JSON.stringify({ ok: true }), {
+  return new Response(JSON.stringify({ ok: true, role: result.session!.role, user: result.session!.user }), {
     status: 200,
     headers: {
       "Content-Type": "application/json; charset=utf-8",

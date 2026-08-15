@@ -23,6 +23,9 @@ interface Reservation {
   amount_usd: number | null;
   total_hnl: number | null;
   paid_hnl: number | null;
+  /** Solo llega con rol staff: el estado del pago SIN el monto (lo pone el
+   *  servidor en _lib/inbox-roles.ts, que ya borró total/pagado). */
+  pay_state?: "paid" | "deposit" | "unpaid" | "verify" | "cancelled" | "refunded";
   source: string;
   status: string;
   created_at: string;
@@ -70,8 +73,20 @@ const PAY_ROSE = "text-rose-300 border-rose-500/40 bg-rose-500/10";
 
 const PAY_SLATE = "text-slate-400 border-white/15 bg-white/5";
 
+/** Badge sin montos: lo que ve el empleado. El servidor ya calculó el estado. */
+const STATE_BADGE: Record<NonNullable<Reservation["pay_state"]>, { text: string; cls: string }> = {
+  paid: { text: "Pagado", cls: PAY_GREEN },
+  deposit: { text: "Depósito · falta saldo", cls: PAY_AMBER },
+  unpaid: { text: "Sin pago", cls: PAY_ROSE },
+  verify: { text: "Falta cargar pago", cls: PAY_AMBER },
+  cancelled: { text: "Cancelada", cls: PAY_ROSE },
+  refunded: { text: "Reembolsada", cls: PAY_SLATE },
+};
+
 /** Estado del pago a partir de total/pagado en LPS; si no hay total LPS, cae al status. */
 function paymentBadge(r: Reservation): { text: string; cls: string; saldo: number | null } {
+  // Rol staff: los montos ni llegaron. El servidor mandó el estado ya resuelto.
+  if (r.pay_state) return { ...STATE_BADGE[r.pay_state], saldo: null };
   // Canceladas/reembolsadas: el estado manda sobre el pago (ya no hay saldo que cobrar).
   if (r.status === "cancelled") return { text: "Cancelada", cls: PAY_ROSE, saldo: null };
   if (r.status === "refunded") return { text: "Reembolsada", cls: PAY_SLATE, saldo: null };
@@ -122,6 +137,18 @@ const INPUT_CLS =
 
 export default function RegistroPage() {
   const [authed, setAuthed] = useState(true);
+  // Rol staff → la planilla va sin columnas de plata (el servidor tampoco las
+  // manda) y sin los botones de Pago / Cancelar, que son del dueño.
+  const [isStaff, setIsStaff] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/inbox/session", { credentials: "include" });
+        const d = (await r.json()) as { role?: string };
+        setIsStaff(d.role === "staff");
+      } catch { /* si falla, manda lo que ya viene redactado del servidor */ }
+    })();
+  }, []);
   const [loading, setLoading] = useState(true);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [propFilter, setPropFilter] = useState<string>("");
@@ -262,7 +289,10 @@ export default function RegistroPage() {
   }, [reservations, propFilter, statusFilter, search, sortKey, sortDir]);
 
   const exportCsv = useCallback(() => {
-    const headers = ["Huésped", "Teléfono", "Propiedad", "Ciudad", "Personas", "Entra", "Sale", "Noches", "Total LPS", "Pagado LPS", "Saldo LPS", "Estado", "Origen", "Reservada"];
+    // El CSV del empleado sale SIN las tres columnas de plata (si las dejáramos
+    // vacías, un Excel con "Total LPS" en blanco se lee como "no cobramos nada").
+    const MONEY_HEADERS = ["Total LPS", "Pagado LPS", "Saldo LPS"];
+    const headers = ["Huésped", "Teléfono", "Propiedad", "Ciudad", "Personas", "Entra", "Sale", "Noches", ...(isStaff ? [] : MONEY_HEADERS), "Estado", "Origen", "Reservada"];
     const esc = (v: unknown): string => {
       const s = v == null ? "" : String(v);
       return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -283,9 +313,7 @@ export default function RegistroPage() {
         r.check_in,
         r.check_out,
         nights(r.check_in, r.check_out),
-        total,
-        paid,
-        saldo,
+        ...(isStaff ? [] : [total, paid, saldo]),
         pay.text,
         sourceLabel(r.source),
         (r.created_at ?? "").slice(0, 10),
@@ -302,7 +330,7 @@ export default function RegistroPage() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [filtered]);
+  }, [filtered, isStaff]);
 
   const submitAdd = useCallback(async (): Promise<void> => {
     setFormError("");
@@ -442,6 +470,13 @@ export default function RegistroPage() {
   const pendingCount = reservations.filter((r) => r.status === "pending").length;
   const cancelledCount = reservations.filter((r) => r.status === "cancelled" || r.status === "refunded").length;
 
+  // Columnas visibles: al empleado se le sacan Total y Pagado (ni siquiera le
+  // llegan del servidor; esto evita dos columnas de guiones).
+  const visibleColumns = useMemo(
+    () => (isStaff ? COLUMNS.filter((c) => c.key !== "total" && c.key !== "paid") : COLUMNS),
+    [isStaff],
+  );
+
   // Saldo vivo en el modal de pago (para mostrarlo mientras escribe).
   const payTotal = Number(payForm.total_hnl);
   const payPaid = Number(payForm.paid_hnl);
@@ -554,7 +589,7 @@ export default function RegistroPage() {
             <table className="w-full text-[13px] whitespace-nowrap">
               <thead>
                 <tr className="bg-white/[0.04] text-slate-400 text-left">
-                  {COLUMNS.map((c, i) => (
+                  {visibleColumns.map((c, i) => (
                     <th
                       key={i}
                       className={`px-3 py-2 font-medium ${c.align === "right" ? "text-right" : ""} ${c.key ? "cursor-pointer select-none hover:text-slate-200" : ""}`}
@@ -584,14 +619,18 @@ export default function RegistroPage() {
                       <td className="px-3 py-2 text-slate-300">{fmtDate(r.check_in)}</td>
                       <td className="px-3 py-2 text-slate-300">{fmtDate(r.check_out)}</td>
                       <td className="px-3 py-2 text-right text-slate-400">{nights(r.check_in, r.check_out)}</td>
-                      <td className="px-3 py-2 text-right text-slate-200">
-                        {r.total_hnl != null
-                          ? fmtL(r.total_hnl)
-                          : r.amount_usd != null ? `$${r.amount_usd.toLocaleString("en-US")}` : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right text-slate-200">
-                        {r.total_hnl != null ? fmtL(r.paid_hnl ?? 0) : "—"}
-                      </td>
+                      {!isStaff && (
+                        <>
+                          <td className="px-3 py-2 text-right text-slate-200">
+                            {r.total_hnl != null
+                              ? fmtL(r.total_hnl)
+                              : r.amount_usd != null ? `$${r.amount_usd.toLocaleString("en-US")}` : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-200">
+                            {r.total_hnl != null ? fmtL(r.paid_hnl ?? 0) : "—"}
+                          </td>
+                        </>
+                      )}
                       <td className="px-3 py-2 text-slate-400">{sourceLabel(r.source)}</td>
                       <td className="px-3 py-2">
                         <span className={`text-[11px] px-2 py-0.5 rounded-full border ${pay.cls}`}>{pay.text}</span>
@@ -606,7 +645,8 @@ export default function RegistroPage() {
                         <div className="flex items-center gap-1.5">
                           {r.status === "cancelled" ? (
                             <>
-                              <button
+                              {/* Reactivar re-bloquea fechas y revive el cobro → dueño. */}
+                              {!isStaff && <button
                                 type="button"
                                 disabled={Boolean(rowBusy[r.id])}
                                 onClick={() => reactivate(r)}
@@ -614,7 +654,7 @@ export default function RegistroPage() {
                                 title="Reactivar la reserva (vuelve a bloquear esas fechas si siguen libres)"
                               >
                                 {rowBusy[r.id] ? "…" : "↩ Reactivar"}
-                              </button>
+                              </button>}
                               {rowMsg[r.id] ? (
                                 <span className="text-[10px] text-rose-300 max-w-[180px] truncate" title={rowMsg[r.id]}>{rowMsg[r.id]}</span>
                               ) : null}
@@ -623,14 +663,16 @@ export default function RegistroPage() {
                             <span className="text-[11px] text-slate-500">—</span>
                           ) : (
                             <>
-                              <button
-                                type="button"
-                                onClick={() => openPay(r)}
-                                className="text-[11px] text-amber-200 border border-amber-400/40 rounded px-1.5 py-0.5 hover:bg-amber-400/10"
-                                title="Cargar / corregir el pago de esta reserva"
-                              >
-                                💲 Pago
-                              </button>
+                              {!isStaff && (
+                                <button
+                                  type="button"
+                                  onClick={() => openPay(r)}
+                                  className="text-[11px] text-amber-200 border border-amber-400/40 rounded px-1.5 py-0.5 hover:bg-amber-400/10"
+                                  title="Cargar / corregir el pago de esta reserva"
+                                >
+                                  💲 Pago
+                                </button>
+                              )}
                               {phoneDigits ? (
                                 <a
                                   href={`/inbox?c=${phoneDigits}`}
@@ -639,14 +681,19 @@ export default function RegistroPage() {
                                   Chat
                                 </a>
                               ) : null}
-                              <button
-                                type="button"
-                                onClick={() => openCancel(r)}
-                                className="text-[11px] text-rose-300 border border-rose-500/30 rounded px-1.5 py-0.5 hover:bg-rose-500/10"
-                                title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
-                              >
-                                🚫 Cancelar
-                              </button>
+                              {/* Cancelar toca plata del huésped y libera fechas
+                                  ya vendidas → solo dueño (el endpoint también
+                                  lo niega con 403). */}
+                              {!isStaff && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCancel(r)}
+                                  className="text-[11px] text-rose-300 border border-rose-500/30 rounded px-1.5 py-0.5 hover:bg-rose-500/10"
+                                  title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
+                                >
+                                  🚫 Cancelar
+                                </button>
+                              )}
                             </>
                           )}
                         </div>
@@ -709,21 +756,32 @@ export default function RegistroPage() {
               <input type="date" value={form.booked_at} onChange={(e) => setForm((f) => ({ ...f, booked_at: e.target.value }))} className={INPUT_CLS} />
             </div>
 
-            <div className="grid grid-cols-3 gap-3 mt-3">
+            <div className={`grid ${isStaff ? "grid-cols-1" : "grid-cols-3"} gap-3 mt-3`}>
               <div>
                 <label className="block text-[12px] text-slate-400 mb-1">Personas</label>
                 <input type="number" min="1" value={form.guest_count} onChange={(e) => setForm((f) => ({ ...f, guest_count: e.target.value }))} placeholder="—" className={INPUT_CLS} />
               </div>
-              <div>
-                <label className="block text-[12px] text-slate-400 mb-1">Total (L)</label>
-                <input type="number" min="0" value={form.total_hnl} onChange={(e) => setForm((f) => ({ ...f, total_hnl: e.target.value }))} placeholder="2500" className={INPUT_CLS} />
-              </div>
-              <div>
-                <label className="block text-[12px] text-slate-400 mb-1">Pagado (L)</label>
-                <input type="number" min="0" value={form.paid_hnl} onChange={(e) => setForm((f) => ({ ...f, paid_hnl: e.target.value }))} placeholder="1250" className={INPUT_CLS} />
-              </div>
+              {/* Los montos los carga el dueño. El endpoint ignora los que mande
+                  un staff, así que ni se muestran: la reserva se guarda igual y
+                  queda "Falta cargar pago" hasta que César le ponga el número. */}
+              {!isStaff && (
+                <>
+                  <div>
+                    <label className="block text-[12px] text-slate-400 mb-1">Total (L)</label>
+                    <input type="number" min="0" value={form.total_hnl} onChange={(e) => setForm((f) => ({ ...f, total_hnl: e.target.value }))} placeholder="2500" className={INPUT_CLS} />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] text-slate-400 mb-1">Pagado (L)</label>
+                    <input type="number" min="0" value={form.paid_hnl} onChange={(e) => setForm((f) => ({ ...f, paid_hnl: e.target.value }))} placeholder="1250" className={INPUT_CLS} />
+                  </div>
+                </>
+              )}
             </div>
-            <p className="text-[11px] text-slate-500 mt-1">Todo en Lempiras. Si Pagado &lt; Total, queda como depósito (falta el saldo).</p>
+            <p className="text-[11px] text-slate-500 mt-1">
+              {isStaff
+                ? "La reserva queda registrada; el pago lo carga César."
+                : "Todo en Lempiras. Si Pagado < Total, queda como depósito (falta el saldo)."}
+            </p>
 
             {formError && <p className="text-[12px] text-rose-300 mt-3">{formError}</p>}
 

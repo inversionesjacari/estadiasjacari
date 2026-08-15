@@ -13,7 +13,7 @@
 // Protegido con la cookie de sesión del inbox.
 //
 
-import { requireInboxAuth } from "../../_lib/inbox-auth";
+import { requireInboxAuth, requireOwner } from "../../_lib/inbox-auth";
 import { globalBotPausedSince, setGlobalBot } from "../../_lib/bot-pause";
 
 interface Env {
@@ -35,8 +35,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   return json({ ok: true, paused: since !== null, since });
 };
 
+// APAGAR/PRENDER EL BOT ENTERO ES SOLO DEL DUEÑO: es la palanca que deja a TODOS
+// los clientes sin respuesta automática. El empleado sí puede pausar el bot de
+// UNA conversación (/api/inbox/bot-pause) — eso es su trabajo.
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireInboxAuth(request, env);
+  const auth = await requireOwner(request, env);
   if (!auth.ok) return auth.response!;
 
   let on: boolean;

@@ -17,6 +17,23 @@
 // Por qué no Cloudflare Access: requiere plan Workers Paid o Zero Trust.
 // Para 1 usuario, INBOX_PASSWORD en env var es razonable.
 //
+// ROLES (2026-08-15, entra Isaías Rivera a gestionar el bot):
+//   Hay DOS contraseñas, cada una entra con un rol distinto grabado DENTRO del
+//   token firmado (no lo puede tocar el navegador):
+//     - INBOX_PASSWORD → rol "owner"  (César/Eduardo: ve todo)
+//     - STAFF_PASSWORD → rol "staff"  (el empleado: conversaciones y operación,
+//       SIN plata — ni ingresos, ni montos, ni cancelar/reembolsar)
+//   El nombre que se muestra en el header del inbox sale de STAFF_NAME
+//   (default "Isaías Rivera") — sirve para saber quién está adentro.
+//
+//   Compatibilidad: los tokens VIEJOS (firmados antes de este cambio) no traen
+//   `role`. Se leen como "owner" → la sesión viva de César no se cae.
+//
+//   La frontera REAL es server-side: cada endpoint que toca plata llama a
+//   `requireOwner`, y los que listan reservas redactan los montos con
+//   `redactMoney` (ver `_lib/inbox-roles.ts`). Ocultar botones en el front es
+//   solo cosmética; nunca la única defensa.
+//
 // SEGURIDAD:
 //   - Cookie: HttpOnly + Secure + SameSite=Lax
 //   - Token = HMAC-SHA256(payload, secret) donde payload = `${createdAt}`
@@ -55,12 +72,29 @@
 const COOKIE_NAME = "inbox_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 días
 
+/** Quién está adentro. "owner" = dueño (todo). "staff" = empleado (sin plata). */
+export type InboxRole = "owner" | "staff";
+
+export interface InboxSession {
+  role: InboxRole;
+  /** Nombre para mostrar en el header ("César" / "Isaías Rivera"). */
+  user: string;
+}
+
+/** No dice "César" a propósito: INBOX_PASSWORD la comparten César y Eduardo. */
+export const OWNER_USER = "Propietario";
+export const DEFAULT_STAFF_NAME = "Isaías Rivera";
+
 export interface InboxAuthEnv {
   CRON_SECRET?: string;
   /** Secret DEDICADO para firmar la cookie de sesión del inbox (Fase 5.1).
    *  Si falta, se cae a CRON_SECRET (transición). Ver header del archivo. */
   INBOX_SESSION_SECRET?: string;
   INBOX_PASSWORD?: string;
+  /** Contraseña del EMPLEADO. Si no está seteada, no existe el rol staff. */
+  STAFF_PASSWORD?: string;
+  /** Nombre a mostrar del empleado. Default: "Isaías Rivera". */
+  STAFF_NAME?: string;
 }
 
 /**
@@ -123,12 +157,23 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 
 interface SessionPayload {
   createdAt: number; // ms epoch
+  /** Ausente en tokens viejos (pre-roles) → se lee como "owner". */
+  role?: InboxRole;
 }
 
-async function buildSessionToken(env: InboxAuthEnv): Promise<string> {
+/**
+ * Nombre a mostrar. NO viaja en el token a propósito: (a) `btoa` solo acepta
+ * latin-1 y un nombre con caracteres raros lo haría explotar, (b) si César
+ * cambia STAFF_NAME, el cambio se ve sin desloguear a nadie.
+ */
+export function displayNameFor(role: InboxRole, env: InboxAuthEnv): string {
+  return role === "staff" ? (env.STAFF_NAME || DEFAULT_STAFF_NAME) : OWNER_USER;
+}
+
+async function buildSessionToken(env: InboxAuthEnv, role: InboxRole): Promise<string> {
   const secret = primarySigningSecret(env);
   if (!secret) throw new Error("INBOX_SESSION_SECRET o CRON_SECRET requerido");
-  const payload: SessionPayload = { createdAt: Date.now() };
+  const payload: SessionPayload = { createdAt: Date.now(), role };
   const payloadB64 = btoa(JSON.stringify(payload)).replace(/=+$/, "");
   const sig = await hmacSign(payloadB64, secret);
   return `${payloadB64}.${sig}`;
@@ -137,7 +182,7 @@ async function buildSessionToken(env: InboxAuthEnv): Promise<string> {
 async function verifySessionToken(
   token: string,
   env: InboxAuthEnv,
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<{ ok: boolean; reason?: string; session?: InboxSession }> {
   const secrets = acceptedVerifySecrets(env);
   if (secrets.length === 0) {
     return { ok: false, reason: "Secret de sesión no configurado" };
@@ -163,10 +208,14 @@ async function verifySessionToken(
     if (Date.now() - payload.createdAt > SESSION_TTL_MS) {
       return { ok: false, reason: "Sesión expirada" };
     }
+    // Token viejo (sin `role`) → owner. Cualquier valor que no sea exactamente
+    // "staff" cae a owner, así un payload manipulado no se auto-promociona a un
+    // rol inexistente: la firma ya garantiza que el payload es nuestro.
+    const role: InboxRole = payload.role === "staff" ? "staff" : "owner";
+    return { ok: true, session: { role, user: displayNameFor(role, env) } };
   } catch {
     return { ok: false, reason: "Payload inválido" };
   }
-  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,38 +223,52 @@ async function verifySessionToken(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Compara password recibido contra INBOX_PASSWORD. Si OK, devuelve el header
- * Set-Cookie listo para enviar.
+ * Compara el password recibido contra INBOX_PASSWORD (dueño) y, si no matchea,
+ * contra STAFF_PASSWORD (empleado). Si OK, devuelve el header Set-Cookie con el
+ * rol ya grabado y firmado dentro del token.
+ *
+ * El dueño se evalúa PRIMERO: si por error las dos contraseñas fueran iguales,
+ * gana owner (falla del lado seguro para César, nunca al revés).
  */
 export async function buildLoginCookie(
   password: string,
   env: InboxAuthEnv,
-): Promise<{ ok: boolean; setCookie?: string; error?: string }> {
-  if (!env.INBOX_PASSWORD) {
+): Promise<{ ok: boolean; setCookie?: string; error?: string; session?: InboxSession }> {
+  if (!env.INBOX_PASSWORD && !env.STAFF_PASSWORD) {
     return { ok: false, error: "INBOX_PASSWORD no configurada (env var faltante)" };
   }
   if (!primarySigningSecret(env)) {
     return { ok: false, error: "INBOX_SESSION_SECRET/CRON_SECRET no configurado" };
   }
-  // Timing-safe compare de las contraseñas
-  if (!(await timingSafeEqual(password, env.INBOX_PASSWORD))) {
+
+  // Timing-safe compare de las contraseñas. Se evalúan LAS DOS siempre (sin
+  // corto-circuito) para no filtrar por tiempo cuál de las dos existe.
+  const isOwner = env.INBOX_PASSWORD
+    ? await timingSafeEqual(password, env.INBOX_PASSWORD)
+    : false;
+  const isStaff = env.STAFF_PASSWORD
+    ? await timingSafeEqual(password, env.STAFF_PASSWORD)
+    : false;
+
+  const role: InboxRole | null = isOwner ? "owner" : isStaff ? "staff" : null;
+  if (!role) {
     return { ok: false, error: "Contraseña incorrecta" };
   }
 
-  const token = await buildSessionToken(env);
+  const token = await buildSessionToken(env, role);
   const maxAgeSec = Math.floor(SESSION_TTL_MS / 1000);
   const setCookie = `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}`;
-  return { ok: true, setCookie };
+  return { ok: true, setCookie, session: { role, user: displayNameFor(role, env) } };
 }
 
 /**
- * Verifica el cookie de sesión. Si OK, deja seguir. Si no, devuelve 401.
- * Llamar al inicio de cada endpoint protegido.
+ * Verifica el cookie de sesión. Si OK, deja seguir (y devuelve QUIÉN es). Si no,
+ * devuelve 401. Llamar al inicio de cada endpoint protegido.
  */
 export async function requireInboxAuth(
   request: Request,
   env: InboxAuthEnv,
-): Promise<{ ok: boolean; response?: Response }> {
+): Promise<{ ok: boolean; response?: Response; session?: InboxSession }> {
   const cookieHeader = request.headers.get("cookie") ?? "";
   const cookies = parseCookies(cookieHeader);
   const token = cookies[COOKIE_NAME];
@@ -219,7 +282,7 @@ export async function requireInboxAuth(
     };
   }
   const result = await verifySessionToken(token, env);
-  if (!result.ok) {
+  if (!result.ok || !result.session) {
     return {
       ok: false,
       response: new Response(JSON.stringify({ ok: false, error: result.reason }), {
@@ -228,7 +291,37 @@ export async function requireInboxAuth(
       }),
     };
   }
-  return { ok: true };
+  return { ok: true, session: result.session };
+}
+
+/**
+ * Igual que `requireInboxAuth`, pero además exige rol "owner". El empleado
+ * recibe 403 con `code: "forbidden_role"` (el front lo distingue del 401: 401 =
+ * "iniciá sesión", 403 = "esto no es para vos", NO lo desloguea).
+ *
+ * Usar en TODO endpoint que exponga o mueva plata.
+ */
+export async function requireOwner(
+  request: Request,
+  env: InboxAuthEnv,
+): Promise<{ ok: boolean; response?: Response; session?: InboxSession }> {
+  const auth = await requireInboxAuth(request, env);
+  if (!auth.ok) return auth;
+  if (auth.session!.role !== "owner") {
+    return {
+      ok: false,
+      session: auth.session,
+      response: new Response(
+        JSON.stringify({
+          ok: false,
+          code: "forbidden_role",
+          error: "Esta sección es solo del dueño.",
+        }),
+        { status: 403, headers: { "Content-Type": "application/json; charset=utf-8" } },
+      ),
+    };
+  }
+  return auth;
 }
 
 /**
