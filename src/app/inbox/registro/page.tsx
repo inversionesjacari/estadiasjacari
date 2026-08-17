@@ -32,6 +32,8 @@ interface Reservation {
   // schema 0045 — rastro de la cancelación (solo en la vista "Canceladas").
   cancelled_at?: string | null;
   cancel_reason?: string | null;
+  /** Quién canceló ("Propietario" / "Isaías Rivera"). */
+  cancelled_by?: string | null;
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -634,9 +636,18 @@ export default function RegistroPage() {
                       <td className="px-3 py-2 text-slate-400">{sourceLabel(r.source)}</td>
                       <td className="px-3 py-2">
                         <span className={`text-[11px] px-2 py-0.5 rounded-full border ${pay.cls}`}>{pay.text}</span>
-                        {r.status === "cancelled" && (r.cancelled_at || r.cancel_reason) ? (
-                          <div className="text-[10px] text-slate-500 mt-1 max-w-[150px] truncate" title={r.cancel_reason || ""}>
-                            {r.cancelled_at ? (r.cancelled_at ?? "").slice(0, 10) : ""}{r.cancel_reason ? ` · ${r.cancel_reason}` : ""}
+                        {/* Dos líneas con su propio truncate: metiendo quién +
+                            fecha + motivo en una sola de 150px, el motivo se
+                            perdía SIEMPRE (el dato que antes se veía). */}
+                        {r.status === "cancelled" && (r.cancelled_at || r.cancel_reason || r.cancelled_by) ? (
+                          <div className="text-[10px] text-slate-500 mt-1 max-w-[150px] space-y-0.5">
+                            <div className="truncate" title={r.cancelled_by ? `Canceló: ${r.cancelled_by}` : ""}>
+                              {r.cancelled_at ? (r.cancelled_at ?? "").slice(0, 10) : ""}
+                              {r.cancelled_by ? ` · ${r.cancelled_by}` : ""}
+                            </div>
+                            {r.cancel_reason ? (
+                              <div className="truncate" title={r.cancel_reason}>{r.cancel_reason}</div>
+                            ) : null}
                           </div>
                         ) : null}
                       </td>
@@ -645,8 +656,12 @@ export default function RegistroPage() {
                         <div className="flex items-center gap-1.5">
                           {r.status === "cancelled" ? (
                             <>
-                              {/* Reactivar re-bloquea fechas y revive el cobro → dueño. */}
-                              {!isStaff && <button
+                              {/* Reactivar = deshacer una cancelación. Lo puede
+                                  hacer quien canceló (también el staff): si no,
+                                  un mal clic deja las fechas libres hasta que
+                                  César entre, con riesgo de doble venta. El
+                                  gate anti-solape del endpoint sigue mandando. */}
+                              <button
                                 type="button"
                                 disabled={Boolean(rowBusy[r.id])}
                                 onClick={() => reactivate(r)}
@@ -654,7 +669,7 @@ export default function RegistroPage() {
                                 title="Reactivar la reserva (vuelve a bloquear esas fechas si siguen libres)"
                               >
                                 {rowBusy[r.id] ? "…" : "↩ Reactivar"}
-                              </button>}
+                              </button>
                               {rowMsg[r.id] ? (
                                 <span className="text-[10px] text-rose-300 max-w-[180px] truncate" title={rowMsg[r.id]}>{rowMsg[r.id]}</span>
                               ) : null}
@@ -681,19 +696,19 @@ export default function RegistroPage() {
                                   Chat
                                 </a>
                               ) : null}
-                              {/* Cancelar toca plata del huésped y libera fechas
-                                  ya vendidas → solo dueño (el endpoint también
-                                  lo niega con 403). */}
-                              {!isStaff && (
-                                <button
-                                  type="button"
-                                  onClick={() => openCancel(r)}
-                                  className="text-[11px] text-rose-300 border border-rose-500/30 rounded px-1.5 py-0.5 hover:bg-rose-500/10"
-                                  title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
-                                >
-                                  🚫 Cancelar
-                                </button>
-                              )}
+                              {/* Cancelar es operación del día: el huésped avisa
+                                  y las fechas tienen que quedar libres YA. Lo
+                                  hace también el staff (César, 17-ago); el
+                                  monto no le viaja y la cancelación queda
+                                  firmada con su nombre. */}
+                              <button
+                                type="button"
+                                onClick={() => openCancel(r)}
+                                className="text-[11px] text-rose-300 border border-rose-500/30 rounded px-1.5 py-0.5 hover:bg-rose-500/10"
+                                title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
+                              >
+                                🚫 Cancelar
+                              </button>
                             </>
                           )}
                         </div>
@@ -894,7 +909,23 @@ export default function RegistroPage() {
 
               <div className="rounded-lg border border-rose-500/20 bg-rose-500/[0.06] px-3 py-2.5 text-[12px] text-slate-300 space-y-1.5">
                 <p>✅ Se <b className="text-emerald-300">liberan las fechas</b> al instante para volver a rentarlas.</p>
-                {paidL > 0 ? (
+                {cancelRes.pay_state != null ? (
+                  // `pay_state` viene EXACTAMENTE cuando el servidor borró los
+                  // montos (redactMoney): atar la rama sin números a ese hecho
+                  // —y no al flag `isStaff`, que se resuelve por fetch y falla a
+                  // false— evita que un chequeo de sesión lento o caído le
+                  // muestre al empleado el texto del dueño calculado sobre
+                  // campos ya nulos ("no hay pago cargado" con depósito real).
+                  cancelRes.pay_state === "unpaid" ? (
+                    <p>ℹ️ Esta reserva <b>no tiene pago registrado</b>; solo se liberan las fechas.</p>
+                  ) : cancelRes.pay_state === "deposit" ? (
+                    <p>💰 El huésped <b className="text-rose-300">pierde el depósito</b> que hizo (no se reembolsa).</p>
+                  ) : cancelRes.pay_state === "paid" ? (
+                    <p>💰 El huésped <b className="text-rose-300">pierde lo que pagó</b> (no se reembolsa).</p>
+                  ) : (
+                    <p>💰 Lo que el huésped haya pagado <b className="text-rose-300">lo pierde</b>, no se reembolsa.</p>
+                  )
+                ) : paidL > 0 ? (
                   <p>💰 El huésped <b className="text-rose-300">pierde los {fmtL(paidL)}</b> que pagó (no se reembolsa).</p>
                 ) : paypalPaid ? (
                   <p>💰 El huésped <b className="text-rose-300">pierde lo que pagó por PayPal</b>. Esto <b>no</b> le devuelve la plata; si querés reembolsar, hacelo desde PayPal.</p>

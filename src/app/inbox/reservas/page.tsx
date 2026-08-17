@@ -441,18 +441,11 @@ function analyze(r: Reservation): Analysis {
 
 export default function ReservasPage() {
   const [authed, setAuthed] = useState(true);
-  // Rol empleado: sin botón de cancelar. Los montos ya no le llegan del servidor
-  // (viene `pay_state` en su lugar), así que el resto de la card se adapta sola.
-  const [isStaff, setIsStaff] = useState(false);
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch("/api/inbox/session", { credentials: "include" });
-        const d = (await r.json()) as { role?: string };
-        setIsStaff(d.role === "staff");
-      } catch { /* el servidor sigue negando lo que no le toca */ }
-    })();
-  }, []);
+  // Esta pantalla ya no consulta el rol: los montos no le llegan al empleado
+  // (el servidor manda `pay_state` en su lugar) y la card entera —incluido el
+  // texto de cancelar— se adapta con ese dato. Preguntar el rol por fetch era
+  // un flag que fallaba a "dueño" si la llamada se caía; el dato del servidor
+  // no tiene esa ventana.
   const [loading, setLoading] = useState(true);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [propFilter, setPropFilter] = useState<string>("");
@@ -602,8 +595,19 @@ export default function ReservasPage() {
     async (r: Reservation): Promise<void> => {
       if (cancelling[r.id]) return;
       const pay = paymentInfo(r);
-      const plata =
-        pay.state === "paid"
+      // `pay_state` llega EXACTAMENTE cuando el servidor borró los montos
+      // (redactMoney). Ramificar por ese hecho —y no por el flag `isStaff`, que
+      // se resuelve por fetch y cae a false si falla— garantiza que el texto sin
+      // números y la fila sin números nunca se desincronicen.
+      const plata = r.pay_state != null
+        ? pay.state === "unpaid"
+          ? "ℹ️ Esta reserva no tiene pago registrado; solo se liberan las fechas."
+          : pay.state === "deposit"
+            ? "💰 El huésped pierde el depósito que hizo (no se reembolsa)."
+            : pay.state === "paid"
+              ? "💰 El huésped pierde lo que pagó (no se reembolsa)."
+              : "💰 Lo que el huésped haya pagado lo pierde, no se reembolsa."
+        : pay.state === "paid"
           ? "💰 El huésped pierde lo que pagó (no se reembolsa)."
           : pay.paid && pay.paid > 0
             ? `💰 El huésped pierde los L ${Math.round(pay.paid).toLocaleString("es-HN")} que pagó (no se reembolsa).`
@@ -659,7 +663,7 @@ export default function ReservasPage() {
 
   const arrivingToday = reservations.filter((r) => daysUntil(r.check_in) === 0).length;
 
-  const shared = { sending, actionMsg, onSend: sendMessage, idBusy, idMsg, onUploadId: uploadId, onRemoveId: removeId, cancelling, cancelMsg, onCancel: cancelReservation, isStaff };
+  const shared = { sending, actionMsg, onSend: sendMessage, idBusy, idMsg, onUploadId: uploadId, onRemoveId: removeId, cancelling, cancelMsg, onCancel: cancelReservation };
 
   if (!authed) {
     return (
@@ -1045,8 +1049,6 @@ interface CardShared {
   cancelling: Record<number, boolean>;
   cancelMsg: Record<number, string>;
   onCancel: (r: Reservation) => void;
-  /** Rol empleado: sin botón de cancelar (el endpoint también lo niega). */
-  isStaff: boolean;
 }
 
 function CardHeader({ r, a }: { r: Reservation; a: Analysis }) {
@@ -1107,7 +1109,6 @@ function FullCard({
   cancelling,
   cancelMsg,
   onCancel,
-  isStaff,
 }: { r: Reservation; a: Analysis; highlight?: boolean; onCollapse?: () => void } & CardShared) {
   const renderPills = (defs: Touchpoint[]) =>
     defs.map((tp) => {
@@ -1173,17 +1174,18 @@ function FullCard({
       {/* Pie: cancelar reserva (libera fechas) + colapsar */}
       <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
-          {!isStaff && (
-            <button
-              type="button"
-              disabled={Boolean(cancelling[r.id])}
-              onClick={() => onCancel(r)}
-              className="text-[11px] text-rose-300/90 border border-rose-500/30 rounded px-2 py-1 hover:bg-rose-500/10 disabled:opacity-50"
-              title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
-            >
-              {cancelling[r.id] ? "cancelando…" : "🚫 Cancelar reserva"}
-            </button>
-          )}
+          {/* También el staff (César, 17-ago): el huésped avisa que cancela y
+              las fechas tienen que quedar libres el mismo día. El monto no le
+              viaja y la cancelación queda firmada con su nombre. */}
+          <button
+            type="button"
+            disabled={Boolean(cancelling[r.id])}
+            onClick={() => onCancel(r)}
+            className="text-[11px] text-rose-300/90 border border-rose-500/30 rounded px-2 py-1 hover:bg-rose-500/10 disabled:opacity-50"
+            title="Cancelar la reserva y liberar las fechas (el huésped pierde lo pagado)"
+          >
+            {cancelling[r.id] ? "cancelando…" : "🚫 Cancelar reserva"}
+          </button>
           {cancelMsg[r.id] ? (
             <span className="text-[10px] text-rose-300 truncate max-w-[160px]" title={cancelMsg[r.id]}>{cancelMsg[r.id]}</span>
           ) : null}

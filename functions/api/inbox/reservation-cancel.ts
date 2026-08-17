@@ -22,19 +22,100 @@
 // re-crear el doble booking que todo el sistema cuida). Reusa exactamente la
 // misma detección que la alta manual.
 //
-// SOLO DUEÑO (requireOwner): cancelar toca plata del huésped (pierde el depósito
-// / se decide reembolso) y libera fechas ya vendidas. El empleado no cancela;
-// escala a César.
+// STAFF TAMBIÉN CANCELA (decisión de César, 2026-08-17): cancelar es operación
+// del día —el huésped avisa por WhatsApp y las fechas tienen que quedar libres YA
+// para re-venderlas—, no una gestión de tesorería. Antes era `requireOwner` y el
+// empleado tenía que esperar a César, con las fechas muertas mientras tanto.
+// Lo que NO cambia: los MONTOS siguen sin viajarle al staff (redactMoney) — el
+// diálogo le dice QUÉ pasa con el pago, nunca CUÁNTO. Y toda cancelación queda
+// firmada en `cancelled_by` con el nombre de quien la hizo, para que César vea
+// en el registro quién canceló qué.
 //
 // Protegido con la cookie de sesión del inbox. Body: { id, action?, reason? }.
 //
 
-import { requireOwner } from "../../_lib/inbox-auth";
+import { requireInboxAuth } from "../../_lib/inbox-auth";
 import { findOverlappingReservations, buildOverlapWarning } from "./reservation-create";
+import { notifyOwners } from "../../_lib/owner-alerts";
 
 interface Env {
   DB: D1Database;
   INBOX_PASSWORD?: string;
+  // Aviso a los socios (César + Eduardo) cuando una reserva se cancela o revive.
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+}
+
+const PROPERTY_NAMES: Record<string, string> = {
+  "villa-b11-palma-real": "Villa B11 — Palma Real",
+  "casa-brisa": "Casa Brisa",
+  "casa-marea": "Casa Marea",
+  "centro-morazan": "Centro Morazán",
+  "casa-lara-townhouse": "Casa Lara Townhouse",
+  "la-florida": "La Florida",
+  "las-gemelas-tela": "Las Gemelas (Tela)",
+};
+
+/** Fila que alimenta el aviso a los socios. */
+interface AlertRow {
+  property_slug: string;
+  check_in: string;
+  check_out: string;
+  guest_name: string | null;
+  guest_phone: string | null;
+  total_hnl: number | null;
+  paid_hnl: number | null;
+  amount_usd: number | null;
+}
+
+/** "19 ago" — fecha corta para que el aviso entre en los 250 chars de Meta. */
+const MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+function shortDate(iso: string): string {
+  const [, m, d] = (iso || "").split("-");
+  const mi = Number(m) - 1;
+  return MONTHS_ES[mi] ? `${Number(d)} ${MONTHS_ES[mi]}` : iso;
+}
+
+/**
+ * Qué plata está en juego. Va SOLO al WhatsApp de los dueños (OWNER_PHONES), así
+ * que acá sí se nombran montos: es la información que le permite a César decidir
+ * si perseguir la cancelación. Pura y exportada para el test.
+ */
+export function moneyLine(r: AlertRow): string {
+  const paid = r.paid_hnl ?? 0;
+  if (r.total_hnl != null && paid > 0) {
+    return `pagó L ${Math.round(paid).toLocaleString("es-HN")} (los pierde)`;
+  }
+  if (r.total_hnl != null) return "sin pago recibido";
+  if (r.amount_usd != null && r.amount_usd > 0) {
+    return `pagó $${r.amount_usd} (los pierde)`;
+  }
+  return "sin pago cargado";
+}
+
+/**
+ * Texto del aviso a los socios. Pura y exportada para el test — el detalle tiene
+ * que entrar en los 250 caracteres que acepta el parámetro de Meta.
+ */
+export function buildCancelAlert(
+  r: AlertRow,
+  actor: string | null,
+  reason: string,
+  action: "cancel" | "restore",
+) {
+  const prop = PROPERTY_NAMES[r.property_slug] ?? r.property_slug;
+  const fechas = `${shortDate(r.check_in)} → ${shortDate(r.check_out)}`;
+  const quien = actor || "alguien del inbox";
+  const detalle =
+    action === "cancel"
+      ? `${prop} · ${fechas} · canceló ${quien} · ${moneyLine(r)}${reason ? ` · motivo: ${reason}` : ""} · fechas LIBRES para re-vender`
+      : `${prop} · ${fechas} · la reactivó ${quien} · las fechas vuelven a quedar BLOQUEADAS`;
+  return {
+    tipo: action === "cancel" ? "Reserva CANCELADA" : "Reserva REACTIVADA",
+    cliente: `${r.guest_name || "Huésped sin nombre"} ${r.guest_phone || ""}`.trim(),
+    detalle: detalle.slice(0, 250),
+    guestPhone: (r.guest_phone || "").replace(/\D/g, ""),
+  };
 }
 
 function json(data: unknown, status = 200): Response {
@@ -86,9 +167,52 @@ function isRestorableStatus(s: unknown): s is "confirmed" | "pending" {
   return s === "confirmed" || s === "pending";
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireOwner(request, env);
+export const onRequestPost: PagesFunction<Env> = async (context) => {
+  const { request, env } = context;
+  const auth = await requireInboxAuth(request, env);
   if (!auth.ok) return auth.response!;
+  // Quién cancela ("Propietario" / "Isaías Rivera") — firma de la cancelación.
+  const actor = auth.session?.user ?? null;
+
+  /**
+   * Aviso por WhatsApp a los socios (César + Eduardo) — pedido de César el
+   * 2026-08-17, al abrirle el botón al empleado: una cancelación mueve plata y
+   * libera fechas, los dos socios tienen que enterarse en el momento, no
+   * descubrirlo después en el registro.
+   *
+   * Va en `waitUntil`: se dispara DESPUÉS de responderle al inbox, así el botón
+   * no se queda girando esperando a Meta. Best-effort de punta a punta —
+   * notifyOwners nunca lanza y deja su propio rastro (heartbeat + bot_trace) si
+   * el envío falla, así que un canal caído no se traga en silencio.
+   */
+  const alertOwners = (id: number, action: "cancel" | "restore", reason: string): void => {
+    const task = (async () => {
+      try {
+        const row = await env.DB.prepare(
+          `SELECT property_slug, check_in, check_out, guest_name, guest_phone,
+                  total_hnl, paid_hnl, amount_usd
+             FROM reservations WHERE id = ?`,
+        ).bind(id).first<AlertRow>();
+        if (!row) return;
+        await notifyOwners(
+          {
+            WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+            WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+            DB: env.DB,
+          },
+          buildCancelAlert(row, actor, reason, action),
+        );
+      } catch {
+        /* el aviso nunca puede tumbar la cancelación */
+      }
+    })();
+    try {
+      context.waitUntil(task);
+    } catch {
+      /* sin waitUntil (tests/entorno raro): queda como promesa suelta best-effort */
+      void task;
+    }
+  };
 
   let body: Record<string, unknown>;
   try {
@@ -114,6 +238,23 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     if (!row) return json({ ok: false, error: "No se encontró esa reserva." }, 404);
     if (row.status !== "cancelled") {
       return json({ ok: false, error: "Solo se puede reactivar una reserva cancelada." }, 409);
+    }
+
+    // Reactivar es DESHACER lo que uno mismo canceló. Una fila SIN
+    // `cancel_prev_status` no la canceló una persona desde el inbox: la canceló
+    // el SISTEMA —PayPal rechazó el cobro (PAYMENT.CAPTURE.DENIED) o el huésped
+    // canceló por Airbnb— y ahí no hay estado que restaurar, se adivina con
+    // `deriveRestoreStatus`, que para website/airbnb devuelve 'confirmed'. O
+    // sea: revivirla la marcaría PAGADA y le dispararía las instrucciones de
+    // check-in a alguien cuyo pago fue DENEGADO. Esa decisión es de dueño
+    // (reservation-confirm.ts la protege igual), así que el staff se frena acá
+    // con un mensaje que le dice qué hacer.
+    if (!isRestorableStatus(row.cancel_prev_status) && auth.session?.role !== "owner") {
+      return json({
+        ok: false,
+        code: "forbidden_role",
+        error: "Esta reserva la canceló el sistema (Airbnb o un pago rechazado), no una persona. Solo César puede reactivarla — avisale.",
+      }, 403);
     }
 
     // ¿Se tomaron las fechas mientras estuvo cancelada? Si hay solape, NO reactivar
@@ -142,13 +283,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       : deriveRestoreStatus(row);
     try {
       // Limpia el rastro de cancelación (fail-soft si las columnas no existen aún).
-      const res = await tryUpdate(env.DB, [
-        `UPDATE reservations SET status = ?, cancelled_at = NULL, cancel_reason = NULL, cancel_prev_status = NULL, updated_at = datetime('now') WHERE id = ? AND status = 'cancelled'`,
-        `UPDATE reservations SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = 'cancelled'`,
-      ], [status, id]);
+      const res = await tryUpdate(env.DB, buildRestoreVariants(status, id));
       if ((res.meta?.changes ?? 0) === 0) {
         return json({ ok: false, error: "La reserva ya no estaba cancelada." }, 409);
       }
+      alertOwners(id, "restore", "");
       return json({ ok: true, action: "restore", id, status });
     } catch (err) {
       return json({ ok: false, error: `D1: ${(err as Error).message}` }, 500);
@@ -162,10 +301,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     // `cancel_prev_status = status`: SQLite evalúa el RHS del SET con el valor
     // PREVIO de la fila → guarda 'pending'/'confirmed' para que reactivar vuelva
     // al estado exacto (sin adivinar por monto).
-    const res = await tryUpdate(env.DB, [
-      `UPDATE reservations SET status = 'cancelled', cancel_prev_status = status, cancelled_at = datetime('now'), cancel_reason = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('pending','confirmed')`,
-      `UPDATE reservations SET status = 'cancelled', updated_at = datetime('now') WHERE id = ? AND status IN ('pending','confirmed')`,
-    ], [reason || null, id], [id]);
+    const res = await tryUpdate(env.DB, buildCancelVariants(reason || null, actor, id));
 
     if ((res.meta?.changes ?? 0) === 0) {
       // O no existe, o ya estaba cancelada/reembolsada.
@@ -173,6 +309,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       if (!cur) return json({ ok: false, error: "No se encontró esa reserva." }, 404);
       return json({ ok: false, error: `La reserva ya está "${cur.status}", no se puede cancelar.` }, 409);
     }
+    alertOwners(id, "cancel", reason);
     return json({ ok: true, action: "cancel", id, status: "cancelled" });
   } catch (err) {
     return json({ ok: false, error: `D1: ${(err as Error).message}` }, 500);
@@ -209,24 +346,49 @@ async function selectRestoreRow(db: D1Database, id: number): Promise<RestoreDbRo
   }
 }
 
+export interface UpdateVariant {
+  sql: string;
+  binds: unknown[];
+}
+
 /**
- * Corre el primer UPDATE; si falla por columna faltante (migración 0045 sin
- * aplicar), reintenta con el fallback (sin las columnas de auditoría) — así
- * CANCELAR siempre funciona y libera las fechas aunque falte el rastro. Cada
- * variante puede tener su propio set de binds (el fallback no bindea `reason`).
+ * Las 3 variantes del CANCELAR, de más a menos columnas. Exportadas para que el
+ * test verifique el SQL REAL (una copia a mano en el test no prueba nada: el
+ * contrato que importa es "tantos binds como '?'", y ese conteo cambia por nivel).
  */
-async function tryUpdate(
-  db: D1Database,
-  sqls: string[],
-  bindsFull: unknown[],
-  bindsFallback: unknown[] = bindsFull,
-): Promise<D1Result> {
-  try {
-    return await db.prepare(sqls[0]).bind(...bindsFull).run();
-  } catch (err) {
-    if (/no such column/i.test((err as Error).message) && sqls[1]) {
-      return await db.prepare(sqls[1]).bind(...bindsFallback).run();
+export function buildCancelVariants(reason: string | null, actor: string | null, id: number): UpdateVariant[] {
+  return [
+    { sql: `UPDATE reservations SET status = 'cancelled', cancel_prev_status = status, cancelled_at = datetime('now'), cancel_reason = ?, cancelled_by = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('pending','confirmed')`, binds: [reason, actor, id] },
+    { sql: `UPDATE reservations SET status = 'cancelled', cancel_prev_status = status, cancelled_at = datetime('now'), cancel_reason = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('pending','confirmed')`, binds: [reason, id] },
+    { sql: `UPDATE reservations SET status = 'cancelled', updated_at = datetime('now') WHERE id = ? AND status IN ('pending','confirmed')`, binds: [id] },
+  ];
+}
+
+/** Las 3 variantes del REACTIVAR (limpian el rastro de la cancelación). */
+export function buildRestoreVariants(status: string, id: number): UpdateVariant[] {
+  return [
+    { sql: `UPDATE reservations SET status = ?, cancelled_at = NULL, cancel_reason = NULL, cancel_prev_status = NULL, cancelled_by = NULL, updated_at = datetime('now') WHERE id = ? AND status = 'cancelled'`, binds: [status, id] },
+    { sql: `UPDATE reservations SET status = ?, cancelled_at = NULL, cancel_reason = NULL, cancel_prev_status = NULL, updated_at = datetime('now') WHERE id = ? AND status = 'cancelled'`, binds: [status, id] },
+    { sql: `UPDATE reservations SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = 'cancelled'`, binds: [status, id] },
+  ];
+}
+
+/**
+ * Corre la primera variante; ante "no such column" baja al siguiente nivel, que
+ * pide menos columnas. Cubre la ventana real entre desplegar el código y aplicar
+ * los ALTER en la D1 remota (el push despliega en minutos; los ALTER los pega
+ * César a mano, y `cancelled_by` llegó una semana después que las otras tres).
+ * Así CANCELAR siempre funciona y libera las fechas aunque falte el rastro. Cada
+ * variante lleva sus propios binds (los niveles bajos no bindean
+ * `reason`/`cancelled_by`), y el conteo de '?' cambia entre niveles.
+ */
+export async function tryUpdate(db: D1Database, variants: UpdateVariant[]): Promise<D1Result> {
+  for (let i = 0; i < variants.length; i++) {
+    try {
+      return await db.prepare(variants[i].sql).bind(...variants[i].binds).run();
+    } catch (err) {
+      if (i === variants.length - 1 || !/no such column/i.test((err as Error).message)) throw err;
     }
-    throw err;
   }
+  throw new Error("tryUpdate: sin variantes"); // inalcanzable (el loop siempre sale)
 }

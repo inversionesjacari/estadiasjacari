@@ -16,8 +16,14 @@
 -- cancelación de César de las que ya escribía el sistema ('cancelled' por
 -- PAYMENT.CAPTURE.DENIED o por overlap+refund).
 --
--- NOTA: D1/SQLite no soporta "ADD COLUMN IF NOT EXISTS". Si una columna ya
--- existe, ese ALTER falla — ignorá el error de esa línea y seguí.
+-- ESTADO: las 4 columnas están APLICADAS en la D1 de producción (2026-08-17).
+--
+-- NOTA: D1/SQLite no soporta "ADD COLUMN IF NOT EXISTS", así que re-correr este
+-- archivo falla con "duplicate column name" en la primera columna que ya existe
+-- y la consola corta ahí. No es un problema: significa que ya estaba. Antes de
+-- volver a correr nada, mirá qué hay de verdad (el dato mata la suposición):
+--   SELECT name FROM pragma_table_info('reservations') WHERE name LIKE 'cancel%';
+-- y aplicá SOLO las que falten, de a una.
 
 ALTER TABLE reservations ADD COLUMN cancelled_at       TEXT;  -- datetime('now') al cancelar a mano
 ALTER TABLE reservations ADD COLUMN cancel_reason      TEXT;  -- nota libre (ej. "no-show", "cambió de planes")
@@ -28,3 +34,8 @@ ALTER TABLE reservations ADD COLUMN cancel_reason      TEXT;  -- nota libre (ej.
 -- valores PREVIOS de la fila, así que `SET status='cancelled', cancel_prev_status=status`
 -- guarda el estado viejo. Se limpia a NULL al reactivar.
 ALTER TABLE reservations ADD COLUMN cancel_prev_status TEXT;
+-- Quién canceló ("Propietario" / "Isaías Rivera"). Desde 2026-08-17 el rol staff
+-- también puede cancelar (las fechas tienen que liberarse el mismo día que el
+-- huésped avisa), así que toda cancelación queda firmada y César ve en el
+-- registro quién canceló qué. Se limpia al reactivar.
+ALTER TABLE reservations ADD COLUMN cancelled_by TEXT;

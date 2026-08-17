@@ -45,12 +45,20 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // Columnas del rastro de cancelación (schema 0045). Solo se piden en la vista
   // de canceladas; van en el nivel 1 del fallback para que su ausencia degrade
   // sin tumbar la planilla.
-  const cancelCols = includeCancelled ? ", cancelled_at, cancel_reason" : "";
-  // Fallback progresivo: 1) LPS + rastro de cancelación, 2) LPS, 3) base. Cada
-  // "no such column" baja un nivel para no depender de migraciones sin aplicar.
+  // `cancelled_by` (firma de quién canceló) llegó después que las otras dos, así
+  // que tiene su propio nivel: si esa columna falta, se sigue mostrando la fecha
+  // y el motivo en vez de perder el rastro entero.
+  const cancelCols = includeCancelled ? ", cancelled_at, cancel_reason, cancelled_by" : "";
+  const cancelColsNoBy = includeCancelled ? ", cancelled_at, cancel_reason" : "";
+  // Fallback progresivo: 1) LPS + rastro completo, 2) sin `cancelled_by`,
+  // 3) LPS sin rastro, 4) base. Cada "no such column" baja un nivel para no
+  // depender de migraciones sin aplicar.
   const selects = [
     `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone,
             guest_count, amount_usd, total_hnl, paid_hnl, source, status, created_at${cancelCols}
+     ${TAIL}`,
+    `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone,
+            guest_count, amount_usd, total_hnl, paid_hnl, source, status, created_at${cancelColsNoBy}
      ${TAIL}`,
     `SELECT id, property_slug, check_in, check_out, guest_name, guest_phone,
             guest_count, amount_usd, total_hnl, paid_hnl, source, status, created_at
