@@ -1109,10 +1109,22 @@ export default function InboxPage() {
   useEffect(() => {
     if (authenticated !== null) return; // ya se sabe; el poll normal se encarga
     fetchConversations();
-    const id = setInterval(fetchConversations, 5000);
+    // Backoff 5s → 10s → 20s → 30s (tope). Si el servidor está en problemas
+    // (D1 saturada, 17-ago-2026), seis dispositivos reintentando cada 5s en
+    // fijo son parte del problema — el freno progresivo deja de patear al
+    // caído sin dejar de reintentar. Al resolverse la sesión, el cleanup
+    // corta el timer y el poll normal toma la posta.
+    let delay = 5000;
+    let t: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      fetchConversations();
+      delay = Math.min(delay * 2, 30000);
+      t = setTimeout(tick, delay);
+    };
+    t = setTimeout(tick, delay);
     const onVis = () => { if (!document.hidden) fetchConversations(); };
     document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    return () => { clearTimeout(t); document.removeEventListener("visibilitychange", onVis); };
   }, [authenticated, fetchConversations]);
 
   // Cargar las plantillas una vez que hay sesión.
@@ -1161,9 +1173,14 @@ export default function InboxPage() {
     };
   }, [fetchConversations]);
 
-  // ── Polling cada 10s — PAUSADO cuando la app está en segundo plano ─────────
+  // ── Polling cada 20s — PAUSADO cuando la app está en segundo plano ─────────
   // (no gastar batería/datos/D1 mientras César no la está mirando; al volver al
   // frente refresca de inmediato).
+  // 10s → 20s el 17-ago-2026: con el equipo entrenando (6 dispositivos a la
+  // vez) el poll de 10s duplicaba de gratis la carga sobre D1, que ya venía
+  // saturada por la ola de leads. 20s sigue siendo "en vivo" para operar un
+  // chat de WhatsApp; lo urgente de verdad (pago/humano) igual le suena a
+  // César por la alerta de WhatsApp, no por este poll.
   useEffect(() => {
     if (!authenticated) return;
     fetchPendingReservations();
@@ -1173,7 +1190,7 @@ export default function InboxPage() {
       fetchPendingReservations();
       if (selectedPhone) loadMessages(selectedPhone);
     };
-    const id = setInterval(tick, 10000);
+    const id = setInterval(tick, 20000);
     const onVis = () => { if (!document.hidden) tick(); };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };

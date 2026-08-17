@@ -68,10 +68,24 @@ const PENDING_LIMIT = 300;
 const PAY_STATES = ["awaiting_transfer_proof", "awaiting_paypal_capture", "awaiting_payment_method"];
 
 /**
- * Cuerpo del SELECT de conversaciones, parametrizable por el WHERE extra y el
- * LIMIT. Se reusa para el feed, la búsqueda y los pendientes (mismo shape de fila).
+ * Cuerpo del SELECT de conversaciones, parametrizable por el WHERE extra, el
+ * LIMIT y la VENTANA de escaneo. Se reusa para el feed, la búsqueda y los
+ * pendientes (mismo shape de fila).
+ *
+ * `sinceDays` (INCIDENTE 2026-08-17, D1 code 7429 "overloaded"): la CTE con
+ * ROW_NUMBER() escanea TODOS los mensajes entrantes de la historia en cada
+ * ejecución. Con la ola de leads (40-80× desde julio) eso creció hasta saturar
+ * D1 — cada dispositivo del inbox la disparaba DOS VECES (feed + pendientes)
+ * cada 10s, y con 6 dispositivos en el entrenamiento de Isaías la cola de D1 se
+ * desbordó (login colgado 20s+, conversations 500, "Cargando..." por minutos).
+ * Acotar la ventana corta el 95%+ de las filas escaneadas en el camino caliente:
+ *   - feed/poll: 30 días (el top-100 de conversaciones vive en días, no meses)
+ *   - pendientes: 90 días (un escalado más viejo que eso está muerto)
+ *   - búsqueda y paginación con cursor: SIN ventana (user-initiated, poco
+ *     frecuente — un cliente viejo se tiene que poder encontrar)
  */
-function conversationsQuery(whereExtra: string, limitClause: string): string {
+function conversationsQuery(whereExtra: string, limitClause: string, sinceDays?: number): string {
+  const sinceClause = sinceDays ? `AND m.created_at > datetime('now', '-${sinceDays} days')` : "";
   return `WITH last_msg AS (
          SELECT m.from_phone AS phone,
                 m.body,
@@ -83,6 +97,7 @@ function conversationsQuery(whereExtra: string, limitClause: string): string {
                 ROW_NUMBER() OVER (PARTITION BY m.from_phone ORDER BY m.created_at DESC) AS rn
            FROM whatsapp_messages m
           WHERE m.direction = 'in'
+            ${sinceClause}
             -- Modo propietario: los chats de los dueños con el copiloto no son
             -- leads — fuera de la lista del inbox (feed, búsqueda y pendientes).
             AND m.from_phone NOT IN (${OWNER_PHONES_SQL})
@@ -93,7 +108,11 @@ function conversationsQuery(whereExtra: string, limitClause: string): string {
               lm.created_at AS last_at,
               lm.matched_rule AS last_matched_rule,
               lm.escalated AS last_escalated,
-              (SELECT COUNT(*) FROM whatsapp_messages m2 WHERE m2.from_phone = lm.phone OR m2.to_phone = lm.phone) AS message_count,
+              -- Dos COUNT indexados sumados, NUNCA "from = X OR to = X": el OR
+              -- le impide a SQLite usar los índices por columna y degeneraba en
+              -- un escaneo de la tabla entera POR FILA del resultado.
+              ((SELECT COUNT(*) FROM whatsapp_messages m2a WHERE m2a.from_phone = lm.phone)
+               + (SELECT COUNT(*) FROM whatsapp_messages m2b WHERE m2b.to_phone = lm.phone)) AS message_count,
               (SELECT MAX(m3.created_at) FROM whatsapp_messages m3 WHERE m3.to_phone = lm.phone AND m3.direction = 'out') AS last_out_at,
               (SELECT m4.body FROM whatsapp_messages m4 WHERE m4.to_phone = lm.phone AND m4.direction = 'out' ORDER BY m4.created_at DESC, m4.id DESC LIMIT 1) AS last_out_body,
               (SELECT m5.matched_rule FROM whatsapp_messages m5 WHERE m5.to_phone = lm.phone AND m5.direction = 'out' AND m5.matched_rule IS NOT NULL ORDER BY m5.created_at DESC, m5.id DESC LIMIT 1) AS last_out_rule,
@@ -164,10 +183,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       ).bind(like).all<ConversationRow>();
       feed = res.results ?? [];
     } else {
-      // ── Modo NORMAL: feed paginado por cursor.
+      // ── Modo NORMAL: feed paginado por cursor. El poll de cada dispositivo
+      // pega acá sin cursor → ventana de 30 días (ver conversationsQuery). La
+      // paginación con cursor ("cargar más") va SIN ventana: es user-initiated
+      // y tiene que poder llegar hasta el fondo de la historia.
       const feedRes = before
         ? await env.DB.prepare(conversationsQuery(`AND lm.created_at < ?1`, `LIMIT ${FEED_LIMIT}`)).bind(before).all<ConversationRow>()
-        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`)).all<ConversationRow>();
+        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`, 30)).all<ConversationRow>();
       feed = feedRes.results ?? [];
       nextCursor = nextCursorOf(feed, FEED_LIMIT);
 
@@ -184,6 +206,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
                     OR lm.phone IN (SELECT phone FROM bot_pauses)
                     OR st.state IN (${payList}))`,
               `LIMIT ${PENDING_LIMIT}`,
+              90,
             ),
           ).all<ConversationRow>();
           pending = pendRes.results ?? [];

@@ -2,7 +2,8 @@
 //
 // /inbox/operacion — Centro de Control (operación en tiempo real).
 // Estilo "command center": tema oscuro, glow neón, números mono, diagrama vivo.
-// Lee /api/inbox/metrics cada 10s. Protegido con la cookie de sesión del inbox.
+// Lee /api/inbox/metrics cada 30s (solo con la pestaña visible). Protegido con
+// la cookie de sesión del inbox. Solo dueño (requireOwner en el endpoint).
 //
 
 import { useEffect, useState, useCallback, useRef, type ReactNode } from "react";
@@ -419,12 +420,27 @@ export default function OperacionPage() {
   // sistema— cada 10s para siempre, aunque en pantalla solo vea el cartel.
   // Al cambiar `forbidden`/`authed` React corre el cleanup de abajo, que ya
   // limpia los dos intervalos.
+  //
+  // 10s → 30s + saltar en segundo plano (17-ago-2026, D1 saturada): /metrics
+  // corre decenas de sub-consultas; una pestaña olvidada del Centro de control
+  // la disparaba cada 10s TODO el día, incluso minimizada. Es un tablero para
+  // mirar, no una operación por segundo — 30s sigue siendo "EN VIVO", y al
+  // volver la pestaña al frente refresca de inmediato.
   useEffect(() => {
     if (forbidden || authed === false) return;
     load();
-    timer.current = setInterval(load, 10000);
+    timer.current = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      load();
+    }, 30000);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVis);
     const c = setInterval(() => setClock(new Date().toLocaleTimeString("es-HN")), 1000);
-    return () => { if (timer.current) clearInterval(timer.current); clearInterval(c); };
+    return () => {
+      if (timer.current) clearInterval(timer.current);
+      clearInterval(c);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [load, forbidden, authed]);
 
   if (forbidden) {
