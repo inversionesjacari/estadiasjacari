@@ -78,9 +78,12 @@ const PAY_STATES = ["awaiting_transfer_proof", "awaiting_paypal_capture", "await
  * D1 — cada dispositivo del inbox la disparaba DOS VECES (feed + pendientes)
  * cada 10s, y con 6 dispositivos en el entrenamiento de Isaías la cola de D1 se
  * desbordó (login colgado 20s+, conversations 500, "Cargando..." por minutos).
- * Acotar la ventana corta el 95%+ de las filas escaneadas en el camino caliente:
- *   - feed/poll: 30 días (el top-100 de conversaciones vive en días, no meses)
- *   - pendientes: 90 días (un escalado más viejo que eso está muerto)
+ * Acotar la ventana corta las filas escaneadas en el camino caliente:
+ *   - feed/poll: 7 días. OJO: 30 días NO alcanzó (medido post-deploy: 14s) —
+ *     la ola de leads empezó el 9-jul, así que "30 días" ≈ la historia entera.
+ *     Con 83-158 leads/día, el top-100 de conversaciones vive en 1-2 días.
+ *   - pendientes: 30 días (un escalado más viejo ya está muerto; además el poll
+ *     normal NI corre esta query — ver `lite` en el handler)
  *   - búsqueda y paginación con cursor: SIN ventana (user-initiated, poco
  *     frecuente — un cliente viejo se tiene que poder encontrar)
  */
@@ -166,6 +169,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") || "").trim();
   const before = (url.searchParams.get("before") || "").trim();
+  // lite=1 → SOLO el feed, sin la cola de pendientes. Es lo que pide el poll
+  // periódico: la cola completa (con su CTE de 30 días) solo hace falta en la
+  // primera carga y en el refresh manual; pedirla cada 20s desde cada
+  // dispositivo era la mitad del costo que saturó D1 el 17-ago-2026. Un
+  // escalado NUEVO igual aparece al toque: su mensaje es reciente → entra por
+  // el feed con `escalated = 1`.
+  const lite = url.searchParams.get("lite") === "1";
 
   try {
     let feed: ConversationRow[];
@@ -189,15 +199,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       // y tiene que poder llegar hasta el fondo de la historia.
       const feedRes = before
         ? await env.DB.prepare(conversationsQuery(`AND lm.created_at < ?1`, `LIMIT ${FEED_LIMIT}`)).bind(before).all<ConversationRow>()
-        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`, 30)).all<ConversationRow>();
+        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`, 7)).all<ConversationRow>();
       feed = feedRes.results ?? [];
       nextCursor = nextCursorOf(feed, FEED_LIMIT);
 
-      // Solo en la PRIMERA carga (sin cursor) traemos la cola de pendientes completa,
-      // sin importar antigüedad, para que un escalado/pausado/en-pago viejo NO
-      // desaparezca. Fail-soft: si `bot_pauses` no existe o la query falla, el inbox
+      // Cola de pendientes: solo en la carga COMPLETA (primera carga / refresh
+      // manual — sin cursor y sin lite), para que un escalado/pausado/en-pago
+      // no desaparezca de la columna. El poll periódico va con lite=1 y no la
+      // paga. Fail-soft: si `bot_pauses` no existe o la query falla, el inbox
       // sigue con el feed (comportamiento previo).
-      if (!before) {
+      if (!before && !lite) {
         try {
           const payList = PAY_STATES.map((s) => `'${s}'`).join(",");
           const pendRes = await env.DB.prepare(
@@ -206,7 +217,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
                     OR lm.phone IN (SELECT phone FROM bot_pauses)
                     OR st.state IN (${payList}))`,
               `LIMIT ${PENDING_LIMIT}`,
-              90,
+              30,
             ),
           ).all<ConversationRow>();
           pending = pendRes.results ?? [];

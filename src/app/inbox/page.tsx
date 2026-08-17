@@ -877,17 +877,35 @@ export default function InboxPage() {
   }
 
   // ── Auth check inicial ───────────────────────────────────────────────────
-  const fetchConversations = useCallback(async (): Promise<void> => {
+  // `lite: true` = pedir SOLO el feed (sin la cola de pendientes) y FUSIONAR
+  // con lo que ya está en pantalla en vez de reemplazar — así los pendientes
+  // viejos no parpadean entre refrescos. Lo usa el poll periódico: pedir la
+  // cola completa cada 10s desde cada dispositivo fue la mitad de la carga que
+  // saturó D1 el 17-ago-2026. Sin argumento = carga completa (primera carga,
+  // acciones, refresh manual).
+  const fetchConversations = useCallback(async (opts?: { lite?: boolean }): Promise<void> => {
+    const lite = opts?.lite === true;
     setLoadingConv(true);
     try {
-      const resp = await fetch("/api/inbox/conversations", { credentials: "include" });
+      const resp = await fetch(lite ? "/api/inbox/conversations?lite=1" : "/api/inbox/conversations", { credentials: "include" });
       if (resp.status === 401) {
         setAuthenticated(false);
         return;
       }
       const data = (await resp.json()) as ConversationsResponse;
       if (data.ok && data.conversations) {
-        setConversations(data.conversations);
+        if (lite) {
+          // Feed nuevo pisa a los suyos; lo que no vino (pendientes viejos, feed
+          // anterior) se queda. Mismo criterio que mergeConversations.
+          const incoming = data.conversations;
+          setConversations((prev) => {
+            const byPhone = new Map(incoming.map((c) => [c.phone, c]));
+            for (const c of prev) if (!byPhone.has(c.phone)) byPhone.set(c.phone, c);
+            return [...byPhone.values()].sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+          });
+        } else {
+          setConversations(data.conversations);
+        }
         setNextCursor(data.nextCursor ?? null);
         setAuthenticated(true);
         setInitFailed(false);
@@ -1184,9 +1202,13 @@ export default function InboxPage() {
   useEffect(() => {
     if (!authenticated) return;
     fetchPendingReservations();
+    let tickCount = 0;
     const tick = () => {
       if (typeof document !== "undefined" && document.hidden) return;
-      fetchConversations();
+      tickCount += 1;
+      // 2 de cada 3 refrescos van "lite" (solo el feed de 7 días); el 3º trae
+      // también la cola de pendientes completa (~1 vez por minuto).
+      fetchConversations(tickCount % 3 === 0 ? undefined : { lite: true });
       fetchPendingReservations();
       if (selectedPhone) loadMessages(selectedPhone);
     };
@@ -1698,7 +1720,7 @@ export default function InboxPage() {
             📋 Registro
           </a>
           <button
-            onClick={fetchConversations}
+            onClick={() => fetchConversations()}
             disabled={loadingConv}
             className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 disabled:opacity-50 whitespace-nowrap"
           >
