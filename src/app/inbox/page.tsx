@@ -687,6 +687,10 @@ function PendientesColumn({
 
 export default function InboxPage() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  // El chequeo inicial de sesión falló (red caída, 500, recarga en pleno deploy).
+  // Mientras authenticated siga en null, la pantalla de carga lo muestra y ofrece
+  // reintentar — en vez del "Cargando..." mudo y eterno del 17-ago-2026.
+  const [initFailed, setInitFailed] = useState(false);
   // Quién está adentro. Lo dice el servidor (/api/inbox/session), no el navegador:
   // acá solo decide QUÉ SE MUESTRA. El candado real está en los endpoints.
   const [role, setRole] = useState<InboxRole | null>(null);
@@ -886,9 +890,15 @@ export default function InboxPage() {
         setConversations(data.conversations);
         setNextCursor(data.nextCursor ?? null);
         setAuthenticated(true);
+        setInitFailed(false);
+      } else {
+        // Respuesta sin ok (ej. 500 de D1): NO es "sin sesión" — es un fallo.
+        // Antes este caso caía al silencio y dejaba authenticated en null.
+        setInitFailed(true);
       }
     } catch (err) {
       console.error("fetchConversations error", err);
+      setInitFailed(true);
     } finally {
       setLoadingConv(false);
     }
@@ -1088,9 +1098,22 @@ export default function InboxPage() {
     }
   }, [fetchConversations]);
 
+  // Arranque + REINTENTO del arranque. La primera carga decide si hay sesión
+  // (null → true/false). Antes se disparaba UNA sola vez: si ese único fetch
+  // fallaba (microcorte, recarga en pleno deploy), authenticated quedaba en null
+  // y "Cargando..." se clavaba PARA SIEMPRE — el poll de 10s recién corre con
+  // sesión confirmada. Pasó el 17-ago-2026: el PWA de Isaías y el Chrome de
+  // César congelados a la vez tras un deploy. Ahora, mientras no se sepa si hay
+  // sesión, se reintenta cada 5s y al volver la app al frente (iOS revive el PWA
+  // congelado desde el fondo sin recargarlo).
   useEffect(() => {
+    if (authenticated !== null) return; // ya se sabe; el poll normal se encarga
     fetchConversations();
-  }, [fetchConversations]);
+    const id = setInterval(fetchConversations, 5000);
+    const onVis = () => { if (!document.hidden) fetchConversations(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, [authenticated, fetchConversations]);
 
   // Cargar las plantillas una vez que hay sesión.
   useEffect(() => {
@@ -1456,8 +1479,26 @@ export default function InboxPage() {
 
   if (authenticated === null) {
     return (
-      <div className="min-h-screen bg-bg dark:bg-slate-950 flex items-center justify-center">
-        <p className="text-muted dark:text-slate-400">Cargando...</p>
+      <div className="min-h-screen bg-bg dark:bg-slate-950 flex items-center justify-center px-6">
+        <div className="text-center">
+          <p className="text-muted dark:text-slate-400">
+            {initFailed ? "No se pudo conectar" : "Cargando..."}
+          </p>
+          {initFailed && (
+            <>
+              <p className="text-xs text-muted dark:text-slate-500 mt-1">
+                Se vuelve a intentar solo cada 5 segundos…
+              </p>
+              <button
+                type="button"
+                onClick={() => fetchConversations()}
+                className="mt-4 px-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg text-sm text-primary dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-800"
+              >
+                Reintentar ahora
+              </button>
+            </>
+          )}
+        </div>
       </div>
     );
   }

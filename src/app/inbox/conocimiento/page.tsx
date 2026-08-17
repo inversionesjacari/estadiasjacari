@@ -148,6 +148,16 @@ export default function ConocimientoPage() {
     load();
   }, [load]);
 
+  // Reintento del arranque: si el primer load falla (red, 500), `authed` queda
+  // en null y nada volvía a intentar → "Cargando…" eterno hasta recargar a mano
+  // (mismo defecto que congeló el inbox el 17-ago-2026). Mientras no se sepa si
+  // hay sesión, reintentar cada 5s; al resolverse, este efecto se apaga solo.
+  useEffect(() => {
+    if (authed !== null) return;
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, [authed, load]);
+
   // ── No autenticado ─────────────────────────────────────────────────────────
   if (authed === false) {
     return (
