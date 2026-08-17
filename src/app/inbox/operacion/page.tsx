@@ -413,12 +413,19 @@ export default function OperacionPage() {
     } catch { /* ignore */ }
   }, [load]);
 
+  // Se deja de refrescar cuando no hay nada que refrescar: 403 (rol staff) o 401
+  // (sesión caída). Sin esto, la pestaña del empleado que abra el Centro de
+  // control queda martillando /api/inbox/metrics —la consulta MÁS pesada del
+  // sistema— cada 10s para siempre, aunque en pantalla solo vea el cartel.
+  // Al cambiar `forbidden`/`authed` React corre el cleanup de abajo, que ya
+  // limpia los dos intervalos.
   useEffect(() => {
+    if (forbidden || authed === false) return;
     load();
     timer.current = setInterval(load, 10000);
     const c = setInterval(() => setClock(new Date().toLocaleTimeString("es-HN")), 1000);
     return () => { if (timer.current) clearInterval(timer.current); clearInterval(c); };
-  }, [load]);
+  }, [load, forbidden, authed]);
 
   if (forbidden) {
     return (

@@ -110,6 +110,93 @@ export async function checkRateLimit(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Variante para LOGIN: contar solo los intentos FALLIDOS
+//
+// `checkRateLimit` cuenta y registra en la misma llamada, así que cuando protege
+// un login termina cobrándole el cupo también a quien ENTRA BIEN. Con César,
+// Eduardo e Isaías en la misma oficina —misma IP pública para Cloudflare— los
+// tres comparten los 5 tiros del minuto y el tercero queda afuera sin haberse
+// equivocado nunca (2026-08-15: eso frenó el entrenamiento de Isaías).
+//
+// Estas tres funciones separan las piezas para que el login pueda hacer:
+//   peek → validar → (falló) record  /  (entró) clear
+// La protección anti-fuerza-bruta no se afloja: quien adivina mal sigue topando.
+// Se agregan APARTE en vez de cambiarle la firma a `checkRateLimit`, que la usan
+// otros 14 endpoints donde el comportamiento actual es el correcto.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Cuenta los eventos de la ventana SIN registrar el intento actual. */
+export async function peekRateLimit(
+  env: RateLimitEnv,
+  opts: RateLimitOptions,
+): Promise<RateLimitResult> {
+  const max = opts.max ?? 10;
+  const windowSec = opts.windowSec ?? 60;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt
+         FROM rate_limit_events
+        WHERE endpoint = ? AND ip = ? AND ts > datetime('now', ?)`,
+    )
+      .bind(opts.endpoint, opts.ip, `-${windowSec} seconds`)
+      .first<{ cnt: number }>();
+    const currentCount = row?.cnt ?? 0;
+    return {
+      allowed: currentCount < max,
+      retryAfterSec: currentCount < max ? 0 : windowSec,
+      currentCount,
+    };
+  } catch (err) {
+    // Fail-open, igual que checkRateLimit: un problema nuestro de infra no deja
+    // a César afuera de su propio inbox.
+    console.error("peekRateLimit failed (fail-open):", (err as Error).message);
+    return { allowed: true, retryAfterSec: 0, currentCount: 0 };
+  }
+}
+
+/** Registra UN intento fallido. Best-effort: nunca lanza. */
+export async function recordRateLimitEvent(
+  env: RateLimitEnv,
+  endpoint: string,
+  ip: string,
+): Promise<void> {
+  try {
+    await env.DB.prepare(`INSERT INTO rate_limit_events (endpoint, ip) VALUES (?, ?)`)
+      .bind(endpoint, ip)
+      .run();
+    // Mismo cleanup oportunista que checkRateLimit (1 de cada ~20).
+    if (Math.random() < 0.05) {
+      try {
+        await env.DB.prepare(
+          `DELETE FROM rate_limit_events WHERE ts < datetime('now', '-1 hour')`,
+        ).run();
+      } catch { /* best-effort */ }
+    }
+  } catch (err) {
+    console.error("recordRateLimitEvent failed:", (err as Error).message);
+  }
+}
+
+/**
+ * Borra los intentos fallidos de esa IP en ese endpoint. Se llama al ENTRAR BIEN:
+ * quien demostró que sabe la contraseña no arrastra el cupo que gastó tipeando
+ * mal, ni se lo hereda al que entra después desde la misma oficina.
+ */
+export async function clearRateLimit(
+  env: RateLimitEnv,
+  endpoint: string,
+  ip: string,
+): Promise<void> {
+  try {
+    await env.DB.prepare(`DELETE FROM rate_limit_events WHERE endpoint = ? AND ip = ?`)
+      .bind(endpoint, ip)
+      .run();
+  } catch (err) {
+    console.error("clearRateLimit failed:", (err as Error).message);
+  }
+}
+
 /**
  * Extrae IP del request desde headers de Cloudflare. Devuelve "unknown" si
  * no se puede determinar (no debería pasar en producción, sí en dev local).
