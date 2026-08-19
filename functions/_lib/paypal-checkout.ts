@@ -213,3 +213,131 @@ function nightsBetween(checkInIso: string, checkOutIso: string): number {
   const end = new Date(checkOutIso + "T00:00:00Z").getTime();
   return Math.max(0, Math.round((end - start) / (1000 * 60 * 60 * 24)));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAPTURA — el eslabón que faltaba (incidente 2026-08-19)
+//
+// `intent: "CAPTURE"` NO significa que PayPal cobre solo cuando el cliente
+// aprueba. En el flujo de redirect (checkoutnow) aprobar deja la orden en
+// APPROVED: el banco del cliente muestra una retención (por eso él VE el cargo
+// y jura que pagó), pero la plata NO entra a la cuenta hasta que el comercio
+// llama a /capture. Nadie la llamaba: el `return_url` apuntaba a una página que
+// ni existía. Resultado: cada pago por link del bot quedaba aprobado-sin-cobrar,
+// el cliente sin comprobante de PayPal, la retención expirando sola en días, y
+// como nunca hubo captura tampoco llegó el webhook PAYMENT.CAPTURE.COMPLETED —
+// así que el bot repetía "esperando la confirmación del pago" para siempre.
+//
+// El sitio web nunca sufrió esto porque el SDK de React captura del lado del
+// cliente (`actions.order.capture()` en BookingWidget). El bot copió el flujo a
+// medias: creó la orden pero no cerró el cobro.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CaptureResult {
+  ok: boolean;
+  /** true si esta llamada capturó ahora; false si ya estaba capturada antes. */
+  capturedNow?: boolean;
+  /** Estado de la orden según PayPal (COMPLETED, APPROVED, VOIDED…). */
+  status?: string;
+  captureId?: string;
+  amountUsd?: number;
+  /** Motivo PayPal legible cuando no se pudo capturar. */
+  error?: string;
+  /** true si la orden ya no se puede cobrar (expiró o fue anulada) → hay que pedir pago de nuevo. */
+  expired?: boolean;
+}
+
+/** Lee una orden sin tocarla (para saber si sigue capturable). */
+export async function getPayPalOrder(
+  orderId: string,
+  env: PayPalEnv,
+): Promise<{ ok: boolean; status?: string; amountUsd?: number; customId?: string; error?: string }> {
+  const apiBase = env.PAYPAL_API_BASE || "https://api-m.paypal.com";
+  const { token, error } = await getAccessToken(env);
+  if (!token) return { ok: false, error };
+  try {
+    const resp = await fetchWithTimeout(
+      `${apiBase}/v2/checkout/orders/${encodeURIComponent(orderId)}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
+      TIMEOUT.CRITICAL,
+    );
+    const text = await resp.text();
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}: ${text.slice(0, 300)}` };
+    const data = JSON.parse(text) as {
+      status?: string;
+      purchase_units?: Array<{ amount?: { value?: string }; custom_id?: string }>;
+    };
+    const pu = data.purchase_units?.[0];
+    return {
+      ok: true,
+      status: data.status,
+      amountUsd: pu?.amount?.value ? Number(pu.amount.value) : undefined,
+      customId: pu?.custom_id,
+    };
+  } catch (err) {
+    return { ok: false, error: `Error de red: ${(err as Error).message}` };
+  }
+}
+
+/**
+ * Cobra de verdad una orden aprobada. IDEMPOTENTE por diseño:
+ *   - `PayPal-Request-Id` fijo por orden → dos llamadas simultáneas no cobran dos veces.
+ *   - Si PayPal responde ORDER_ALREADY_CAPTURED, se devuelve ok con `capturedNow:false`
+ *     (el cobro ya estaba hecho; no es un error que deba asustar a nadie).
+ *
+ * Al capturar, PayPal dispara PAYMENT.CAPTURE.COMPLETED → el webhook que YA
+ * existe crea la reserva, le escribe al huésped y avisa a los dueños. O sea:
+ * esta función es lo único que faltaba para que todo el resto funcione.
+ */
+export async function capturePayPalOrder(orderId: string, env: PayPalEnv): Promise<CaptureResult> {
+  const apiBase = env.PAYPAL_API_BASE || "https://api-m.paypal.com";
+  const { token, error } = await getAccessToken(env);
+  if (!token) return { ok: false, error };
+
+  try {
+    const resp = await fetchWithTimeout(
+      `${apiBase}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          // Idempotencia: mismo id de request para la misma orden.
+          "PayPal-Request-Id": `cap-${orderId}`,
+        },
+        body: "{}",
+      },
+      TIMEOUT.CRITICAL,
+    );
+    const text = await resp.text();
+
+    if (resp.ok) {
+      const data = JSON.parse(text) as {
+        status?: string;
+        purchase_units?: Array<{
+          payments?: { captures?: Array<{ id?: string; amount?: { value?: string } }> };
+        }>;
+      };
+      const cap = data.purchase_units?.[0]?.payments?.captures?.[0];
+      return {
+        ok: true,
+        capturedNow: true,
+        status: data.status,
+        captureId: cap?.id,
+        amountUsd: cap?.amount?.value ? Number(cap.amount.value) : undefined,
+      };
+    }
+
+    // 422 con issue conocido: la orden ya se cobró, o ya no se puede cobrar.
+    const issue = (text.match(/"issue"\s*:\s*"([A-Z_]+)"/) ?? [])[1] ?? "";
+    if (issue === "ORDER_ALREADY_CAPTURED") {
+      return { ok: true, capturedNow: false, status: "COMPLETED" };
+    }
+    if (issue === "ORDER_EXPIRED" || issue === "ORDER_NOT_APPROVED" || issue === "AGREEMENT_ALREADY_CANCELLED") {
+      return { ok: false, expired: issue === "ORDER_EXPIRED", status: issue, error: `PayPal: ${issue}` };
+    }
+    return { ok: false, error: `PayPal capture HTTP ${resp.status}: ${text.slice(0, 300)}` };
+  } catch (err) {
+    return { ok: false, error: `Error de red al capturar: ${(err as Error).message}` };
+  }
+}
