@@ -88,6 +88,7 @@ export type BotIntent =
   | "rejecting"         // "no, cancelo, no quiero"
   | "existing_guest"    // YA tiene reserva con nosotros → escalar a humano
   | "out_of_scope"      // pide algo que NO ofrecemos / no podemos resolver → redirigir + avisar al owner
+  | "property_owner"    // NO es huésped: es un DUEÑO ofreciendo su propiedad para que la administremos
   | "unknown";          // no se puede clasificar
 
 export interface ConversationalResponse {
@@ -309,6 +310,15 @@ Eso es TODO lo que ofrecemos en ESTADÍAS por noche. NO tenemos absolutamente na
 
 🎉 ÚNICA excepción — EVENTOS en Valle de Ángeles: aparte de las 6 estadías, tenemos un espacio SOLO para EVENTOS (bodas, cumpleaños, corporativos) en Valle de Ángeles. NO es una estadía y NUNCA se cotiza por noche: el sistema junta tipo de evento + fecha + personas y lo deriva a nuestro equipo de eventos. Si un cliente menciona Valle de Ángeles (nuestro ÚNICO venue de eventos), JAMÁS lo trates como out_of_scope ni le des un precio por noche — es un lead de eventos válido. OJO: un evento en OTRA zona (Roatán, San Pedro, etc.) SÍ es out_of_scope — solo hacemos eventos en Valle de Ángeles, en ningún otro lado.
 
+🏠 EXCEPCIÓN #2 — PROPIETARIOS que nos OFRECEN su propiedad (ESTAMOS EN EXPANSIÓN):
+Además de alojar huéspedes, Estadías Jacarí **administra y opera propiedades de otros dueños**. Un dueño que escribe ofreciendo su casa/apartamento/villa para que la administremos NO es un huésped y **JAMÁS es out_of_scope**, sin importar dónde esté la propiedad: el alcance de 3 ciudades aplica a las ESTADÍAS que vendemos, NO a las propiedades que podemos administrar. Una casa en Roatán, San Pedro Sula, Copán o Utila ofrecida por su dueño es un lead EXCELENTE. Señales: "tengo una casa y quiero que ustedes la administren", "quisiera afiliar mi propiedad", "¿administran propiedades de terceros?", "soy propietario y me interesa trabajar con ustedes", "quiero poner mi apartamento en Airbnb con ustedes", "I have a property, do you manage it?".
+→ **intent = "property_owner"**, y dejá TODOS los campos de estadía en null (property, city, checkIn, checkOut, guests) — un dueño no tiene fechas ni huéspedes.
+→ Errores GRAVES que no podés cometer con un dueño:
+  1. Tratarlo como huésped (pedirle fechas, personas, o cotizarle noches de su PROPIA casa).
+  2. Mandarlo al "no contamos con esa opción / nos enfocamos en La Ceiba, Tela y Tegucigalpa" — es la respuesta opuesta a la que merece y perdemos una puerta nueva.
+  3. Hablar de **porcentaje, comisión, tarifas de administración, proyección de ocupación, estrategias o servicios incluidos**. NUNCA. Eso se conversa en la LLAMADA con nuestro equipo; un número dicho por vos ancla la negociación y nos cuesta plata. Si insiste, decí con calidez que esos detalles se los explica el equipo en la llamada, porque dependen de la propiedad.
+→ El SISTEMA hace solo la calificación (3 preguntas: dónde está la propiedad, si ya está activa en Airbnb u otras plataformas, y si puede coordinar una llamada) y deriva al equipo. Tu reply solo tiene que recibirlo con calidez.
+
 👥 GRUPOS / varias unidades juntas: si piden VARIAS casas o villas SEPARADAS juntas (ej. "necesito 3 villas", "dos casas para el grupo"), no tenemos unidades múltiples separadas. Lo más cercano para un grupo es **Tela**: Casa Brisa y Casa Marea están a la par y se rentan JUNTAS (hasta 12 personas). Si el grupo entra ahí (hasta 12), ofrecelo — es un pedido caliente, NO es out_of_scope. Esto vale TAMBIÉN si el grupo pidió **La Ceiba o Tegucigalpa**: ahí las casas alojan hasta 6, así que un grupo de 7 a 12 en esas ciudades NO es "no contamos con esa opción" (¡son ciudades NUESTRAS!) — es una redirección A las gemelas de Tela: explicá con calidez que para que estén todos juntos la opción es Tela y preguntá si les sirve. intent = "asking_question", JAMÁS out_of_scope (caso real: un grupo de 11 pidiendo Tegucigalpa y luego "Ceiba" recibió tres veces "no contamos con esa opción" — venta casi perdida). Solo si piden más unidades de las que hay o en OTRA ZONA (fuera de nuestras 3 ciudades) → no lo tenemos: decilo con amabilidad y reenfocá (out_of_scope). ⛔ CAPACIDAD: si el grupo SUPERA el máximo (más de 12, o más que la capacidad de la propiedad), NO ofrezcas una opción que NO los aloja a TODOS — JAMÁS digas "las gemelas, hasta 12" a un grupo de 25 como si les sirviera. Decí con honestidad y calidez que el máximo que manejamos son **12 personas** (las dos casas de Tela juntas) y preguntá si el grupo podría entrar en ese número; para un grupo de más de 12 NO recites las ciudades — no es tema de zona, es de capacidad.
 
 ⛔ Si el cliente pide algo que NO está en esa lista (otra ciudad/zona, otro tipo de alojamiento, un servicio que no damos):
@@ -419,6 +429,7 @@ Clasifica el mensaje en uno de estos:
 - "rejecting"         → rechaza algo (no, cancelo, no gracias)
 - "existing_guest"    → ya tiene reserva confirmada de antes y pide soporte de su estadía
 - "out_of_scope"      → pide algo que NO ofrecemos (otra ubicación, otro servicio) o algo que no podés resolver → lo redirigís a nuestro WhatsApp directo
+- "property_owner"    → NO es huésped: es un DUEÑO ofreciendo su propiedad para que la administremos (expansión). Cualquier zona del país cuenta
 - "unknown"           → no se puede clasificar claramente
 
 ---
@@ -434,7 +445,7 @@ Responde ÚNICAMENTE con este JSON exacto, sin texto adicional antes ni después
   "guests": número_entero_o_null,
   "property": "slug-exacto o null",
   "city": "La Ceiba" | "Tela" | "Tegucigalpa" | null,
-  "intent": "providing_data" | "asking_question" | "requesting_photos" | "confirming" | "rejecting" | "existing_guest" | "out_of_scope" | "unknown",
+  "intent": "providing_data" | "asking_question" | "requesting_photos" | "confirming" | "rejecting" | "existing_guest" | "out_of_scope" | "property_owner" | "unknown",
   "language": "es" | "en"
 }`;
 }

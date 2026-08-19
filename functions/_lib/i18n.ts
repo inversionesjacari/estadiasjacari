@@ -236,6 +236,32 @@ export const T = {
       ? "How exciting! 🎉 Our venue in Valle de Ángeles is perfect for special celebrations. So our events team can put together a proposal for you, tell me:\n\n1️⃣ What kind of event is it? (wedding, birthday, corporate…)\n2️⃣ Around what date?\n3️⃣ Roughly how many guests?"
       : "¡Qué emoción! 🎉 Nuestro espacio en Valle de Ángeles es ideal para celebraciones especiales. Para que nuestro equipo de eventos te arme una propuesta, contame:\n\n1️⃣ ¿Qué tipo de evento es? (boda, cumpleaños, corporativo…)\n2️⃣ ¿Para qué fecha aproximada?\n3️⃣ ¿Cuántas personas estiman?",
 
+  // EXPANSIÓN (modelo B, César 2026-08-17): un PROPIETARIO ofrece su inmueble para
+  // que lo administremos. El bot NO habla de porcentajes, estrategias, proyección de
+  // ocupación ni servicios incluidos — eso es material de la LLAMADA, y prometerlo
+  // por chat quema la negociación. Solo califica con las 3 preguntas de César y
+  // deriva. Las 3 en UN mensaje (igual que eventos): el dueño responde de corrido y
+  // el handoff llega completo en el turno 2.
+  ownerIntake: (l: Lang): string =>
+    l === "en"
+      ? "How great that you're thinking of us for your property! 🙌 We manage and operate short-term rentals in Honduras. So I can pass your info to our team, tell me:\n\n1️⃣ Where is your property located?\n2️⃣ Is it currently active on Airbnb or other short-stay platforms?\n3️⃣ Can we set up a call to learn more about it and explain how we work?"
+      : "¡Qué bueno que nos tengas en cuenta para tu propiedad! 🙌 Administramos y operamos alquileres de corta estadía en Honduras. Para pasarle tu info a nuestro equipo, contame:\n\n1️⃣ ¿Dónde está ubicada su propiedad?\n2️⃣ ¿Actualmente está activa en Airbnb u otras plataformas de estadías cortas?\n3️⃣ ¿Podemos coordinar una llamada para conocer un poco más sobre su propiedad y explicarle cómo trabajamos?",
+
+  // Turno 2: el dueño respondió → derivamos a César para la llamada. El bot NO
+  // cierra condiciones ni menciona comisión: solo confirma que alguien lo llama.
+  ownerHandoff: (l: Lang, callOk: "si" | "no" | null): string => {
+    if (l === "en") {
+      const close = callOk === "no"
+        ? "No problem if you'd rather keep it here — our team will write to you shortly with the details. 🙏"
+        : "Our team will contact you shortly to set up the call and walk you through how we work. 🙏";
+      return `Perfect, thank you! 🙌 I've passed your property along. ${close}`;
+    }
+    const close = callOk === "no"
+      ? "Sin problema si preferís seguir por acá — nuestro equipo te escribe en breve con los detalles. 🙏"
+      : "Nuestro equipo te contacta en breve para coordinar la llamada y contarte cómo trabajamos. 🙏";
+    return `¡Perfecto, mil gracias! 🙌 Ya pasé la información de tu propiedad. ${close}`;
+  },
+
   eventHandoff: (l: Lang): string =>
     l === "en"
       ? "Perfect, thank you! 🙌 I've passed your info to our events team — they'll write to you right here shortly to put together a proposal made just for you. 🌿"

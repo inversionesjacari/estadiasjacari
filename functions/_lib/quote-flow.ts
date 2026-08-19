@@ -85,6 +85,9 @@ import {
   mentionsValleDeAngeles,
   detectEventType,
   extractEventGuestCount,
+  isPropertyOwnerOffer,
+  detectOwnerPlatformStatus,
+  detectOwnerCallWillingness,
   detectPackageInquiry,
   detectPackageByAdPrice,
   isTotalConfirmationQuestion,
@@ -126,6 +129,7 @@ import {
   EVENT_PRICE_FLOOR_HNL,
 } from "./event-pricing";
 import type { EventType } from "./event-pricing";
+import { upsertOwnerLeadFromBot } from "./owner-leads";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Detectores puros → ahora viven en ./detectors (importados/re-exportados arriba).
@@ -215,8 +219,17 @@ function applyPackagePricing(quote: QuoteOutput | null, data: QuoteData): QuoteO
  *  ya nos despedimos y no encimar otra despedida ante un "ok"/"gracias" de cierre. */
 async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
   try {
+    // Ventana de 48h = el TTL de conversation_state: el respaldo del ancla existe
+    // para sobrevivir el pisado del estado por una webhook concurrente (segundos),
+    // NO para revivir flujos muertos. Sin ventana, `owner_lead_intake` /
+    // `event_inquiry_intake` quedaban anclados PARA SIEMPRE tras un intake sin
+    // respuesta: el primer mensaje de esa persona semanas después ("quiero cotizar
+    // Casa Brisa") se tragaba como turno 2 → lead basura + respuesta absurda + bot
+    // pausado (revisión adversaria 18-ago). Además, regla post-D1-saturada: query
+    // del camino caliente, con ventana. Seguro para el resto de los callers — todos
+    // preguntan "¿acabamos de decir X?" (despedida, anti-repetición), nunca eterno.
     const r = await db.prepare(
-      `SELECT matched_rule FROM whatsapp_messages WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1`,
+      `SELECT matched_rule FROM whatsapp_messages WHERE to_phone = ? AND direction = 'out' AND matched_rule IS NOT NULL AND created_at >= datetime('now', '-48 hours') ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).bind(phone).first<{ matched_rule: string | null }>();
     return r?.matched_rule ?? "";
   } catch {
@@ -235,6 +248,46 @@ async function getLastOutRule(phone: string, db: D1Database): Promise<string> {
  *  → `out_of_scope` y el bot se contradecía ("¡Valle de Ángeles es ideal!" → "no
  *  contamos con esa opción"). Función pura para blindarla en el golden. (Caso Santi,
  *  9-jul-2026.) */
+/** ¿Estamos en el TURNO 2 del flujo de PROPIETARIOS (expansión)? Mismo blindaje de
+ *  dos anclas que eventos: el estado `owner_inquiry` (fila mutable que una webhook
+ *  concurrente puede pisar) Y la última regla saliente (log append-only). Sin la
+ *  segunda ancla, la respuesta del dueño con la ubicación de su casa caía al LLM y
+ *  volvía como out_of_scope ("no operamos en esa zona") — matando la puerta nueva
+ *  justo después de habérsela pedido. */
+export function isOwnerInquiryTurn2(
+  state: string | null | undefined,
+  lastOutRule: string,
+): boolean {
+  return state === "owner_inquiry" || lastOutRule === "owner_lead_intake";
+}
+
+/** Resumen estructurado del lead de PROPIETARIO para la alerta/email a César (NO se
+ *  le manda al dueño). Las 3 respuestas de calificación en una línea, para decidir en
+ *  2 segundos si la llamada vale la pena. Función pura para testearla. */
+export function buildOwnerLeadSummary(
+  location: string | null | undefined,
+  onPlatform: "si" | "no" | null | undefined,
+  callOk: "si" | "no" | null | undefined,
+): string {
+  const loc = (location ?? "").trim();
+  const locTxt = loc ? loc.replace(/\s+/g, " ").slice(0, 90) : "sin definir";
+  const plat =
+    onPlatform === "si" ? "YA activa en plataformas"
+      : onPlatform === "no" ? "NO está en plataformas (arranca de cero)"
+      : "plataformas s/d";
+  const call =
+    callOk === "si" ? "✅ acepta llamada"
+      : callOk === "no" ? "❌ prefiere por escrito"
+      : "llamada s/d";
+  // "ubicación/dijo" y no "ubicación" a secas: cuando el dueño contesta las 3 preguntas
+  // de corrido, acá viaja su respuesta CRUDA, no una ubicación aislada. Etiquetarla
+  // como ubicación pura sería venderle a César una precisión que no tenemos.
+  return (
+    `🏠 Lead de PROPIETARIO (expansión) · ubicación/dijo: ${locTxt} · ${plat} · ${call}. ` +
+    `El bot solo calificó — NO habló de porcentaje, servicios ni proyección de ocupación. Coordiná la llamada vos.`
+  );
+}
+
 export function isEventInquiryTurn2(
   state: string | null | undefined,
   lastOutRule: string,
@@ -430,6 +483,89 @@ export async function handleQuoteIncoming(
   // Idioma del cliente persistido en el estado (para responder en su idioma).
   const lang = asLang(existing?.data.language);
 
+  // ── EXPANSIÓN: PROPIETARIOS que ofrecen su inmueble ────────────────────────
+  // (César, 2026-08-17 — "ahora estamos en expansión".) Un dueño que ofrece una
+  // puerta nueva es el lead de MAYOR valor del negocio y hasta hoy el bot lo trataba
+  // como huésped: le pedía fechas y personas, o lo mandaba al out_of_scope ("nos
+  // enfocamos en La Ceiba, Tela y Tegucigalpa") si su casa estaba en otra zona — la
+  // respuesta exactamente opuesta a la que merece, porque el alcance de 3 ciudades
+  // aplica a ESTADÍAS, no a expansión.
+  //
+  // Regla dura: el bot SOLO califica con las 3 preguntas de César y deriva. Nada de
+  // porcentaje, estrategias, proyección de ocupación ni servicios incluidos — eso es
+  // material de la llamada, y un número dicho por el bot ancla la negociación antes
+  // de que César abra la boca. Determinístico y PRIMERO que todo (antes de eventos y
+  // del cotizador) para que ningún handler le robe el turno.
+
+  // Turno 2: el dueño respondió al intake → capturamos las 3 respuestas y derivamos.
+  // La última regla saliente se lee UNA sola vez por mensaje y la comparten los dos
+  // flujos de handoff (propietarios y eventos): con la ola de leads, un query extra
+  // por mensaje × dispositivos polleando es exactamente lo que saturó D1 el 17-ago.
+  // Cuando el estado ya está intacto no hace falta el respaldo → ni se consulta.
+  const inHandoffState =
+    existing?.state === "owner_inquiry" || existing?.state === "event_inquiry";
+  const lastOutRule = inHandoffState ? "" : await getLastOutRule(phone, env.DB);
+  if (isOwnerInquiryTurn2(existing?.state, lastOutRule)) {
+    const prev = existing?.data ?? emptyQuoteData();
+    // La ubicación es texto CRUDO del dueño: su propiedad puede estar en cualquier
+    // parte del país (Roatán, Copán, SPS…) y eso NO la descalifica.
+    const location = text.trim() || prev.ownerLocation || null;
+    const onPlatform = detectOwnerPlatformStatus(text) ?? prev.ownerOnPlatform ?? null;
+    const callOk = detectOwnerCallWillingness(text) ?? prev.ownerCallOk ?? null;
+
+    // El lead entra SOLO al pipeline de /inbox/propietarios (owner_leads, 0046):
+    // etapa "nuevo", con dedup por lead abierto. Fail-soft: si D1 falla, el dueño
+    // igual recibe su respuesta y la alerta a César igual sale.
+    await upsertOwnerLeadFromBot(env.DB, { phone, location, onPlatform, callOk });
+
+    await clearState(phone, env.DB);
+    return {
+      reply:           T.ownerHandoff(lang, callOk),
+      escalateToOwner: true,
+      ruleName:        "owner_lead_handoff",
+      tokensUsed:      0,
+      ownerSummary:    buildOwnerLeadSummary(location, onPlatform, callOk),
+    };
+  }
+
+  // Turno 1: detección + intake con las 3 preguntas de calificación.
+  // GUARDA sobre HUÉSPEDES REALES (revisión adversaria 18-ago): el detector de
+  // expansión solo corre para gente SIN relación de huésped en curso. Un huésped
+  // hospedado ("¿me agregan una cama extra en mi cabaña?"), uno en pleno pago, uno
+  // con cotización caliente (property/fechas ya fijadas) o un lead de eventos en
+  // intake dicen "mi casa" hablando de la casa que RENTAN — tratarlos de
+  // propietarios crea un lead basura, los confunde y PAUSA el bot en plena estadía.
+  // Un huésped real vale más que un falso positivo de propietario.
+  const ownerDetectionBlocked =
+    hasActiveReservation ||
+    existing?.state === "awaiting_payment_method" ||
+    existing?.state === "awaiting_paypal_capture" ||
+    existing?.state === "awaiting_transfer_proof" ||
+    existing?.state === "event_inquiry" ||
+    Boolean(existing?.data.property || existing?.data.checkIn);
+  if (!ownerDetectionBlocked && isPropertyOwnerOffer(text)) {
+    const prev = existing?.data ?? emptyQuoteData();
+    await upsertState(
+      phone,
+      "owner_inquiry",
+      {
+        ...prev,
+        // Lo que ya venga en este primer mensaje ("tengo una casa en Roatán y
+        // quiero que la administren") se persiste para el resumen del turno 2.
+        ownerLocation:   prev.ownerLocation ?? text.trim().slice(0, 200),
+        ownerOnPlatform: prev.ownerOnPlatform ?? null,
+        ownerCallOk:     prev.ownerCallOk ?? null,
+      },
+      env.DB,
+    );
+    return {
+      reply:           T.ownerIntake(lang),
+      escalateToOwner: false,
+      ruleName:        "owner_lead_intake",
+      tokensUsed:      0,
+    };
+  }
+
   // ── EVENTOS (Valle de Ángeles) — flujo aparte del de estadías ──────────────
   // El venue de Valle de Ángeles se promociona SOLO para eventos (bodas,
   // cumpleaños, corporativos — ads "Jacarí eventos", jul-2026). El bot cotiza
@@ -449,9 +585,7 @@ export async function handleQuoteIncoming(
   // respuesta al evento aunque una webhook concurrente haya pisado el estado (si no,
   // se contradecía con out_of_scope). El `||` corta antes de consultar la DB cuando
   // el estado ya está intacto.
-  const eventLastRule =
-    existing?.state === "event_inquiry" ? "" : await getLastOutRule(phone, env.DB);
-  if (isEventInquiryTurn2(existing?.state, eventLastRule)) {
+  if (isEventInquiryTurn2(existing?.state, lastOutRule)) {
     // Combinamos lo que diga AHORA con lo capturado en el turno 1. El tipo/pax de
     // este mensaje mandan; si no vienen, usamos lo guardado.
     const type: EventType | null =
@@ -1248,6 +1382,39 @@ async function gatherQuoteData(
       reply:           botResult.reply || T.existingGuest(lang),
       escalateToOwner: true,
       ruleName:        "existing_guest_escalation",
+      tokensUsed:      botResult.tokensUsed,
+    };
+  }
+
+  // ── PROPIETARIO (expansión) según el LLM → intake de calificación ─────────
+  // Red de seguridad del detector determinístico de arriba: las formas en que un
+  // dueño se ofrece son infinitas ("me gustaría sumarme a lo que hacen ustedes con
+  // mi cabaña") y el regex no las cubre todas. Acá NO usamos el reply del LLM: va el
+  // intake DETERMINÍSTICO con las 3 preguntas de César, para que el bot no improvise
+  // porcentajes ni condiciones. El turno 2 lo agarra el handoff de arriba.
+  // Misma guarda de huéspedes reales que el turno 1 (acá con lo que esta función
+  // recibe: estado previo + datos previos): si hay pago en curso o cotización
+  // caliente (propiedad/fechas ya fijadas), una clasificación "property_owner" del
+  // LLM es casi seguro un falso positivo — se ignora y el mensaje sigue su flujo
+  // normal. (Los huéspedes con reserva activa ni llegan acá: handleQuoteIncoming
+  // los devuelve al rule-bot antes.)
+  const ownerIntentBlocked =
+    previousState === "awaiting_payment_method" ||
+    previousState === "awaiting_paypal_capture" ||
+    previousState === "awaiting_transfer_proof" ||
+    previousState === "event_inquiry" ||
+    Boolean(previousData.property || previousData.checkIn);
+  if (botResult.intent === "property_owner" && !ownerIntentBlocked) {
+    await upsertState(
+      phone,
+      "owner_inquiry",
+      { ...previousData, ownerLocation: previousData.ownerLocation ?? text.trim().slice(0, 200) },
+      env.DB,
+    );
+    return {
+      reply:           T.ownerIntake(lang),
+      escalateToOwner: false,
+      ruleName:        "owner_lead_intake",
       tokensUsed:      botResult.tokensUsed,
     };
   }

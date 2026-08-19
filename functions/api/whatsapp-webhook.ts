@@ -78,6 +78,7 @@ const HANDOFF_RULES = new Set<string>([
   "paypal_usd_requested",       // pidió el monto en USD del link PayPal
   "escalar_humano",             // pidió hablar con un humano (rule-based)
   "event_inquiry_handoff",      // lead de EVENTO (Valle de Ángeles) → el equipo arma la propuesta
+  "owner_lead_handoff",         // lead de PROPIETARIO (expansión) → César coordina la llamada
   "transfer_question_escalated", // pregunta sin respuesta determinística esperando comprobante → César la toma
   "human_agent_requested",       // pidió una persona / "no leen mis mensajes" → lo toma un humano
   "payment_help_escalated",      // se trabó en el clarify de pago → lo toma un humano
@@ -901,6 +902,9 @@ async function processIncomingMessage(
           : quoteResult?.ruleName === "event_inquiry_handoff"
           ? (quoteResult.ownerSummary
               ?? "🎉 Lead de EVENTO (Valle de Ángeles) — el bot capturó tipo/fecha/personas (mirá el chat) y le dio un rango; pausó para que el equipo cierre la propuesta.")
+          : quoteResult?.ruleName === "owner_lead_handoff"
+          ? (quoteResult.ownerSummary
+              ?? "🏠 Lead de PROPIETARIO (expansión) — el bot calificó con las 3 preguntas (ubicación / si está en plataformas / si acepta llamada) y pausó para que coordines la llamada vos.")
           : quoteResult?.ruleName === "out_of_scope_redirect"
           ? "Fuera de alcance — el bot redirigió al cliente a tu WhatsApp (+504 9764-9035). Escribile vos si querés cerrarlo."
           : quoteResult?.ruleName === "existing_guest_escalation"

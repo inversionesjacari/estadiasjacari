@@ -22,6 +22,13 @@ export const TERMINAL_RULES = new Set([
   "out_of_scope_redirect", "existing_guest_escalation", "payment_reported",
   "transfer_proof_received", "transfer_confirmed_deposit", "transfer_confirmed_full",
   "escalar_humano", "call_requested", "farewell", "event_inquiry_handoff",
+  // Lead de PROPIETARIO derivado a César (expansión): el followup de "armemos tu
+  // cotización" jamás debe perseguir a un DUEÑO — no es un huésped, no pidió precio.
+  "owner_lead_handoff",
+  // OJO: `owner_lead_intake` NO va acá a propósito (revisión 18-ago). El followup
+  // jamás alcanza a un dueño mid-intake (sus candidatos salen de estados de
+  // cotización, y `owner_inquiry` no es uno), así que meterlo no evitaba ningún
+  // nag — solo cegaba al watchdog de "bot mudo" justo en el lead de mayor valor.
   // Pregunta en el paso de comprobante que ningún detector supo responder → escaló a
   // César; el followup NO debe nagear "¿pudiste transferir?" mientras la pregunta
   // sigue en manos del humano (caso +504 9583-9796, 13-jul-2026).
@@ -950,4 +957,129 @@ export function extractStayDayPair(text: string): StayDayPair | null {
   const outDay = Number(outDayS);
   if (inDay < 1 || inDay > 31 || outDay < 1 || outDay > 31 || inDay === outDay) return null;
   return { inDay, outDay, inMonth, outMonth };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPANSIÓN — dueños que OFRECEN su propiedad para que la administremos
+// (modelo B: administradora con sistema, 2026-08-17)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Normalización compartida por los detectores de propietario. */
+function normOwner(text: string): string {
+  return text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/** "mi casa", "nuestra propiedad", "mi apartamento en Tela"… — el POSESIVO es la
+ *  frontera entre un DUEÑO (ofrece un inmueble) y un HUÉSPED (busca uno). */
+const OWNER_POSSESSIVE =
+  /\b(mi|mis|nuestra|nuestro|nuestras|nuestros)\s+(propiedad(es)?|casa|casita|apartamento|apto|depa|departamento|villa|cabana|condo|condominio|inmueble|residencia|finca|quinta|airbnb|listing|anuncio)\b/;
+
+/** "tengo una casa", "soy propietario", "somos dueños de un apartamento"… */
+const OWNER_SELF_DECLARED =
+  /\b(soy (el |la )?(dueno|duena|propietari[oa])|somos (los )?(duenos|propietarios)|(tengo|tenemos|poseo|poseemos|adquiri|compre|compramos)\s+(un[ao]?s?\s+)?(propiedad(es)?|casa|casita|apartamento|apto|depa|departamento|villa|cabana|condo|condominio|inmueble|residencia|finca|quinta))\b/;
+
+/** Verbo/idea de ADMINISTRACIÓN o alianza — lo que el dueño quiere de nosotros.
+ *  OJO (revisión 18-ago): acá NO van verbos genéricos de servicio (agregar,
+ *  incluir, sumar) — un huésped los usa para pedir extras de SU estadía ("¿me
+ *  agregan una cama extra en mi cabaña?") y con el posesivo disparaban el intake
+ *  de propietarios a un huésped hospedado. Solo verbos que un dueño usa para
+ *  entregarnos su propiedad. */
+const OWNER_MGMT_INTENT =
+  /\b(administr\w*|gestion\w*|manej\w*|oper\w*|afiliar\w*|incorporar\w*|integrar\w*|publicar\w*|listar\w*|rentar(la|lo|las|los)|alquilar(la|lo|las|los)|poner\w*(\s+\w+){0,3}\s+en\s+(airbnb|renta|alquiler|alquileres|booking)|trabajar con (ustedes|uds|vos)|formar parte|ser parte|hacer alianza|una alianza|ser (su |sus )?socio|asociarme|asociarnos|portafolio|comision|porcentaje|property management|manage (my|our)|list (my|our)|co[- ]?host\w*)\b/;
+
+/** Pregunta directa por el SERVICIO, sin posesivo ("¿administran propiedades?"). */
+const OWNER_SERVICE_QUESTION =
+  /\b((administran|manejan|gestionan|operan|reciben|aceptan|toman)\s+(propiedades|casas|apartamentos|inmuebles|villas|cabanas|airbnbs?)|administracion de (propiedades|inmuebles|casas)|manejo de (propiedades|inmuebles)|do you manage (properties|homes|houses))\b/;
+
+/**
+ * ¿El que escribe es un PROPIETARIO ofreciendo su inmueble para que Estadías
+ * Jacarí lo administre? (Expansión / modelo B — César, 2026-08-17.)
+ *
+ * Sin este detector el mensaje caía al cotizador de noches o —peor— al
+ * `out_of_scope` ("nos enfocamos en La Ceiba, Tela y Tegucigalpa…"), que es la
+ * respuesta EXACTAMENTE opuesta a la que merece: un dueño que ofrece una puerta
+ * nueva es el lead de mayor valor del negocio (cada puerta nueva es margen casi
+ * puro sobre infra ya pagada) y su propiedad puede estar en CUALQUIER zona —
+ * el alcance de 3 ciudades aplica a ESTADÍAS, no a expansión.
+ *
+ * Capas (para no robarle leads al cotizador):
+ *   1. Pregunta por el servicio ("¿administran propiedades?") → SIEMPRE dueño.
+ *   2. Posesivo o auto-declaración de dueño + intención de administración → dueño.
+ *   3. Todo lo demás → NO es dueño (un "quiero rentar una casa en Tela" es huésped).
+ */
+export function isPropertyOwnerOffer(text: string): boolean {
+  const t = normOwner(text);
+  // Veto de EVENTOS: "soy dueño de un negocio y quiero un evento corporativo" es
+  // un lead de eventos, no de expansión. Si el mensaje huele a evento, solo lo
+  // tomamos como propietario cuando la intención de ADMINISTRACIÓN es explícita.
+  if (isEventInquiry(text) && !/(administr|gestion|property management|co[- ]?host|portafolio)/.test(t)) {
+    return false;
+  }
+  if (OWNER_SERVICE_QUESTION.test(t)) return true;
+  const isOwnerVoice = OWNER_POSSESSIVE.test(t) || OWNER_SELF_DECLARED.test(t);
+  if (!isOwnerVoice) return false;
+  return OWNER_MGMT_INTENT.test(t);
+}
+
+/**
+ * Pregunta 2 del intake: ¿la propiedad ya está activa en Airbnb u otra plataforma?
+ * Devuelve "si" | "no" | null (no lo dijo / ambiguo).
+ *
+ * ANCLAJE AL CONTEXTO (revisión 18-ago): el dueño contesta las 3 preguntas en UN
+ * mensaje ("Está en Tela, ya publicada en Airbnb, no tengo problema con la
+ * llamada"), así que un \bno\b o \bsi\b suelto en cualquier parte contamina la
+ * calificación (ese chat real daba "NO está en plataformas" — lo contrario de lo
+ * dicho). La decisión se ancla ALREDEDOR de la mención de plataforma: negación
+ * cerca → "no"; mención sin negación → "sí". Sin mención, solo frases explícitas
+ * de publicación. Preferimos null (s/d) antes que un dato inventado — César
+ * prepara la llamada con esto.
+ */
+export function detectOwnerPlatformStatus(text: string): "si" | "no" | null {
+  const t = normOwner(text);
+  const plat = /(airbnb|booking|vrbo|expedia|plataforma\w*|hotels?\.com)/.exec(t);
+  if (plat) {
+    // Ventana corta antes/después de la mención: "no está en Airbnb", "todavía no
+    // la subo a Booking", "Airbnb no" — la negación tiene que hablar DE la plataforma.
+    const before = t.slice(Math.max(0, plat.index - 40), plat.index);
+    const after = t.slice(plat.index + plat[0].length, plat.index + plat[0].length + 25);
+    const negBefore = /\b(no|nunca|aun no|todavia no|sin|not yet|quiero ponerla en|quisiera ponerla en|para ponerla en)\s*[^.,;]*$/.test(before);
+    const negAfter = /^\s*(no\b|nunca\b|todavia no)/.test(after);
+    return negBefore || negAfter ? "no" : "si";
+  }
+  // Sin mención de plataforma: solo lo EXPLÍCITO sobre publicación/renta corta.
+  if (/\b(ya (esta|la tengo) publicad\w*|ya la (rento|alquilo|publico)|ya esta activa)\b/.test(t)) {
+    return "si";
+  }
+  if (/\b(nunca la he (publicado|rentado|alquilado)|no (esta|la he) publicad\w*|aun no la (publico|rento|alquilo)|es (casa )?nueva|nunca la he puesto en renta)\b/.test(t)) {
+    return "no";
+  }
+  return null;
+}
+
+/**
+ * Pregunta 3 del intake: ¿acepta coordinar una llamada? "si" | "no" | null.
+ * Un "no" acá NO mata el lead (queda en el resumen para César), solo cambia el tono.
+ *
+ * Mismo anclaje que la pregunta 2: el sí/no tiene que hablar DE la llamada (o ser
+ * un asentimiento puro en un mensaje corto). Un "si gustan" condicional o un "no"
+ * de otra frase no pueden decidir este campo.
+ */
+export function detectOwnerCallWillingness(text: string): "si" | "no" | null {
+  const t = normOwner(text);
+  // Negativas explícitas sobre la llamada / preferencia por escrito.
+  if (/\b(prefiero (que )?(me escriban|por (aca|aqui|whatsapp|mensaje|escrito))|mejor por (mensaje|whatsapp|escrito|aca|aqui)|no (puedo|quiero|me gustan?) (las? )?llamad\w*|sin llamadas?|por ahora no|no me llamen)\b/.test(t)) {
+    return "no";
+  }
+  // Afirmativas ancladas a la llamada (incluye el doble-negativo hondureño
+  // "no tengo problema con la llamada" y "sin problema").
+  if (/\b(llamen(me|nos)?|llamame|me pueden llamar|pueden llamar(me|nos)?|coordinemos|agendemos|acepto (la )?llamada|cuando (quieran|gusten|puedan)|con (mucho )?gusto|por supuesto|encantad[oa]|(no tengo|no hay|sin) (ningun )?problema|yes,? (sure|call( me)?)|sure,? call)\b/.test(t)) {
+    return "si";
+  }
+  // Asentimiento puro en mensaje corto ("sí", "dale", "ok perfecto") — solo si no
+  // trae un "no" en ninguna parte.
+  if (t.length <= 25 && !/\bno\b/.test(t) &&
+      /\b(si|dale|claro|ok|okay|perfecto|de acuerdo|esta bien|va|vale|yes|sure)\b/.test(t)) {
+    return "si";
+  }
+  return null;
 }

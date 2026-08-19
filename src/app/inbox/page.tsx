@@ -1719,6 +1719,12 @@ export default function InboxPage() {
           >
             📋 Registro
           </a>
+          <a
+            href="/inbox/propietarios"
+            className="hidden lg:inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-muted dark:text-slate-400 whitespace-nowrap"
+          >
+            🏠 Propietarios
+          </a>
           <button
             onClick={() => fetchConversations()}
             disabled={loadingConv}
@@ -1753,6 +1759,7 @@ export default function InboxPage() {
                   )}
                   <a href="/inbox/conocimiento" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🤖 Conocimiento del bot</a>
                   <a href="/inbox/registro" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">📋 Registro</a>
+                  <a href="/inbox/propietarios" className="block px-4 py-2.5 text-sm text-primary dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700">🏠 Propietarios</a>
                   <button type="button" onClick={handleLogout} className="block w-full text-left px-4 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-gray-50 dark:hover:bg-slate-700 border-t border-gray-100 dark:border-slate-700">Salir</button>
                 </div>
               </>

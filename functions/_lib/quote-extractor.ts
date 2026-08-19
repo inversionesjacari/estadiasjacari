@@ -58,6 +58,15 @@ export interface QuoteData {
    *  no tiene tarifa de estadía (ver event-pricing.ts). */
   eventType?: "boda" | "xv" | "corporativo" | "social" | null;
   eventGuests?: number | null;
+  /** EXPANSIÓN (modelo B, 2026-08-17): un PROPIETARIO ofrece su inmueble para que lo
+   *  administremos. No es un huésped y no se cotiza nada — el bot hace las 3 preguntas
+   *  de calificación y deriva a César para la llamada. Se persisten entre el turno 1
+   *  (intake) y el turno 2 (handoff) para que el resumen a César no dependa de que el
+   *  dueño lo repita todo junto. `ownerLocation` es texto CRUDO: la propiedad de un
+   *  dueño puede estar en CUALQUIER zona del país, no solo en nuestras 3 ciudades. */
+  ownerLocation?: string | null;
+  ownerOnPlatform?: "si" | "no" | null;
+  ownerCallOk?: "si" | "no" | null;
 }
 
 export interface ExtractionResult {

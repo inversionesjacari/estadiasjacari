@@ -28,7 +28,11 @@ export type ConvState =
   | "awaiting_transfer_proof"
   // Lead de EVENTO (Valle de Ángeles): el bot ya preguntó tipo/fecha/personas;
   // la PRÓXIMA respuesta del cliente se deriva al equipo (handoff + pausa).
-  | "event_inquiry";
+  | "event_inquiry"
+  // EXPANSIÓN (modelo B): un PROPIETARIO ofreció su inmueble; el bot ya hizo las 3
+  // preguntas de calificación y la PRÓXIMA respuesta se deriva a César (handoff +
+  // pausa) para coordinar la llamada.
+  | "owner_inquiry";
 
 export interface ConversationStateRow {
   phone: string;

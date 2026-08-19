@@ -42,6 +42,7 @@ const VALID_INTENTS: BotIntent[] = [
   "rejecting",
   "existing_guest",
   "out_of_scope",
+  "property_owner",
   "unknown",
 ];
 
