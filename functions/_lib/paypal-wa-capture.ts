@@ -26,7 +26,6 @@
 
 import { T, type Lang } from "./i18n";
 import type { OwnerAlert } from "./owner-alerts";
-import type { PayPalRefundParams, PayPalRefundResult } from "./paypal-refund";
 import { overlapSlugs, slugPlaceholders } from "./slug-overlap";
 
 export interface WaCaptureInput {
@@ -49,12 +48,16 @@ export interface WaCaptureInput {
 
 export interface WaCaptureDeps {
   db: D1Database;
-  refund: (args: PayPalRefundParams) => Promise<PayPalRefundResult>;
+  /**
+   * NO existe una dependencia de refund a propósito (César, 2026-08-19):
+   * ningún reembolso se hace de forma automática. Si hay que devolver plata,
+   * lo decide y lo ejecuta una persona desde PayPal.
+   */
 }
 
 export interface WaCaptureResult {
   /** 'reserved' es el ÚNICO outcome que creó la fila de la reserva. */
-  outcome: "reserved" | "overlap_refunded" | "duplicate" | "insert_failed";
+  outcome: "reserved" | "overlap_held" | "duplicate" | "insert_failed";
   /** Texto para el huésped por WhatsApp (null = no mandar nada, ej. reintento). */
   guestMessage: string | null;
   /** Alerta a dueños (null = no alertar). Solo overlap, fallo de registro o same-day. */
@@ -76,7 +79,7 @@ export async function handleWaCapture(
   deps: WaCaptureDeps,
   input: WaCaptureInput,
 ): Promise<WaCaptureResult> {
-  const { db, refund } = deps;
+  const { db } = deps;
   const {
     phone, propertySlug, propertyName, checkIn, checkOut, guests,
     orderId, captureId, amountUsd, guestName, guestEmail, rawBody,
@@ -185,11 +188,11 @@ export async function handleWaCapture(
     if (prior) return duplicateResult(orderId, prior.status);
 
     // ¿Solape real? Leer los detalles del bloqueador para el refund y el aviso.
-    let overlap: { paypal_order_id: string; check_in: string; check_out: string } | null = null;
+    let overlap: { paypal_order_id: string; check_in: string; check_out: string; guest_phone_normalized: string | null } | null = null;
     try {
       overlap = await db
         .prepare(
-          `SELECT paypal_order_id, check_in, check_out
+          `SELECT paypal_order_id, check_in, check_out, guest_phone_normalized
              FROM reservations
             WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
               AND status IN ('pending', 'confirmed')
@@ -199,22 +202,26 @@ export async function handleWaCapture(
             LIMIT 1`,
         )
         .bind(...blockSlugs, orderId, checkOut, checkIn)
-        .first<{ paypal_order_id: string; check_in: string; check_out: string }>();
+        .first<{ paypal_order_id: string; check_in: string; check_out: string; guest_phone_normalized: string | null }>();
     } catch {
       overlap = null;
     }
     if (!overlap) continue; // el bloqueador desapareció (o D1 falló) → reintentar el insert
 
-    const refundResult = await refund({
-      captureId,
-      amountUsd: amountUsd > 0 ? amountUsd : undefined,
-      noteToPayer:
-        "Refund automático: las fechas fueron tomadas por otro huésped simultáneamente.",
-      accessToken,
-    });
+    // ── CONFLICTO DE FECHAS — la plata SE QUEDA ────────────────────────────
+    //
+    // Regla de César (2026-08-19, después de perder USD 97 así): NINGÚN
+    // reembolso automático, nunca. Acá antes se devolvía la plata sola, y el
+    // caso que lo destapó no era ni siquiera una doble venta: el equipo había
+    // cargado A MANO la reserva de ese mismo huésped, el pago entró después,
+    // el guard vio "dos reservas para las mismas fechas" y le devolvió el
+    // depósito al cliente. Devolver plata es una decisión de negocio: la toma
+    // una persona, no un `if`.
+    //
+    // Ahora: se captura, se REGISTRA (para que la plata tenga fila visible en el
+    // registro y nadie se olvide) y se le avisa a los dueños para que resuelvan.
+    const mismoHuesped = (overlap.guest_phone_normalized ?? "") === phone;
 
-    // Audit trail como 'cancelled' (no bloquea fechas). UNIQUE(paypal_order_id)
-    // dedupea reintentos — y el paso 0 evita re-reembolsar en el reintento.
     try {
       await db
         .prepare(
@@ -222,36 +229,39 @@ export async function handleWaCapture(
              (property_slug, check_in, check_out, guest_name, guest_email,
               guest_phone, guest_phone_normalized, paypal_order_id,
               amount_usd, source, status, raw_payload, guest_count, notification_error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'whatsapp_bot', 'cancelled', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'whatsapp_bot', 'pending', ?, ?, ?)`,
         )
         .bind(
           propertySlug, checkIn, checkOut, guestName, guestEmail,
           phone, phone, orderId, amountUsd || null, rawBody, guests,
-          `OVERLAP con orden ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}). ` +
-            `Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"}, status ${refundResult.status ?? "n/a"})` : `FALLÓ — ${refundResult.error?.slice(0, 400) ?? "error desconocido"}`}`,
+          mismoHuesped
+            ? `Pago del MISMO huésped sobre la reserva ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}) — probable duplicado de una carga manual. NO se reembolsó. Revisar y unificar.`
+            : `CHOCA con la reserva ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}). Pago RETENIDO, NO se reembolsó. Decidir a mano: reubicar, devolver o liberar.`,
         )
         .run();
     } catch {
-      /* best-effort: el log del webhook igual registra el overlap */
+      /* best-effort: el log del webhook igual registra el conflicto */
     }
 
     return {
-      outcome: "overlap_refunded",
-      guestMessage: T.paypalOverlapRefunded(lang, propertyName),
+      outcome: "overlap_held",
+      // Al huésped no se le promete la reserva ni se le habla de reembolso:
+      // un humano decide y le responde.
+      guestMessage: T.paypalReceivedRegisterPending(lang),
       ownerAlert: {
-        tipo: refundResult.ok
-          ? "Pago PayPal reembolsado (fechas chocaron)"
-          : "🔴 REFUND FALLÓ — devolver a mano",
+        tipo: mismoHuesped
+          ? "Pago PayPal duplicado (mismo huésped)"
+          : "🔴 Pago PayPal con FECHAS OCUPADAS — decidir",
         cliente,
-        detalle:
-          `${propertyName} ${checkIn}→${checkOut} · USD ${amountUsd || "?"} · ` +
-          `choca con ${overlap.paypal_order_id}` +
-          (refundResult.ok ? "" : ` · refund error: ${refundResult.error?.slice(0, 120) ?? "?"}`),
+        detalle: mismoHuesped
+          ? `${propertyName} ${checkIn}→${checkOut} · USD ${amountUsd || "?"} · ya tenías esta reserva cargada a mano — unificá el pago, NO se devolvió nada`
+          : `${propertyName} ${checkIn}→${checkOut} · USD ${amountUsd || "?"} · choca con ${overlap.paypal_order_id} · la plata ESTÁ COBRADA y retenida — decidí vos (reubicar / devolver a mano / liberar)`,
         guestPhone: phone,
       },
       logMessage:
-        `OVERLAP detectado con orden ${overlap.paypal_order_id}. ` +
-        `Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"})` : `FALLÓ — ${refundResult.error?.slice(0, 200)}`}`,
+        `CONFLICTO de fechas con ${overlap.paypal_order_id}` +
+        (mismoHuesped ? " (MISMO huésped — probable carga manual duplicada)" : "") +
+        `. Pago retenido, SIN reembolso automático (regla de César).`,
     };
   }
 

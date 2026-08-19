@@ -21,7 +21,8 @@ import {
 } from "../_lib/whatsapp-templates";
 import { getCleaningContacts, getSecurityContacts } from "../_lib/property-contacts";
 // Auditoría Sesión 2 — B1 doble booking
-import { refundPayPalCapture } from "../_lib/paypal-refund";
+// (No se importa refundPayPalCapture a propósito: NINGÚN reembolso es automático
+//  — regla de César, 2026-08-19. Devolver plata lo decide y lo ejecuta una persona.)
 import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
 import { overlapSlugs, slugPlaceholders } from "../_lib/slug-overlap";
 // Quote flow (bot WhatsApp con LLM) — para órdenes originadas vía WhatsApp
@@ -328,18 +329,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           }
 
           const wa = await handleWaCapture(
-            {
-              db: env.DB,
-              refund: (args) =>
-                refundPayPalCapture(
-                  {
-                    PAYPAL_CLIENT_ID: env.PAYPAL_CLIENT_ID,
-                    PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
-                    PAYPAL_API_BASE: env.PAYPAL_API_BASE,
-                  },
-                  args,
-                ),
-            },
+            { db: env.DB },
             {
               phone: waOrigin.phone,
               propertySlug: waOrigin.propertySlug,
@@ -543,7 +533,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           // cada casa rompe el combo (ver slug-overlap.ts).
           const blockSlugs = overlapSlugs(propertySlug);
           const overlap = await env.DB.prepare(
-            `SELECT paypal_order_id, guest_email, guest_name, check_in, check_out
+            `SELECT paypal_order_id, guest_email, guest_name, check_in, check_out, guest_phone_normalized
                FROM reservations
               WHERE property_slug IN (${slugPlaceholders(blockSlugs)})
                 AND status IN ('pending', 'confirmed')
@@ -559,33 +549,23 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
               guest_name: string | null;
               check_in: string;
               check_out: string;
+              guest_phone_normalized: string | null;
             }>();
 
           if (overlap) {
-            // 1. Refund automático
-            const refundResult = await refundPayPalCapture(
-              {
-                PAYPAL_CLIENT_ID: env.PAYPAL_CLIENT_ID,
-                PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET,
-                PAYPAL_API_BASE: env.PAYPAL_API_BASE,
-              },
-              {
-                captureId,
-                amountUsd: amountUsd > 0 ? amountUsd : undefined,
-                noteToPayer:
-                  "Refund automático: las fechas fueron tomadas por otro huésped simultáneamente.",
-                accessToken,
-              },
-            );
+            // ── CONFLICTO DE FECHAS — la plata SE QUEDA ──────────────────────
+            // Regla de César (2026-08-19): ningún reembolso automático. Antes
+            // acá se devolvía el pago solo; ahora se cobra, se REGISTRA con la
+            // nota del conflicto y decide una persona.
+            const mismoHuesped =
+              Boolean(guestPhone) && (overlap.guest_phone_normalized ?? "") === guestPhone;
 
-            // 2. INSERT como cancelled (audit trail). UNIQUE en paypal_order_id
-            // garantiza que si el webhook se reintenta, no duplicamos.
             await env.DB.prepare(
               `INSERT OR IGNORE INTO reservations
                  (property_slug, check_in, check_out, guest_name, guest_email,
                   guest_phone, guest_phone_normalized, paypal_order_id,
                   amount_usd, status, raw_payload, notification_error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'cancelled', ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
             )
               .bind(
                 propertySlug,
@@ -598,38 +578,30 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
                 orderId,
                 amountUsd || null,
                 rawBody,
-                `OVERLAP con orden ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}). Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"}, status ${refundResult.status ?? "n/a"})` : `FALLÓ — ${refundResult.error?.slice(0, 400) ?? "error desconocido"}`}`,
+                mismoHuesped
+                  ? `Pago del MISMO huésped sobre la reserva ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}) — probable duplicado. NO se reembolsó.`
+                  : `CHOCA con la reserva ${overlap.paypal_order_id} (${overlap.check_in}→${overlap.check_out}). Pago RETENIDO, NO se reembolsó. Decidir a mano.`,
               )
               .run();
 
-            // 3. Correo de disculpa al huésped
-            let apologyMsg = "";
-            if (recipientEmail) {
-              try {
-                const apologyResult = await sendOverlapApologyEmail(
-                  {
-                    guestName: guestName || "huésped",
-                    guestEmail: recipientEmail,
-                    propertyName: PROPERTY_NAMES[propertySlug] || propertySlug,
-                    checkInISO: checkIn,
-                    checkOutISO: checkOut,
-                    amountUsd,
-                    refundId: refundResult.refundId,
-                    refundStatus: refundResult.status,
-                  },
-                  {
-                    RESEND_API_KEY: env.RESEND_API_KEY ?? "",
-                    EMAIL_FROM: env.EMAIL_FROM ?? "",
-                    EMAIL_REPLY_TO: env.EMAIL_REPLY_TO,
-                  },
-                );
-                apologyMsg = apologyResult.ok
-                  ? ` · Correo disculpa enviado (${apologyResult.resendId ?? "n/a"})`
-                  : ` · Correo disculpa FALLÓ: ${apologyResult.error?.slice(0, 150)}`;
-              } catch (apologyErr) {
-                apologyMsg = ` · Correo disculpa EXCEPCIÓN: ${(apologyErr as Error).message.slice(0, 150)}`;
-              }
-            }
+            // Aviso a los dueños: hay plata cobrada esperando una decisión.
+            try {
+              await notifyOwners(
+                {
+                  WHATSAPP_ACCESS_TOKEN: env.WHATSAPP_ACCESS_TOKEN,
+                  WHATSAPP_PHONE_NUMBER_ID: env.WHATSAPP_PHONE_NUMBER_ID,
+                  DB: env.DB,
+                },
+                {
+                  tipo: mismoHuesped ? "Pago web duplicado (mismo huésped)" : "🔴 Pago web con FECHAS OCUPADAS",
+                  cliente: `${guestName || "(sin nombre)"} ${guestPhone || recipientEmail || ""}`.trim(),
+                  detalle:
+                    `${PROPERTY_NAMES[propertySlug] || propertySlug} ${checkIn}→${checkOut} · USD ${amountUsd || "?"} · ` +
+                    `choca con ${overlap.paypal_order_id} · la plata está COBRADA y retenida — decidí vos`,
+                  guestPhone: guestPhone || "",
+                },
+              );
+            } catch { /* best-effort */ }
 
             return logAndReturn(200, {
               paypalEventId: webhookEvent.id,
@@ -638,9 +610,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
               verificationStatus: "SUCCESS",
               processed: 1,
               errorMessage:
-                `OVERLAP detectado con orden ${overlap.paypal_order_id}. ` +
-                `Refund: ${refundResult.ok ? `OK (${refundResult.refundId ?? "sin id"})` : `FALLÓ — ${refundResult.error?.slice(0, 200)}`}` +
-                apologyMsg,
+                `CONFLICTO con orden ${overlap.paypal_order_id}. Pago retenido, SIN reembolso automático` +
+                (mismoHuesped ? " (MISMO huésped — probable duplicado)" : "") + ".",
             });
           }
         } catch (overlapErr) {
