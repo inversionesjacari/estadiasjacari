@@ -113,8 +113,8 @@ export default function PagosPage() {
     <div className="min-h-screen bg-[#070b16] text-slate-200">
       <header className="border-b border-white/10 px-5 py-3 flex items-center justify-between sticky top-0 z-10 bg-[#070b16]/90 backdrop-blur">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight">💰 Pagos por cobrar</h1>
-          <p className="text-[12px] text-slate-400">Pagos que el huésped autorizó y quedaron sin cobrar</p>
+          <h1 className="text-xl font-bold text-white tracking-tight">💰 Control de pagos</h1>
+          <p className="text-[12px] text-slate-400">El cobro es automático — acá lo verificás</p>
         </div>
         <a href="/inbox" className="px-3 py-1.5 border border-white/15 rounded-lg hover:bg-white/5 text-slate-300 text-sm">← Inbox</a>
       </header>
@@ -122,8 +122,13 @@ export default function PagosPage() {
       <main className="max-w-3xl mx-auto px-4 py-6">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <p className="text-[13px] text-slate-300 leading-relaxed">
-            Revisa en PayPal todos los links de pago que mandó el bot en los últimos 90 días y te dice
-            cuáles quedaron <b className="text-amber-200">pagados pero sin cobrar</b>. Tocá el botón para verlos.
+            <b className="text-emerald-300">El cobro es automático:</b> cuando el huésped aprueba el pago, el
+            sistema lo cobra solo en segundos y le manda la confirmación. Esta pantalla es para
+            <b> revisar</b> que así esté pasando, y para rescatar a mano algo que se haya escapado.
+          </p>
+          <p className="text-[12px] text-slate-500 leading-relaxed mt-2">
+            Revisa en PayPal los links de pago de los últimos 90 días y te dice si alguno quedó
+            <b className="text-amber-200"> pagado pero sin cobrar</b>. Lo normal es que salga en cero.
           </p>
           <button
             type="button"
@@ -156,7 +161,7 @@ export default function PagosPage() {
 
         {cobrables.length > 0 && (
           <p className="text-[13px] text-amber-200 mt-6 mb-2 font-semibold">
-            ⚠️ Estos pagaron y hay que cobrarlos — las autorizaciones vencen en días
+            ⚠️ Se escaparon del cobro automático — cobralos YA (una orden aprobada vence en HORAS)
           </p>
         )}
 
@@ -205,9 +210,11 @@ export default function PagosPage() {
         )}
 
         <p className="text-[11px] text-slate-600 text-center mt-8 leading-relaxed">
-          Al cobrar se le carga a la tarjeta que el huésped YA autorizó — no se le pide nada de nuevo.
-          El sistema crea la reserva y le manda la confirmación solo. Si una orden ya venció, no se puede
-          cobrar: hay que mandarle un link de pago nuevo.
+          El cobro se cierra solo por tres caminos: PayPal avisa que el huésped aprobó, la página de
+          retorno, y un barrido cada 2 minutos. Si aun así algo quedó sin cobrar, el botón lo cobra:
+          se le carga a la tarjeta que el huésped YA autorizó, sin pedirle nada de nuevo. Ojo: una
+          orden aprobada vence en HORAS — pasado ese punto no se puede rescatar y hay que mandarle un
+          link nuevo.
         </p>
       </main>
     </div>

@@ -40,3 +40,20 @@ Al confirmar el pago recibís automáticamente tu confirmación de reserva por c
     expect(extractOrderIds("https://www.paypal.com/mi-cuenta")).toEqual([]);
   });
 });
+
+//
+// El barrido de red de seguridad usa el mismo reconocimiento de links. Se fija
+// acá para que las dos vías (rescate manual y automático) no se desincronicen.
+//
+import { orderIdsFrom } from "../paypal-autocapture";
+
+describe("orderIdsFrom — el barrido automático ve los mismos links", () => {
+  it("reconoce el link real del bot", () => {
+    expect(orderIdsFrom("👉 https://www.paypal.com/checkoutnow?token=8P177164DA917144M")).toEqual(["8P177164DA917144M"]);
+  });
+
+  it("no confunde otros textos con un cobro", () => {
+    expect(orderIdsFrom("te paso la cuenta BAC")).toEqual([]);
+    expect(orderIdsFrom(null)).toEqual([]);
+  });
+});

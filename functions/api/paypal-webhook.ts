@@ -25,7 +25,7 @@ import { refundPayPalCapture } from "../_lib/paypal-refund";
 import { sendOverlapApologyEmail } from "../_lib/overlap-apology-email";
 import { overlapSlugs, slugPlaceholders } from "../_lib/slug-overlap";
 // Quote flow (bot WhatsApp con LLM) — para órdenes originadas vía WhatsApp
-import { parseWhatsAppCustomId } from "../_lib/paypal-checkout";
+import { parseWhatsAppCustomId, capturePayPalOrder } from "../_lib/paypal-checkout";
 import { sendTextMessage } from "../_lib/whatsapp";
 import { clearState as clearConversationState, getState as getConversationState } from "../_lib/quote-state";
 // Auditoría 2026-07-12 (A1/A2): overlap+refund+status pending para órdenes del bot
@@ -1175,6 +1175,40 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
           orderId,
           verificationStatus: "SUCCESS",
           processed: 1,
+        });
+      }
+
+      // ── El huésped acaba de aprobar el pago ──────────────────────────────
+      //
+      // ESTE es el evento que cierra el cobro solo, sin que nadie toque un
+      // botón. Aprobar NO cobra: deja la orden en APPROVED (retención en la
+      // tarjeta del huésped) y el comercio tiene que llamar a capture. Antes no
+      // escuchábamos este evento y el cobro dependía de que el huésped volviera
+      // a /gracias — si cerraba el navegador, la orden se moría sola en horas
+      // (incidente 2026-08-19: la orden de un huésped ya no existía 15 h
+      // después, imposible de rescatar).
+      //
+      // Ahora: PayPal avisa → capturamos en el acto → PayPal dispara
+      // PAYMENT.CAPTURE.COMPLETED → el case de arriba crea la reserva y le manda
+      // la confirmación. Todo en segundos, sin intervención humana.
+      //
+      // Idempotente: capturePayPalOrder usa PayPal-Request-Id y trata
+      // ORDER_ALREADY_CAPTURED como éxito, así que si /gracias ya cobró (el
+      // huésped SÍ volvió) este camino no cobra dos veces.
+      case "CHECKOUT.ORDER.APPROVED": {
+        const approvedOrderId = resource.id ?? orderId;
+        const cap = await capturePayPalOrder(approvedOrderId, env);
+        return logAndReturn(cap.ok ? 200 : 500, {
+          paypalEventId: webhookEvent.id,
+          eventType,
+          orderId: approvedOrderId,
+          verificationStatus: "SUCCESS",
+          processed: cap.ok ? 1 : 0,
+          errorMessage: cap.ok
+            ? cap.capturedNow
+              ? `Cobrado automáticamente (capture ${cap.captureId ?? "s/id"}, USD ${cap.amountUsd ?? "?"})`
+              : "Ya estaba cobrada (la capturó /gracias primero)"
+            : `NO SE PUDO COBRAR: ${cap.error ?? "sin detalle"}`,
         });
       }
 

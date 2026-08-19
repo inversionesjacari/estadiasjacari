@@ -14,6 +14,7 @@
 //
 // Auth: Authorization: Bearer <CRON_SECRET>. Respuesta SIEMPRE 200 con detalle JSON.
 //
+import { autoCaptureApproved } from "../../_lib/paypal-autocapture";
 import { requireBearerAuth } from "../../_lib/admin-auth";
 import { todayHn } from "../../_lib/dates";
 import { findActiveReservation } from "../../_lib/whatsapp-bot";
@@ -216,5 +217,15 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  return json({ ok: true, processed: queue.length, results });
+  // Red de seguridad del COBRO (incidente 2026-08-19): cobra cualquier orden que
+  // el huésped aprobó y que no se haya capturado por los caminos principales
+  // (webhook CHECKOUT.ORDER.APPROVED / página /gracias). Vive acá porque este
+  // cron ya corre cada 2 min y una orden aprobada vence en horas. Best-effort:
+  // nunca puede tumbar el retry del bot.
+  let cobros: Awaited<ReturnType<typeof autoCaptureApproved>> | null = null;
+  try {
+    cobros = await autoCaptureApproved(env);
+  } catch { /* red de seguridad, no puede romper el cron */ }
+
+  return json({ ok: true, processed: queue.length, results, cobros });
 };
