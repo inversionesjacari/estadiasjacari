@@ -74,21 +74,28 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  // Consultar PayPal de a poco (no reventar su rate limit).
+  // Consultar PayPal en LOTES: de a una, 60 órdenes tardaban ~30s y César se
+  // quedaba mirando una pantalla en blanco. De a 8 baja a unos pocos segundos
+  // sin acercarse al rate limit de PayPal.
   const ids = [...seen.keys()].slice(0, 60);
   const items: Array<Record<string, unknown>> = [];
-  for (const id of ids) {
-    const o = await getPayPalOrder(id, env);
-    const meta = seen.get(id)!;
-    items.push({
-      orderId: id,
-      phone: meta.phone,
-      linkEnviado: meta.at,
-      estado: o.ok ? o.status : "ERROR",
-      montoUsd: o.amountUsd ?? null,
-      cobrable: o.ok && o.status === "APPROVED",
-      detalle: o.ok ? undefined : o.error,
-    });
+  for (let i = 0; i < ids.length; i += 8) {
+    const lote = await Promise.all(
+      ids.slice(i, i + 8).map(async (id) => {
+        const o = await getPayPalOrder(id, env);
+        const meta = seen.get(id)!;
+        return {
+          orderId: id,
+          phone: meta.phone,
+          linkEnviado: meta.at,
+          estado: o.ok ? o.status : "ERROR",
+          montoUsd: o.amountUsd ?? null,
+          cobrable: o.ok && o.status === "APPROVED",
+          detalle: o.ok ? undefined : o.error,
+        };
+      }),
+    );
+    items.push(...lote);
   }
 
   const cobrables = items.filter((i) => i.cobrable);
