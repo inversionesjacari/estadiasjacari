@@ -20,7 +20,7 @@
 //
 
 import { requireOwner } from "../../_lib/inbox-auth";
-import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
+import { nonLeadPhonesSql } from "../../_lib/owner-copilot";
 import { getBlockedDates, SLUG_TO_SOURCES, type IcalEnv } from "../../_lib/availability";
 import { isNotInterested } from "../../_lib/detectors";
 import { metaCodeLabel, parseWaFailTrace } from "../../_lib/delivery-policy";
@@ -29,6 +29,8 @@ interface Env extends IcalEnv {
   DB: D1Database;
   CRON_SECRET?: string;
   INBOX_PASSWORD?: string;
+  /** Teléfonos del staff (copiloto) — excluidos de las métricas de leads. */
+  STAFF_PHONES?: string;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -70,6 +72,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   if (!auth.ok) return auth.response!;
 
   const db = env.DB;
+  // Dueños + staff fuera de las métricas de leads (sus chats con el copiloto
+  // no son clientes). Solo dígitos — seguro de interpolar.
+  const OWNER_PHONES_SQL = nonLeadPhonesSql(env);
 
   // Mes a mostrar: ?month=YYYY-MM (default = mes calendario actual en Honduras,
   // UTC-6). Es la base de Reservas/Ingresos/por-propiedad, TODO por CHECK-IN

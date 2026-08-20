@@ -13,9 +13,12 @@
 // Carpeta `_lib/` (con prefijo underscore) NO es ruteable como endpoint.
 
 import { callWorkersAIJson, type WorkersAIEnv, type AIMessage } from "./workers-ai";
+import { nonLeadPhonesSql } from "./owner-copilot";
 
 export interface QaEnv extends WorkersAIEnv {
   DB: D1Database;
+  /** Teléfonos del staff (copiloto) — sus chats no son cliente-bot, no se auditan. */
+  STAFF_PHONES?: string;
 }
 
 export interface QaFinding {
@@ -53,12 +56,17 @@ Respondé SOLO este JSON, sin texto extra:
 {"findings":[{"issue":"...","severity":"alta|media|baja","detail":"...","suggestion":"..."}]}`;
 
 /** Trae los teléfonos con actividad reciente (últimos 7 días) + su último mensaje. */
-async function recentPhones(db: D1Database): Promise<{ phone: string; lastAt: string }[]> {
+async function recentPhones(db: D1Database, nonLeadSql: string): Promise<{ phone: string; lastAt: string }[]> {
   const res = await db
     .prepare(
+      // Dueños y staff FUERA: sus chats con el copiloto no son cliente-bot.
+      // Analizarlos quemaba slots del cupo diario y generaba hallazgos falsos
+      // (hallazgo de la adversaria del copiloto staff, 2026-08-20; el hueco ya
+      // existía con los dueños y el staff lo amplió).
       `SELECT from_phone AS phone, MAX(created_at) AS last_at
          FROM whatsapp_messages
         WHERE direction = 'in' AND created_at >= datetime('now','-7 days')
+          AND from_phone NOT IN (${nonLeadSql})
         GROUP BY from_phone
         ORDER BY last_at DESC
         LIMIT ?`,
@@ -206,7 +214,7 @@ export interface QaRunResult {
 export async function runQaAnalysis(env: QaEnv, trigger: "boton" | "cron"): Promise<QaRunResult> {
   let phones: { phone: string; lastAt: string }[];
   try {
-    phones = await recentPhones(env.DB);
+    phones = await recentPhones(env.DB, nonLeadPhonesSql(env));
   } catch (err) {
     return { analyzed: 0, found: 0, error: `recentPhones: ${(err as Error).message}` };
   }

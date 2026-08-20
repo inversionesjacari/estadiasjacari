@@ -40,7 +40,8 @@ import { getState } from "../_lib/quote-state";
 import { processTransferReceipt } from "../_lib/receipt";
 import { checkRateLimit } from "../_lib/rate-limit";
 // MODO PROPIETARIO: los dueños hablan con el copiloto interno, no con el bot de ventas.
-import { isOwnerPhone, handleOwnerCopilot } from "../_lib/owner-copilot";
+import { copilotRoleFor, handleOwnerCopilot, type CopilotRole } from "../_lib/owner-copilot";
+import { notifyOwners } from "../_lib/owner-alerts";
 
 // Máximo de mensajes por número que DISPARAN al bot (LLM/visión/escalación) por
 // minuto. El mensaje entrante SIEMPRE se guarda en el inbox — esto solo frena la
@@ -129,6 +130,10 @@ interface Env extends IcalEnv {
   PAYPAL_API_BASE?: string;
   PAYPAL_CLIENT_ID?: string;
   PAYPAL_CLIENT_SECRET?: string;
+  // Copiloto STAFF (2026-08-20): teléfonos del equipo (lista separada por comas)
+  // + nombre a mostrar. Sin STAFF_PHONES, el rol staff no existe.
+  STAFF_PHONES?: string;
+  STAFF_NAME?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -514,14 +519,16 @@ async function processIncomingMessage(
     return;
   }
 
-  // ── MODO PROPIETARIO: César/Eduardo escriben al bot → copiloto interno ─────
-  // Va ANTES de isBotPaused a propósito: el copiloto responde a los dueños
-  // aunque el bot esté pausado (individual o global). Mantiene el rate limit
-  // (protege de bucles). No escala, no pausa, no toca conversation_state, y
-  // las métricas/inbox/followups ya excluyen estos números (owner-copilot.ts).
-  if (isOwnerPhone(fromE164)) {
+  // ── MODO EQUIPO: dueños (César/Eduardo) o STAFF (Isaías) → copiloto interno ─
+  // Va ANTES de isBotPaused a propósito: el copiloto responde al equipo aunque
+  // el bot esté pausado (individual o global). Mantiene el rate limit (protege
+  // de bucles). No escala, no pausa, no toca conversation_state, y las
+  // métricas/inbox/followups excluyen estos números (nonLeadPhonesSql). El ROL
+  // decide qué puede cada quien — el dispatcher lo aplica en código.
+  const copilotRole = copilotRoleFor(fromE164, env);
+  if (copilotRole) {
     if (await isBotRateLimited(fromE164, env)) return;
-    await handleOwnerIncoming(fromE164, toE164, bodyText, inserted.meta?.last_row_id ?? 0, env);
+    await handleOwnerIncoming(fromE164, toE164, bodyText, inserted.meta?.last_row_id ?? 0, env, copilotRole);
     return;
   }
 
@@ -963,13 +970,14 @@ async function processIncomingMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MODO PROPIETARIO — el copiloto responde a los dueños (César/Eduardo)
+// MODO EQUIPO — el copiloto responde a dueños (César/Eduardo) y staff (Isaías)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Atiende un mensaje de TEXTO de un dueño: copiloto interno en vez del bot de
+ * Atiende un mensaje de TEXTO del equipo: copiloto interno en vez del bot de
  * ventas. Sin escalación, sin pausa, sin conversation_state. El error se le
- * dice al dueño con franqueza (a un dueño no se le oculta la falla técnica).
+ * dice con franqueza (al equipo no se le oculta la falla técnica). El `role`
+ * ya viene resuelto por copilotRoleFor; el dispatcher aplica los límites.
  */
 async function handleOwnerIncoming(
   fromE164: string,
@@ -977,6 +985,7 @@ async function handleOwnerIncoming(
   bodyText: string,
   currentMsgId: number,
   env: Env,
+  role: CopilotRole,
 ): Promise<void> {
   // "Última palabra gana": si el dueño mandó 3 líneas seguidas, responde solo
   // el webhook del mensaje más nuevo (mismo patrón que el flujo de leads).
@@ -988,13 +997,18 @@ async function handleOwnerIncoming(
     if ((newer?.c ?? 0) > 0) return;
   } catch { /* si el chequeo falla, seguimos */ }
 
+  // Rastro por rol: stage y matched_rule distintos → en D1 se distingue de un
+  // vistazo qué hizo el staff vs los dueños (y el inbox etiqueta la burbuja).
+  const traceStage = role === "staff" ? "STAFF_COPILOT" : "OWNER_COPILOT";
+  const matchedRule = role === "staff" ? "staff_copilot" : "owner_copilot";
+
   let result;
   try {
-    result = await handleOwnerCopilot(fromE164, bodyText, todayHn(), env);
+    result = await handleOwnerCopilot(fromE164, bodyText, todayHn(), env, role);
   } catch (err) {
     try {
-      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'OWNER_COPILOT_THREW', ?)`)
-        .bind(fromE164, (err as Error).message.slice(0, 300)).run();
+      await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, ?, ?)`)
+        .bind(fromE164, `${traceStage}_THREW`, (err as Error).message.slice(0, 300)).run();
     } catch { /* best-effort */ }
     result = {
       replies: [{ text: `El copiloto falló: ${(err as Error).message.slice(0, 120)}. Reintentá o revisá bot_trace.` }],
@@ -1004,9 +1018,18 @@ async function handleOwnerIncoming(
 
   // Cámara: qué acción ejecutó el copiloto (diagnóstico en /inbox/operacion).
   try {
-    await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, 'OWNER_COPILOT', ?)`)
-      .bind(fromE164, `${result.traceAction} :: ${bodyText.slice(0, 120)}`).run();
+    await env.DB.prepare(`INSERT INTO bot_trace (phone, stage, detail) VALUES (?, ?, ?)`)
+      .bind(fromE164, traceStage, `${result.traceAction} :: ${bodyText.slice(0, 120)}`).run();
   } catch { /* best-effort */ }
+
+  // Oversight de plata: el staff generó un link de pago → los DUEÑOS se enteran
+  // por WhatsApp (el copiloto compuso la alerta; acá se envía). Best-effort: si
+  // la alerta falla, el link igual salió — notifyOwners deja su propio rastro.
+  if (result.staffAlert) {
+    try {
+      await notifyOwners(env, result.staffAlert);
+    } catch { /* best-effort */ }
+  }
 
   for (const r of result.replies) {
     const sendResult = await sendTextMessage(fromE164, r.text, env, r.previewUrl ?? false);
@@ -1014,12 +1037,13 @@ async function handleOwnerIncoming(
       await env.DB.prepare(
         `INSERT INTO whatsapp_messages
            (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status)
-         VALUES (?, 'out', ?, ?, ?, 'owner_copilot', 0, ?)`,
+         VALUES (?, 'out', ?, ?, ?, ?, 0, ?)`,
       ).bind(
         sendResult.messageId ?? null,
         toE164,
         fromE164,
         sendResult.ok ? r.text : `[FAILED] ${r.text}\n\nERROR: ${sendResult.error}`,
+        matchedRule,
         sendResult.ok ? "sent" : "failed",
       ).run();
     } catch (logErr) {
@@ -1032,11 +1056,12 @@ async function handleOwnerIncoming(
           await env.DB.prepare(
             `INSERT INTO whatsapp_messages
                (meta_message_id, direction, from_phone, to_phone, body, matched_rule, escalated, status, media_type, media_url, media_mime)
-             VALUES (?, 'out', ?, ?, '', 'owner_copilot', 0, ?, 'image', ?, 'image/jpeg')`,
+             VALUES (?, 'out', ?, ?, '', ?, 0, ?, 'image', ?, 'image/jpeg')`,
           ).bind(
             imgResult.messageId ?? null,
             toE164,
             fromE164,
+            matchedRule,
             imgResult.ok ? "sent" : "failed",
             imageUrl,
           ).run();
@@ -1147,14 +1172,19 @@ async function handleMediaMessage(
     .run();
   if ((inserted.meta?.changes ?? 0) === 0) return; // ya procesado
 
-  // ── MODO PROPIETARIO: media de un dueño ────────────────────────────────────
+  // ── MODO EQUIPO: media de un dueño o del staff ─────────────────────────────
   // El media ya quedó guardado (visible en el inbox). NADA del pipeline de
   // huéspedes debe correr: ni el ack "una persona del equipo te atiende", ni el
-  // lector de comprobantes (los dueños tienen conversation_state viejo de
+  // lector de comprobantes (el equipo puede tener conversation_state viejo de
   // pruebas que podría dispararlo), ni la escalación por email.
   // Nota de voz → se transcribe y alimenta al copiloto como si fuera texto
   // (mismo Whisper del flujo de leads); otros tipos → línea honesta.
-  if (isOwnerPhone(fromE164)) {
+  const mediaCopilotRole = copilotRoleFor(fromE164, env);
+  if (mediaCopilotRole) {
+    // Mismo rate limit que el camino de texto (adversaria 2026-08-20: esta
+    // asimetría existía para los dueños y el staff la ampliaba — una ráfaga de
+    // notas de voz quemaba Whisper sin freno). El media ya quedó en el inbox.
+    if (await isBotRateLimited(fromE164, env)) return;
     if (rawType === "audio" && mediaId) {
       const tr = await transcribeVoiceNote(mediaId, env);
       if (tr.ok && tr.text.trim()) {
@@ -1170,6 +1200,7 @@ async function handleMediaMessage(
           tr.text,
           inserted.meta?.last_row_id ?? 0,
           env,
+          mediaCopilotRole,
         );
         return;
       }

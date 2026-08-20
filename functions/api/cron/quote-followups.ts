@@ -34,7 +34,7 @@ import { T } from "../../_lib/i18n";
 import { withCronMonitor } from "../../_lib/cron-monitor";
 import { TERMINAL_RULES } from "../../_lib/detectors";
 import { globalBotPausedSince } from "../../_lib/bot-pause";
-import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
+import { nonLeadPhonesSql } from "../../_lib/owner-copilot";
 
 interface Env extends AvailabilityEnv {
   DB: D1Database;
@@ -45,6 +45,8 @@ interface Env extends AvailabilityEnv {
    *  APPROVED en Meta. Apagado ⇒ la rama de followup >24h ni se evalúa (evita
    *  envíos rechazados mientras el template está en revisión). */
   FOLLOWUP_TEMPLATE_ENABLED?: string;
+  /** Teléfonos del staff (copiloto) — excluidos de todo followup de venta. */
+  STAFF_PHONES?: string;
 }
 
 interface StateRow {
@@ -194,6 +196,10 @@ const handlePost: PagesFunction<Env> = async ({ request, env }) => {
 
   const url = new URL(request.url);
   const dryRun = url.searchParams.get("dryRun") === "1";
+
+  // Dueños + STAFF fuera de todo followup de venta (sus chats con el copiloto
+  // no son leads; nadie le vende a Isaías). Solo dígitos — seguro de interpolar.
+  const OWNER_PHONES_SQL = nonLeadPhonesSql(env);
 
   let rows: StateRow[] = [];
   try {

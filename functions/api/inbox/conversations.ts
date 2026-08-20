@@ -27,12 +27,14 @@
 //
 
 import { requireInboxAuth } from "../../_lib/inbox-auth";
-import { OWNER_PHONES_SQL } from "../../_lib/owner-copilot";
+import { nonLeadPhonesSql } from "../../_lib/owner-copilot";
 
 interface Env {
   DB: D1Database;
   CRON_SECRET?: string;
   INBOX_PASSWORD?: string;
+  /** Teléfonos del staff (copiloto) — sus chats con el bot no son leads. */
+  STAFF_PHONES?: string;
 }
 
 interface ConversationRow {
@@ -87,7 +89,7 @@ const PAY_STATES = ["awaiting_transfer_proof", "awaiting_paypal_capture", "await
  *   - búsqueda y paginación con cursor: SIN ventana (user-initiated, poco
  *     frecuente — un cliente viejo se tiene que poder encontrar)
  */
-function conversationsQuery(whereExtra: string, limitClause: string, sinceDays?: number): string {
+function conversationsQuery(whereExtra: string, limitClause: string, nonLeadSql: string, sinceDays?: number): string {
   const sinceClause = sinceDays ? `AND m.created_at > datetime('now', '-${sinceDays} days')` : "";
   return `WITH last_msg AS (
          SELECT m.from_phone AS phone,
@@ -101,9 +103,10 @@ function conversationsQuery(whereExtra: string, limitClause: string, sinceDays?:
            FROM whatsapp_messages m
           WHERE m.direction = 'in'
             ${sinceClause}
-            -- Modo propietario: los chats de los dueños con el copiloto no son
+            -- Modo equipo: los chats de dueños Y staff con el copiloto no son
             -- leads — fuera de la lista del inbox (feed, búsqueda y pendientes).
-            AND m.from_phone NOT IN (${OWNER_PHONES_SQL})
+            -- nonLeadSql viene de nonLeadPhonesSql(env): solo dígitos, seguro.
+            AND m.from_phone NOT IN (${nonLeadSql})
        )
        SELECT lm.phone,
               lm.body AS last_message,
@@ -177,6 +180,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   // el feed con `escalated = 1`.
   const lite = url.searchParams.get("lite") === "1";
 
+  // Dueños + staff fuera de la lista (sus chats con el copiloto no son leads).
+  const nonLeadSql = nonLeadPhonesSql(env);
+
   try {
     let feed: ConversationRow[];
     let pending: ConversationRow[] = [];
@@ -189,17 +195,18 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         conversationsQuery(
           `AND (lm.phone LIKE ?1 ESCAPE '\\' OR c.profile_name LIKE ?1 ESCAPE '\\' OR r.guest_name LIKE ?1 ESCAPE '\\')`,
           `LIMIT 60`,
+          nonLeadSql,
         ),
       ).bind(like).all<ConversationRow>();
       feed = res.results ?? [];
     } else {
       // ── Modo NORMAL: feed paginado por cursor. El poll de cada dispositivo
-      // pega acá sin cursor → ventana de 30 días (ver conversationsQuery). La
+      // pega acá sin cursor → ventana de 7 días (ver conversationsQuery). La
       // paginación con cursor ("cargar más") va SIN ventana: es user-initiated
       // y tiene que poder llegar hasta el fondo de la historia.
       const feedRes = before
-        ? await env.DB.prepare(conversationsQuery(`AND lm.created_at < ?1`, `LIMIT ${FEED_LIMIT}`)).bind(before).all<ConversationRow>()
-        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`, 7)).all<ConversationRow>();
+        ? await env.DB.prepare(conversationsQuery(`AND lm.created_at < ?1`, `LIMIT ${FEED_LIMIT}`, nonLeadSql)).bind(before).all<ConversationRow>()
+        : await env.DB.prepare(conversationsQuery(``, `LIMIT ${FEED_LIMIT}`, nonLeadSql, 7)).all<ConversationRow>();
       feed = feedRes.results ?? [];
       nextCursor = nextCursorOf(feed, FEED_LIMIT);
 
@@ -217,6 +224,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
                     OR lm.phone IN (SELECT phone FROM bot_pauses)
                     OR st.state IN (${payList}))`,
               `LIMIT ${PENDING_LIMIT}`,
+              nonLeadSql,
               30,
             ),
           ).all<ConversationRow>();

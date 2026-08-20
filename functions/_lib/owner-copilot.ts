@@ -57,6 +57,76 @@ export function isOwnerPhone(phone: string | null | undefined): boolean {
 export const OWNER_PHONES_SQL = OWNER_PHONES.map((p) => `'${p}'`).join(",");
 
 // ─────────────────────────────────────────────────────────────────────────────
+// STAFF (2026-08-20, entra Isaías al copiloto)
+//
+// El copiloto ahora atiende DOS roles: "owner" (César/Eduardo — todo) y "staff"
+// (empleados — disponibilidad, tarifas/cotizaciones, fichas, fotos y links de
+// pago; SIN resumen del mes ni nada que huela a ingresos del negocio; los
+// montos custom en links de pago también les están vedados).
+//
+// Los teléfonos del staff NO van hardcodeados: viven en la env var STAFF_PHONES
+// (lista separada por comas, con o sin '+'), así César suma o borra empleados
+// sin tocar código. Cambiarla requiere un redeploy de Pages (Retry deployment).
+// Sin la variable seteada, el rol staff NO existe y todo queda como antes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CopilotRole = "owner" | "staff";
+
+export interface CopilotIdentityEnv {
+  /** Teléfonos del staff, separados por coma (ej. "50412345678, +504 8765-4321"). */
+  STAFF_PHONES?: string;
+  /** Nombre a mostrar del empleado (mismo default que el inbox). */
+  STAFF_NAME?: string;
+}
+
+/** Parsea STAFF_PHONES a E.164 pelado (solo dígitos). Dedup, y los dueños se
+ *  filtran: si César se lista a sí mismo por error, sigue siendo owner.
+ *
+ *  FORMATO: separado por COMAS (cada entrada puede traer '+', espacios y
+ *  guiones internos). OJO adversaria 2026-08-20: una lista separada solo por
+ *  ESPACIOS concatenaría todos los números en un token gigante — el tope de 15
+ *  dígitos (máximo E.164) lo descarta en vez de crear un "teléfono" fantasma. */
+export function staffPhonesFromEnv(env: CopilotIdentityEnv): string[] {
+  if (!env.STAFF_PHONES) return [];
+  const out: string[] = [];
+  for (const piece of env.STAFF_PHONES.split(/[,;]+/)) {
+    const digits = piece.replace(/\D/g, "");
+    // 8-15 dígitos = un teléfono plausible (E.164 topea en 15); basura fuera de
+    // rango se ignora en silencio (una env var rota no debe tumbar el webhook).
+    if (digits.length >= 8 && digits.length <= 15 && !out.includes(digits) && !(OWNER_PHONES as readonly string[]).includes(digits)) {
+      out.push(digits);
+    }
+  }
+  return out;
+}
+
+/** ¿El teléfono es de un empleado? Tolera '+', espacios y guiones (se compara
+ *  por dígitos, igual que el parser de la env var). */
+export function isStaffPhone(phone: string | null | undefined, env: CopilotIdentityEnv): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/\D/g, "");
+  return digits.length > 0 && staffPhonesFromEnv(env).includes(digits);
+}
+
+/** Rol del copiloto para este teléfono, o null si es un lead normal.
+ *  Owner se evalúa PRIMERO: ante cualquier ambigüedad gana el rol con más
+ *  acceso para César, nunca al revés. */
+export function copilotRoleFor(phone: string | null | undefined, env: CopilotIdentityEnv): CopilotRole | null {
+  if (isOwnerPhone(phone)) return "owner";
+  if (isStaffPhone(phone, env)) return "staff";
+  return null;
+}
+
+/** Literal SQL `'a','b',...` con dueños + staff, para los `NOT IN (...)` de
+ *  métricas/inbox/followups: los chats del equipo con el copiloto no son leads.
+ *  Seguro de interpolar: staffPhonesFromEnv reduce cada entrada a SOLO dígitos
+ *  (nada inyectable), y los dueños son constantes de módulo. */
+export function nonLeadPhonesSql(env: CopilotIdentityEnv): string {
+  const all = [...OWNER_PHONES, ...staffPhonesFromEnv(env)];
+  return all.map((p) => `'${p}'`).join(",");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Esquema del LLM (el cerebro solo clasifica/extrae)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -172,10 +242,26 @@ export function validateCopilotOutput(raw: unknown): { ok: boolean; problems: st
 // Prompt del copiloto
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildCopilotSystemPrompt(todayIso: string, kbText: string): string {
-  return `Sos el ASISTENTE INTERNO de los dueños de Estadías Jacarí (César y Eduardo).
+export function buildCopilotSystemPrompt(
+  todayIso: string,
+  kbText: string,
+  role: CopilotRole = "owner",
+  staffName?: string,
+): string {
+  const quienEs =
+    role === "staff"
+      ? `Sos el ASISTENTE INTERNO del equipo de Estadías Jacarí.
+El que escribe es ${staffName || "un miembro del STAFF"} (empleado del negocio), NO un
+huésped. Jamás lo saludes como bot de ventas, jamás le vendas, jamás le pidas
+"confirmar la reserva". Lo asistís para atender clientes: disponibilidad,
+tarifas, fichas, fotos y links de pago. Los RESÚMENES del negocio (reservas del
+mes, ingresos) son SOLO de los dueños: si los pide, usá action "clarify" con un
+reply que diga que esa vista es del dueño. (El sistema igual lo bloquea por
+código — esto es solo para responder con gracia.)`
+      : `Sos el ASISTENTE INTERNO de los dueños de Estadías Jacarí (César y Eduardo).
 El que escribe es un DUEÑO del negocio, NO un huésped. Jamás lo saludes como bot de
-ventas, jamás le vendas, jamás le pidas "confirmar la reserva".
+ventas, jamás le vendas, jamás le pidas "confirmar la reserva".`;
+  return `${quienEs}
 
 HOY es ${fechaEnPalabras(todayIso)} (${todayIso}, zona GMT-6 Honduras).
 
@@ -314,9 +400,14 @@ export interface CopilotReply {
 export interface CopilotResult {
   replies: CopilotReply[];
   traceAction: string;
+  /** Solo staff: cuando genera un link de pago, el webhook manda esta alerta a
+   *  los DUEÑOS (oversight de plata: César se entera de cada link del staff).
+   *  Se compone acá (que tiene los datos) pero se ENVÍA en el webhook, para no
+   *  crear un import circular owner-copilot ↔ owner-alerts. */
+  staffAlert?: { tipo: string; cliente: string; detalle: string; guestPhone: string };
 }
 
-export type CopilotEnv = WorkersAIEnv & AvailabilityEnv & PayPalEnv & { DB: D1Database };
+export type CopilotEnv = WorkersAIEnv & AvailabilityEnv & PayPalEnv & CopilotIdentityEnv & { DB: D1Database };
 
 function isoAddDays(iso: string, days: number): string {
   const t = new Date(iso + "T00:00:00Z").getTime() + days * 86_400_000;
@@ -325,12 +416,15 @@ function isoAddDays(iso: string, days: number): string {
 
 const MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
-/** Entrada principal del copiloto: mensaje del dueño → replies listas para mandar. */
+/** Entrada principal del copiloto: mensaje del dueño/staff → replies listas para mandar. */
 export async function handleOwnerCopilot(
   phone: string,
   text: string,
   todayIso: string,
   env: CopilotEnv,
+  // SIN default a propósito: olvidar el rol en un call site futuro sería un
+  // fail-open de permisos (staff tratado como owner). Que NO compile.
+  role: CopilotRole,
 ): Promise<CopilotResult> {
   // 1. Cerebro: clasificar + extraer (historial de whatsapp_messages = memoria).
   const [kbText, history] = await Promise.all([
@@ -338,7 +432,7 @@ export async function handleOwnerCopilot(
     getConversationHistory(phone, env.DB, 12),
   ]);
   const messages: AIMessage[] = [
-    { role: "system", content: buildCopilotSystemPrompt(todayIso, kbText) },
+    { role: "system", content: buildCopilotSystemPrompt(todayIso, kbText, role, env.STAFF_NAME) },
     ...history,
     { role: "user", content: text.slice(0, 1000) },
   ];
@@ -356,18 +450,31 @@ export async function handleOwnerCopilot(
   const { fields, problems } = validateCopilotOutput(llm.data);
 
   // 2. Manos: dispatcher determinístico.
-  const result = await dispatchCopilotAction(fields, text, todayIso, env);
+  const result = await dispatchCopilotAction(fields, text, todayIso, env, role);
   if (problems.length > 0) result.traceAction += ` [schema: ${problems.join("; ").slice(0, 120)}]`;
   return result;
 }
 
-/** Exportada para tests: las MANOS del copiloto (el LLM solo clasifica). */
+/** Exportada para tests: las MANOS del copiloto (el LLM solo clasifica).
+ *  El ROL se aplica ACÁ, en código — jamás confiamos en que el prompt alcance. */
 export async function dispatchCopilotAction(
   f: CopilotFields,
   rawText: string,
   todayIso: string,
   env: CopilotEnv,
+  role: CopilotRole,
 ): Promise<CopilotResult> {
+  // ── Frontera de rol: lo que el staff NO puede, se corta ANTES del switch ──
+  if (role === "staff" && f.action === "ops_month") {
+    // "Reservas del mes" = volumen del negocio → solo dueños (pedido explícito
+    // de César 2026-08-20). La operación de HOY/mañana sí es del staff (es su
+    // trabajo coordinar llegadas); el agregado mensual no.
+    return {
+      replies: [{ text: "🔒 El resumen del mes es una vista del dueño. Lo tuyo: disponibilidad, cotizaciones, fichas, fotos, links de pago y la operación de hoy/mañana." }],
+      traceAction: "staff_blocked_ops_month",
+    };
+  }
+
   switch (f.action) {
     // ── Cotización reenviable ────────────────────────────────────────────────
     case "quote": {
@@ -539,6 +646,15 @@ export async function dispatchCopilotAction(
           traceAction: "paylink_hnl_rejected",
         };
       }
+      // STAFF: el monto lo fija SIEMPRE el sistema (depósito 50% del cotizador).
+      // Un monto custom es una decisión de plata del dueño — y de paso cierra el
+      // agujero de un link por menos plata de la que corresponde.
+      if (role === "staff" && f.amountUsd != null) {
+        return {
+          replies: [{ text: "🔒 El monto del link lo fija el sistema (depósito 50% del cotizador). Pedime el link sin monto y lo genero con el depósito correcto; si hace falta un monto especial, eso lo maneja César." }],
+          traceAction: "paylink_staff_custom_rejected",
+        };
+      }
       const missing: string[] = [];
       if (!f.property) missing.push("la propiedad");
       if (!f.checkIn || !f.checkOut) missing.push("las fechas");
@@ -552,8 +668,16 @@ export async function dispatchCopilotAction(
       }
       if (isOwnerPhone(f.guestPhone)) {
         return {
-          replies: [{ text: "Ese es TU número (o el de Eduardo) — necesito el del CLIENTE: la reserva y la confirmación de pago se atribuyen a ese teléfono." }],
+          replies: [{ text: "Ese es el número de un DUEÑO — necesito el del CLIENTE: la reserva y la confirmación de pago se atribuyen a ese teléfono." }],
           traceAction: "paylink_owner_phone_rejected",
+        };
+      }
+      // También se rechaza el teléfono de un empleado (para AMBOS roles): una
+      // reserva atribuida al staff es una reserva que no le llega a nadie real.
+      if (isStaffPhone(f.guestPhone, env)) {
+        return {
+          replies: [{ text: "Ese es el número de un miembro del EQUIPO — necesito el del CLIENTE: la reserva y la confirmación de pago se atribuyen a ese teléfono." }],
+          traceAction: "paylink_staff_phone_rejected",
         };
       }
       const guests = f.guests ?? (f.adults ?? 0) + (f.children ?? 0);
@@ -627,11 +751,35 @@ export async function dispatchCopilotAction(
       return {
         replies: [{ text: forwardable }, { text: internal }],
         traceAction: "paylink_ok",
+        // Oversight de plata: si el link lo generó el STAFF, los dueños se
+        // enteran por WhatsApp (regla de la casa: sobre plata, avisar siempre).
+        // El webhook lo envía con notifyOwners; acá solo se compone.
+        ...(role === "staff"
+          ? {
+              staffAlert: {
+                tipo: "Staff generó link de pago",
+                cliente: `Cliente ${f.guestPhone}`,
+                detalle: `${env.STAFF_NAME || "Staff"}: ${quote.propertyName} ${f.checkIn}→${f.checkOut} · USD ${amountUsd.toFixed(2)} (depósito 50%)`,
+                guestPhone: f.guestPhone!,
+              },
+            }
+          : {}),
       };
     }
 
     // ── Plata: datos de transferencia con monto ──────────────────────────────
+    // MISMOS candados de rol que payment_link (adversaria 2026-08-20, cazado
+    // por 4 lentes independientes): sin esto, el staff esquivaba el control del
+    // depósito pidiendo "la cuenta para X lempiras" — mismo agujero, otro canal
+    // de cobro. Staff: solo el depósito que calcula el cotizador, y con alerta
+    // a los dueños. Owner: igual que siempre.
     case "transfer_info": {
+      if (role === "staff" && (f.amountHnl != null || f.amountUsd != null)) {
+        return {
+          replies: [{ text: "🔒 El monto de una transferencia lo fija el sistema (depósito 50% del cotizador). Pasame propiedad+fechas+personas y te doy los datos con el monto correcto; montos especiales los maneja César." }],
+          traceAction: "transfer_staff_custom_rejected",
+        };
+      }
       if (f.amountHnl != null) {
         return { replies: [{ text: buildTransferMessageHNL(f.amountHnl, "es") }], traceAction: "transfer_hnl_ok" };
       }
@@ -648,12 +796,38 @@ export async function dispatchCopilotAction(
           pricingMap,
         );
         if (quote && quote.available) {
+          // Doble chequeo de Airbnb, el MISMO de payment_link (adversaria round
+          // 2, 2026-08-20): buildQuote solo mira D1 — un bloqueo manual del
+          // calendario de Airbnb jamás llega a D1, y emitir instrucciones de
+          // cobro por fechas invendibles es plata que después hay que devolver
+          // A MANO (clase de incidente del 19-ago). Aplica a AMBOS roles.
+          const avail = f.property === "las-gemelas-tela"
+            ? await checkGemelasAvailable(f.checkIn, f.checkOut, env)
+            : await checkRangeAvailable(f.property, f.checkIn, f.checkOut, env);
+          if (avail.verified && !avail.available) {
+            return {
+              replies: [{ text: `🔒 interno: NO paso los datos de transferencia — Airbnb marca OCUPADO (${avail.conflictDates.slice(0, 4).join(", ")}${avail.conflictDates.length > 4 ? "…" : ""}). Liberá el calendario primero.` }],
+              traceAction: "transfer_blocked_airbnb",
+            };
+          }
           return {
             replies: [
               { text: buildTransferMessageHNL(quote.depositHNL, "es") },
-              { text: `🔒 interno: depósito 50% de ${quote.propertyName} ${f.checkIn}→${f.checkOut} (total HNL ${quote.totalHNL.toLocaleString("es-HN")}).` },
+              { text: `🔒 interno: depósito 50% de ${quote.propertyName} ${f.checkIn}→${f.checkOut} (total HNL ${quote.totalHNL.toLocaleString("es-HN")}).${!avail.verified ? " ⚠️ iCal de Airbnb no verificado — chequeá el calendario antes de confirmar." : ""}` },
             ],
             traceAction: "transfer_quote_ok",
+            // Oversight de plata, simétrico al del link de PayPal: los dueños
+            // ven cada instrucción de cobro que el staff emite.
+            ...(role === "staff"
+              ? {
+                  staffAlert: {
+                    tipo: "Staff pasó datos de transferencia",
+                    cliente: "Cliente por transferencia",
+                    detalle: `${env.STAFF_NAME || "Staff"}: ${quote.propertyName} ${f.checkIn}→${f.checkOut} · depósito HNL ${quote.depositHNL.toLocaleString("es-HN")}`,
+                    guestPhone: "",
+                  },
+                }
+              : {}),
           };
         }
       }
@@ -674,7 +848,11 @@ export async function dispatchCopilotAction(
     case "clarify":
     default:
       return {
-        replies: [{ text: f.reply ?? "¿Qué necesitás? Puedo cotizar, pasar fichas/fotos, ver disponibilidad, o decirte quién llega hoy y cómo va el mes." }],
+        replies: [{
+          text: f.reply ?? (role === "staff"
+            ? "¿Qué necesitás? Puedo cotizar, ver disponibilidad, pasar fichas/fotos, generar un link de pago o decirte quién llega hoy y mañana."
+            : "¿Qué necesitás? Puedo cotizar, pasar fichas/fotos, ver disponibilidad, o decirte quién llega hoy y cómo va el mes."),
+        }],
         traceAction: "clarify",
       };
   }
